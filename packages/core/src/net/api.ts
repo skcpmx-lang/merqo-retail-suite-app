@@ -15,7 +15,7 @@ import {
 import { withIdempotencyAsync, IdempotencyError } from '../services/idempotency.js';
 import { verifyRequest, type NonceGuard } from './device-auth.js';
 import { SqliteReplayGuard } from './replay-store.js';
-import { openEventStream, type SseStream } from './sse.js';
+import { EventStreamHub, type SseCloseReason } from './sse.js';
 import { latestSeq } from '../services/events.js';
 
 /**
@@ -53,6 +53,10 @@ export interface LanApiOptions {
   ssePollMs?: number;
   /** Event-stream keep-alive / re-authorisation interval. */
   sseHeartbeatMs?: number;
+  /** Concurrent stream policy for this server (default 32). */
+  sseMaxStreams?: number;
+  /** A connection that buffers more than this is closed as a slow consumer. */
+  sseMaxBufferedBytes?: number;
   log?: (level: 'info' | 'warn' | 'error', message: string, detail?: unknown) => void;
 }
 
@@ -84,7 +88,14 @@ export async function startLanApi(opts: LanApiOptions): Promise<LanApi> {
   // Durable, restart-safe replay protection: a captured request stays dead after a
   // crash or an operator restart, not just for the lifetime of this process.
   const guard: NonceGuard = new SqliteReplayGuard(opts.db);
-  const streams = new Map<string, SseStream>();
+  const hub = new EventStreamHub({
+    db: opts.db,
+    pollMs: opts.ssePollMs,
+    heartbeatMs: opts.sseHeartbeatMs,
+    maxStreams: opts.sseMaxStreams,
+    maxBufferedBytes: opts.sseMaxBufferedBytes,
+    log: opts.log,
+  });
   const server = https.createServer(
     { cert: opts.tls.certPem, key: opts.tls.keyPem, minVersion: 'TLSv1.2' },
     (req, res) => {
@@ -178,7 +189,7 @@ export async function startLanApi(opts: LanApiOptions): Promise<LanApi> {
     if (req.method === 'GET' && url.pathname === '/api/v1/events') {
       // A browser EventSource cannot carry signature headers, and the stream is not
       // open to browsers: only a device that can sign (the Electron main process)
-      // can subscribe.
+      // can subscribe. There is no separate stream token.
       const token = String(req.headers['x-sauda-session'] ?? url.searchParams.get('session') ?? '');
       let session;
       try {
@@ -191,29 +202,57 @@ export async function startLanApi(opts: LanApiOptions): Promise<LanApi> {
         send(res, 403, { ok: false, code: 'SESSION_DEVICE_MISMATCH', message: 'সেশন এই ডিভাইসের নয়।' });
         return;
       }
-      const lastHeader = String(req.headers['last-event-id'] ?? url.searchParams.get('last_event_id') ?? '');
-      const resumeFrom = lastHeader ? Math.max(0, Math.floor(Number(lastHeader) || 0)) : latestSeq(opts.db);
-      const stream = openEventStream({
+
+      // Resume point. Strict: a malformed id is refused rather than guessed, so a
+      // client can never believe it resumed when it actually started from "now".
+      const headerResume = req.headers['last-event-id'];
+      const queryResume = url.searchParams.get('last_event_id');
+      const rawResume = headerResume ?? queryResume ?? null;
+      let resumeFrom: number | null = null;
+      if (rawResume !== null && String(rawResume).trim() !== '') {
+        const text = String(rawResume).trim();
+        if (!/^\d{1,15}$/.test(text)) {
+          send(res, 400, { ok: false, code: 'BAD_LAST_EVENT_ID', message: 'শেষ ইভেন্ট আইডি সঠিক নয়।' });
+          return;
+        }
+        resumeFrom = Number(text);
+      }
+      const lastEventId = resumeFrom ?? latestSeq(opts.db);
+
+      const reasonFor = (): SseCloseReason | null => {
+        try {
+          const current = getDevice(opts.db, device.device_id);
+          if (!current) return 'revoked';
+          if (current.status === 'revoked') return 'revoked';
+          if (current.status !== 'approved') return 'device-not-approved';
+          if (current.store_id !== device.store_id) return 'revoked';
+          const check = validateDeviceSession(opts.db, token);
+          if (check.device_id !== device.device_id) return 'session-expired';
+          return null;
+        } catch (err) {
+          const code = (err as DeviceError).code;
+          return code === 'SESSION_REVOKED' || code === 'AUTH_REQUIRED' ? 'session-expired' : 'session-expired';
+        }
+      };
+
+      const opened = hub.open({
         res,
-        db: opts.db,
+        deviceId: device.device_id,
         storeId: device.store_id,
-        lastEventId: resumeFrom,
-        pollMs: opts.ssePollMs,
-        heartbeatMs: opts.sseHeartbeatMs,
-        isAuthorized: () => {
-          try {
-            const current = getDevice(opts.db, device.device_id);
-            if (!current || current.status !== 'approved' || current.store_id !== device.store_id) return false;
-            const check = validateDeviceSession(opts.db, token);
-            return check.device_id === device.device_id;
-          } catch {
-            return false;
-          }
-        },
-        onClose: () => streams.delete(device.device_id),
-        log: opts.log,
+        lastEventId,
+        authorize: reasonFor,
       });
-      streams.set(device.device_id, stream);
+      if (!opened.ok) {
+        send(res, 429, {
+          ok: false,
+          code: opened.code,
+          message:
+            opened.code === 'STREAM_LIMIT'
+              ? 'একসাথে বেশি ইভেন্ট স্ট্রিম খোলা আছে — কিছুক্ষণ পরে আবার চেষ্টা করুন।'
+              : 'এই ডিভাইসের একটি স্ট্রিম আগেই খোলা আছে।',
+        });
+        return;
+      }
       return;
     }
 
@@ -343,16 +382,14 @@ export async function startLanApi(opts: LanApiOptions): Promise<LanApi> {
   return {
     port: (server.address() as AddressInfo).port,
     fingerprint: opts.tls.fingerprint,
-    closeStreams: (deviceId?: string, reason = 'revoked') => {
-      for (const [id, stream] of streams) {
-        if (!deviceId || id === deviceId) stream.close(reason);
-      }
+    closeStreams: (deviceId?: string, reason: string = 'revoked') => {
+      if (deviceId) hub.closeDevice(deviceId, reason as SseCloseReason);
+      else hub.closeAll(reason as SseCloseReason);
     },
-    streamCount: () => streams.size,
+    streamCount: () => hub.count(),
     stop: () =>
       new Promise<void>((resolve) => {
-        for (const stream of streams.values()) stream.close('server-stop');
-        streams.clear();
+        hub.closeAll('server-stop');
         server.closeAllConnections?.();
         server.close(() => resolve());
       }),

@@ -1,150 +1,260 @@
 import type http from 'node:http';
 import type { Db } from '../db/connection.js';
-import { readEvents, type OutboxEvent } from '../services/events.js';
+import { readEvents, retentionFloor, type OutboxEvent } from '../services/events.js';
 
 /**
- * Authenticated server-sent events (Phase 3, Milestone C).
+ * Authenticated server-sent events (Phase 3, Milestone C; hardened in the SSE wiring pass).
  *
- * Design points that matter for security:
- *  - the connection is authenticated exactly like every other `/api/v1` call: an
- *    Ed25519 device signature plus a session bound to that device. There is no
- *    "stream token" and no unprotected endpoint;
- *  - the stream is opened by a Node client (the Electron main process), not by a
- *    browser `EventSource`, because a browser cannot attach signature headers;
- *  - every event carries its outbox `seq` as the SSE `id`, so a client resumes with
- *    `Last-Event-ID` and receives exactly the events it missed — no gaps, no
- *    duplicates, monotonic order;
- *  - a store filter is applied twice (query and per-event check), so an event from
- *    another store can never be delivered even if the outbox were shared;
- *  - the connection re-validates the device and session on every heartbeat and is
- *    closed when either is revoked, so revocation terminates live streams;
- *  - nothing is retained in memory except the last sequence number, so a server
- *    restart loses no events: the client resumes from the outbox.
+ * Security and lifecycle rules, all of them enforced here rather than by the caller:
+ *
+ *  - **No parallel auth path.** The route is inside `/api/v1`: Ed25519 device signature,
+ *    approved device, session bound to that device. The hub receives an `authorize`
+ *    callback that re-checks the device *and* the session on every heartbeat and every
+ *    poll, so a revoked device, an expired session or a device that stopped being
+ *    approved loses the stream within one interval.
+ *  - **Store isolation.** The outbox read is filtered by `store_id` and every event is
+ *    checked again before it is written, so a stream can never carry another shop's row.
+ *  - **Monotonic ids.** The SSE `id` is the outbox `seq`; a connection never sends an id
+ *    it already sent, and a resume sends only `seq > Last-Event-ID`.
+ *  - **Truncated history is declared, not hidden.** If a client asks for a sequence
+ *    older than what retention has kept, it receives `event: resync` with the first
+ *    available id and continues from there; the caller must refetch.
+ *  - **Bounded resources.** A connection that cannot keep up is closed (`slow-consumer`)
+ *    once its kernel/user buffer passes a limit, the hub caps concurrent streams, and a
+ *    device may hold only one stream (a second connection replaces the first).
+ *  - **Clean shutdown.** `closeAll()` ends every stream with `event: closed` before the
+ *    listener stops, so no client keeps reading a dead socket and no buffered events are
+ *    delivered after revocation or stop.
  */
 
-export interface SseOptions {
-  res: http.ServerResponse;
+export type SseCloseReason =
+  | 'revoked'
+  | 'session-expired'
+  | 'device-not-approved'
+  | 'server-stop'
+  | 'slow-consumer'
+  | 'client-closed'
+  | 'replaced'
+  | 'error';
+
+export interface EventStreamHubOptions {
   db: Db;
-  /** Store the connection belongs to; events from other stores are never sent. */
-  storeId: string;
-  /** Resume point (exclusive). 0 means "only new events". */
-  lastEventId: number;
-  /** Where the events come from (the outbox). */
-  read?: (afterSeq: number, limit: number) => OutboxEvent[];
-  /** Re-checked before every batch: device approved, session still valid. */
-  isAuthorized: () => boolean;
   pollMs?: number;
   heartbeatMs?: number;
   maxBatch?: number;
-  /** Called when the stream closes, with a reason. */
-  onClose?: (reason: string) => void;
+  /** Concurrent stream policy (see docs). Default 32. */
+  maxStreams?: number;
+  /** Close a connection whose unflushed buffer exceeds this. Default 1 MiB. */
+  maxBufferedBytes?: number;
+  read?: (afterSeq: number, limit: number) => OutboxEvent[];
   log?: (level: 'info' | 'warn', message: string, detail?: unknown) => void;
 }
 
-export interface SseStream {
-  /** Closes the stream. Idempotent. */
-  close(reason: string): void;
-  closed: boolean;
+export interface OpenStreamInput {
+  deviceId: string;
+  storeId: string;
+  res: http.ServerResponse;
+  /** Resume point (exclusive). 0 = live only, from the current end of the outbox. */
   lastEventId: number;
+  /** Returns a close reason when the connection is no longer allowed, null when it is. */
+  authorize: () => SseCloseReason | null;
 }
 
-export function openEventStream(opts: SseOptions): SseStream {
-  const read = opts.read ?? ((after: number, limit: number) => readEvents(opts.db, after, limit));
-  const pollMs = Math.max(20, opts.pollMs ?? 1000);
-  const heartbeatMs = Math.max(200, opts.heartbeatMs ?? 15_000);
-  const maxBatch = Math.max(1, opts.maxBatch ?? 200);
+export interface SseStream {
+  readonly deviceId: string;
+  readonly lastEventId: number;
+  readonly closed: boolean;
+  close(reason: SseCloseReason): void;
+}
 
-  opts.res.writeHead(200, {
-    'content-type': 'text/event-stream; charset=utf-8',
-    'cache-control': 'no-store, no-transform',
-    connection: 'keep-alive',
-    'x-accel-buffering': 'no',
-  });
-  // Tell the client how long to wait before reconnecting (SSE standard).
-  opts.res.write(`retry: 2000\n\n`);
+export type OpenStreamResult =
+  | { ok: true; stream: SseStream }
+  | { ok: false; code: 'STREAM_LIMIT' | 'ALREADY_OPEN' };
 
-  const stream: SseStream = {
-    closed: false,
-    lastEventId: Math.max(0, Math.floor(opts.lastEventId) || 0),
-    close(reason: string) {
-      if (stream.closed) return;
-      stream.closed = true;
-      clearInterval(poll);
-      clearInterval(beat);
-      try {
-        opts.res.write(`event: closed\ndata: ${JSON.stringify({ reason })}\n\n`);
-        opts.res.end();
-      } catch {
-        /* client already gone */
+export class EventStreamHub {
+  private readonly streams = new Map<string, SseStream>();
+  private readonly pollMs: number;
+  private readonly heartbeatMs: number;
+  private readonly maxBatch: number;
+  private readonly maxStreams: number;
+  private readonly maxBufferedBytes: number;
+  private readonly read: (afterSeq: number, limit: number) => OutboxEvent[];
+
+  constructor(private readonly opts: EventStreamHubOptions) {
+    this.pollMs = Math.max(20, opts.pollMs ?? 1000);
+    this.heartbeatMs = Math.max(200, opts.heartbeatMs ?? 15_000);
+    this.maxBatch = Math.max(1, opts.maxBatch ?? 200);
+    this.maxStreams = Math.max(1, opts.maxStreams ?? 32);
+    this.maxBufferedBytes = Math.max(4096, opts.maxBufferedBytes ?? 1024 * 1024);
+    this.read = opts.read ?? ((after, limit) => readEvents(opts.db, after, limit));
+  }
+
+  count(): number {
+    return this.streams.size;
+  }
+
+  /** The highest sequence that retention has already removed (0 when nothing was pruned). */
+  retentionFloor(): number {
+    return retentionFloor(this.opts.db);
+  }
+
+  open(input: OpenStreamInput): OpenStreamResult {
+    // One stream per device: a reconnect replaces the old connection instead of
+    // accumulating sockets.
+    const existing = this.streams.get(input.deviceId);
+    if (existing) existing.close('replaced');
+    if (this.streams.size >= this.maxStreams) return { ok: false, code: 'STREAM_LIMIT' };
+
+    const stream = this.start(input, () => {
+      if (this.streams.get(input.deviceId) === stream) this.streams.delete(input.deviceId);
+    });
+    this.streams.set(input.deviceId, stream);
+    return { ok: true, stream };
+  }
+
+  closeDevice(deviceId: string, reason: SseCloseReason = 'revoked'): void {
+    this.streams.get(deviceId)?.close(reason);
+  }
+
+  closeAll(reason: SseCloseReason = 'server-stop'): void {
+    for (const stream of [...this.streams.values()]) stream.close(reason);
+    this.streams.clear();
+  }
+
+  private start(input: OpenStreamInput, onClosed: () => void): SseStream {
+    const { res } = input;
+    const log = this.opts.log;
+    let lastEventId = Math.max(0, Math.floor(input.lastEventId) || 0);
+    let closed = false;
+    let backpressured = false;
+    let poll: NodeJS.Timeout | null = null;
+    let beat: NodeJS.Timeout | null = null;
+
+    const floor = this.retentionFloor();
+    const truncated = lastEventId > 0 && lastEventId < floor;
+
+    res.writeHead(200, {
+      'content-type': 'text/event-stream; charset=utf-8',
+      'cache-control': 'no-store, no-transform',
+      connection: 'keep-alive',
+      'x-accel-buffering': 'no',
+      'x-sauda-retention-floor': String(floor),
+    });
+    res.write('retry: 2000\n\n');
+    if (truncated) {
+      // Declare the gap instead of silently starting in the middle.
+      lastEventId = floor;
+      res.write(
+        `event: resync\ndata: ${JSON.stringify({ reason: 'HISTORY_TRUNCATED', from: floor })}\n\n`,
+      );
+      log?.('warn', 'sse resume older than retained history', { device_id: input.deviceId, floor });
+    }
+
+    const stream: SseStream = {
+      deviceId: input.deviceId,
+      get lastEventId() {
+        return lastEventId;
+      },
+      get closed() {
+        return closed;
+      },
+      close(reason: SseCloseReason) {
+        if (closed) return;
+        closed = true;
+        if (poll) clearInterval(poll);
+        if (beat) clearInterval(beat);
+        try {
+          res.write(`event: closed\ndata: ${JSON.stringify({ reason })}\n\n`);
+          res.end();
+        } catch {
+          /* the peer is already gone */
+        }
+        onClosed();
+        log?.('info', 'sse closed', {
+          device_id: input.deviceId,
+          store_id: input.storeId,
+          last_event_id: lastEventId,
+          reason,
+        });
+      },
+    };
+
+    const write = (chunk: string): boolean => {
+      if (closed) return false;
+      // A peer that will not read must not grow our memory without bound.
+      if (res.writableLength > this.maxBufferedBytes) {
+        stream.close('slow-consumer');
+        return false;
       }
-      opts.onClose?.(reason);
-      opts.log?.('info', 'sse closed', { reason, lastEventId: stream.lastEventId });
-    },
-  };
+      const ok = res.write(chunk);
+      if (!ok) backpressured = true;
+      return ok;
+    };
 
-  function send(event: OutboxEvent): void {
-    // Defence in depth: never leak another store's event, whatever the query did.
-    if (event.store_id !== opts.storeId) return;
-    stream.lastEventId = event.seq;
-    opts.res.write(`id: ${event.seq}\nevent: ${event.type}\ndata: ${event.payload}\n\n`);
-  }
+    const send = (event: OutboxEvent): void => {
+      // Defence in depth: never leak another store's event.
+      if (event.store_id !== input.storeId) return;
+      if (event.seq <= lastEventId) return;
+      lastEventId = event.seq;
+      write(`id: ${event.seq}\nevent: ${event.type}\ndata: ${event.payload}\n\n`);
+    };
 
-  function flush(): void {
-    if (stream.closed) return;
-    let sent = 0;
-    for (;;) {
-      const batch = read(stream.lastEventId, maxBatch);
-      if (!batch.length) break;
-      for (const event of batch) send(event);
-      sent += batch.length;
-      if (batch.length < maxBatch) break;
-    }
-    void sent;
-  }
+    const flush = (): void => {
+      if (closed) return;
+      if (backpressured) {
+        // Wait for 'drain'; but a client that stays stuck is closed above.
+        if (res.writableLength > this.maxBufferedBytes) stream.close('slow-consumer');
+        return;
+      }
+      for (;;) {
+        const batch = this.read(lastEventId, this.maxBatch);
+        if (!batch.length) break;
+        for (const event of batch) send(event);
+        if (closed || backpressured || batch.length < this.maxBatch) break;
+      }
+    };
 
-  const poll = setInterval(() => {
-    if (stream.closed) return;
-    if (!opts.isAuthorized()) {
-      // Revoked, session expired, or device no longer approved: terminate now.
-      stream.close('revoked');
-      return;
-    }
-    try {
+    res.on('drain', () => {
+      backpressured = false;
       flush();
-    } catch (err) {
-      opts.log?.('warn', 'sse flush failed', err);
-      stream.close('error');
-    }
-  }, pollMs);
+    });
+    res.on('close', () => {
+      if (!closed) {
+        closed = true;
+        if (poll) clearInterval(poll);
+        if (beat) clearInterval(beat);
+        onClosed();
+        log?.('info', 'sse client disconnected', { device_id: input.deviceId, last_event_id: lastEventId });
+      }
+    });
 
-  const beat = setInterval(() => {
-    if (stream.closed) return;
-    if (!opts.isAuthorized()) {
-      stream.close('revoked');
-      return;
-    }
-    try {
-      opts.res.write(`: ping ${Date.now()}\n\n`);
-    } catch {
-      stream.close('error');
-    }
-  }, heartbeatMs);
+    poll = setInterval(() => {
+      if (closed) return;
+      const reason = input.authorize();
+      if (reason) {
+        stream.close(reason);
+        return;
+      }
+      flush();
+    }, this.pollMs);
 
-  opts.res.on('close', () => {
-    if (!stream.closed) {
-      stream.closed = true;
-      clearInterval(poll);
-      clearInterval(beat);
-      opts.onClose?.('client-closed');
-    }
-  });
+    beat = setInterval(() => {
+      if (closed) return;
+      const reason = input.authorize();
+      if (reason) {
+        stream.close(reason);
+        return;
+      }
+      write(`: ping ${Date.now()}\n\n`);
+    }, this.heartbeatMs);
 
-  // Deliver anything already pending (resume) immediately.
-  try {
-    flush();
-  } catch (err) {
-    opts.log?.('warn', 'sse initial flush failed', err);
-    stream.close('error');
+    log?.('info', 'sse opened', {
+      device_id: input.deviceId,
+      store_id: input.storeId,
+      resume_from: input.lastEventId,
+      truncated,
+      streams: this.streams.size + 1,
+    });
+    return stream;
   }
-  return stream;
 }
