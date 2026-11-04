@@ -1,17 +1,27 @@
 name: Release (Windows installers)
 
-# Builds the two Windows x64 installers and hands them back as verified workflow artefacts.
+# Builds the two Windows x64 installers, verifies them, and — only for a `v*` tag — publishes the
+# GitHub release with exactly those files.
 #
 # v1.1.4 release policy: unsigned installers are accepted by the owner. Authenticode is optional
-# and never a dependency of this workflow — no certificate secret is required, and being unsigned
-# is not a failure.
+# and is never a dependency of this workflow — no certificate secret is required and being
+# unsigned is not a failure. The workflow therefore references no repository secret at all;
+# the release steps use only the built-in workflow token.
+# licence-signing key is unrelated to Windows code signing and is never present here: the build
+# only ever consumes public verification material (enforced by verify-installer.mjs).
 #
-# This workflow never publishes. `permissions: contents: read` means it cannot write a release,
-# and there is no release step. Publishing is a separate, deliberate act by the owner:
-# download the verified artefacts, create a DRAFT release, re-verify, then publish.
+# Publication is staged and self-verifying, and every step aborts the job on failure, so a broken
+# build can never reach a published release:
 #
-# Triggers: manual dispatch, and a `v*` tag push so a reproducible build can be produced for a
-# specific commit. A tag build still cannot publish anything.
+#   1. build + one gate (typecheck, all tests, audits, both builds, secrets, dependency audit)
+#   2. verify the installers (version, x64 PE, native deps, no key material) — writes SHA256SUMS.txt
+#   3. render the reviewed release notes with the measured sizes/hashes (no placeholders survive)
+#   4. create a DRAFT release with exactly the two .exe files and SHA256SUMS.txt
+#   5. download the uploaded assets again, compare the checksum file, recompute the hashes and
+#      re-run the installer verification on those downloaded copies
+#   6. only then flip the draft to published
+#
+# Triggers: manual dispatch (build + verify only, nothing is published) and a `v*` tag push.
 
 on:
   workflow_dispatch:
@@ -19,8 +29,14 @@ on:
     tags:
       - 'v*'
 
+# Required to create/edit the release. In every step before publication this token is only used
+# to read the tag; the workflow holds no other credential and no signing secret.
 permissions:
-  contents: read
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   windows:
@@ -40,38 +56,32 @@ jobs:
         run: node scripts/check-signing-env.mjs
 
       - name: Install dependencies
+        shell: bash
         env:
           ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
         run: npm ci --no-audit --no-fund
 
-      # The same gate as a pull request: typecheck, all tests, UI/IPC wiring audits, both builds,
-      # secret scans and a production dependency audit.
+      # The same gate as CI and pull requests: typecheck, all tests, UI/IPC wiring audits, both
+      # builds, secret scans and a production dependency audit.
       - name: Verify (typecheck, tests, audits, builds, secrets, audit)
         shell: bash
         run: |
           set -o pipefail
           npm run verify 2>&1 | tee verify-gate.log
 
-      - name: Surface failure summary
+      # The runner log is not always reachable; the failure is pushed into the job summary and
+      # check annotations (failing test name, assertion, stack frames, log tail).
+      - name: Report failures as annotations and summary
         if: failure()
         shell: bash
-        run: |
-          node -e "
-            const fs = require('fs');
-            const tail = (f, n) => {
-              try { return fs.readFileSync(f, 'utf8').split(/\r?\n/).filter(Boolean).slice(-n).join(' ~ '); }
-              catch { return '(missing ' + f + ')'; }
-            };
-            const clean = (t) => t.replace(/%/g, '%25').replace(/\r/g, ' ');
-            console.log('::error title=verify::' + clean(tail('verify-gate.log', 20)));
-          "
+        run: node scripts/ci-failure-report.mjs --log verify-gate.log --label release-windows
 
       - name: Upload verification logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: verify-logs
-          path: verify-*.log
+          path: verify-gate.log
           if-no-files-found: ignore
 
       - name: Generate icons
@@ -82,17 +92,17 @@ jobs:
           node scripts/build-app.mjs
           node scripts/build-license-generator.mjs
 
-      # Signing is optional: if a certificate is present the NSIS output is signed, otherwise
-      # the build continues and the artefacts are reported as unsigned (accepted).
+      # Signing is optional: with a certificate the NSIS output is signed, without one the build
+      # continues and the artefacts are reported as unsigned (accepted).
       - name: Package Sauda Retail Suite (NSIS)
         run: node scripts/package-app.mjs
 
       - name: Package Sauda License Generator (NSIS)
         run: node scripts/package-license-generator.mjs
 
-      # Hard gate: both artefacts present, ProductVersion/FileVersion, x64 PE, no key material,
-      # and SHA256SUMS.txt computed from these exact files. Authenticode status is reported
-      # (unsigned is accepted); it is not a failure.
+      # Hard gate: both artefacts present, ProductVersion/FileVersion, x64 PE, native modules,
+      # no private key material, and SHA256SUMS.txt computed from these exact files. Authenticode
+      # status is reported (unsigned is accepted); it is not a failure.
       - name: Verify installers (version, architecture, key material, SHA-256)
         shell: bash
         run: |
@@ -100,20 +110,127 @@ jobs:
           cp packages/app/release/*.exe artifacts/
           cp packages/license-generator/release/*.exe artifacts/
           node scripts/verify-installer.mjs --dir artifacts
+          ls -l artifacts
 
-      # D-3: the reviewed notes file is the only accepted release text. Sections are enforced
-      # here; the filled-values gate runs at publish time (scripts/check-release-notes.mjs
-      # --require-filled) once the measured sizes and hashes are recorded.
       - name: Require the reviewed release notes
         shell: bash
         run: node scripts/check-release-notes.mjs --file docs/V1.1.4_RELEASE_NOTES.md
 
-      - name: Upload installers (no release is created)
+      # Fills the two measured values (byte size, SHA-256 per installer) into the reviewed notes and
+      # refuses to continue with any placeholder left in the publishable text.
+      - name: Render release notes with measured values
+        shell: bash
+        run: |
+          node scripts/render-release-notes.mjs \
+            --notes docs/V1.1.4_RELEASE_NOTES.md \
+            --sums artifacts/SHA256SUMS.txt \
+            --dir artifacts \
+            --out release-notes.md
+          node scripts/check-release-notes.mjs --file release-notes.md --require-filled
+
+      - name: Upload installers (workflow artefact)
         uses: actions/upload-artifact@v4
         with:
           name: sauda-windows-installers
           path: |
             artifacts/*.exe
             artifacts/SHA256SUMS.txt
-            docs/V1.1.4_RELEASE_NOTES.md
+            release-notes.md
           if-no-files-found: error
+
+      # ------------------------------------------------------------------
+      # Publication — tag pushes only. Manual runs stop above this line.
+      # ------------------------------------------------------------------
+
+      - name: Create DRAFT release with the verified assets
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            DRAFT=$(gh release view "$TAG" --json isDraft -q .isDraft)
+            if [ "$DRAFT" != "true" ]; then
+              echo "::error::release $TAG already exists and is published — refusing to overwrite it"
+              exit 1
+            fi
+            echo "removing the earlier draft of $TAG so this run owns the assets"
+            gh release delete "$TAG" --yes
+          fi
+          gh release create "$TAG" \
+            artifacts/Sauda-Retail-Suite-Setup-1.1.4.exe \
+            artifacts/Sauda-License-Generator-1.1.4.exe \
+            artifacts/SHA256SUMS.txt \
+            --title "Sauda Retail Suite v1.1.4" \
+            --notes-file release-notes.md \
+            --draft \
+            --verify-tag
+
+      - name: Download the uploaded assets again and re-verify them
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+
+          # Exactly the three expected assets, nothing extra and nothing missing.
+          gh release view "$TAG" --json assets -q '.assets | length' | grep -qx '3'
+          gh release view "$TAG" --json assets -q '.assets[].name' | sort > expected-assets.txt
+          printf '%s\n' \
+            'Sauda-License-Generator-1.1.4.exe' \
+            'Sauda-Retail-Suite-Setup-1.1.4.exe' \
+            'SHA256SUMS.txt' | sort > verify-assets.txt
+          diff verify-assets.txt expected-assets.txt
+
+          rm -rf verify-dl && mkdir -p verify-dl
+          gh release download "$TAG" --dir verify-dl --pattern '*.exe'
+          gh release download "$TAG" --dir verify-dl --pattern 'SHA256SUMS.txt'
+          ls -l verify-dl
+
+          # 1. The published checksum file must be byte-identical to the one computed at build time.
+          cp verify-dl/SHA256SUMS.txt verify-dl/published-SHA256SUMS.txt
+          diff artifacts/SHA256SUMS.txt verify-dl/published-SHA256SUMS.txt
+          cat verify-dl/published-SHA256SUMS.txt
+
+          # 2. The downloaded bytes must match those checksums.
+          (cd verify-dl && sha256sum -c published-SHA256SUMS.txt)
+
+          # 3. Re-run the full installer gate on the downloaded copies (version, x64 PE, key-free),
+          #    which recomputes SHA256SUMS.txt from the downloaded bytes — it must agree exactly.
+          node scripts/verify-installer.mjs --dir verify-dl
+          diff artifacts/SHA256SUMS.txt verify-dl/SHA256SUMS.txt
+
+          # 4. Record the measured values in the run summary.
+          node -e "
+            const fs = require('fs');
+            const crypto = require('crypto');
+            const rows = ['| Asset | Bytes | SHA-256 |', '| --- | --- | --- |'];
+            for (const name of fs.readdirSync('verify-dl').sort()) {
+              if (!name.toLowerCase().endsWith('.exe')) continue;
+              const buf = fs.readFileSync('verify-dl/' + name);
+              rows.push('| ' + name + ' | ' + buf.length + ' | ' + crypto.createHash('sha256').update(buf).digest('hex') + ' |');
+            }
+            const table = rows.join('\n');
+            if (process.env.GITHUB_STEP_SUMMARY) fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, table + '\n');
+            console.log(table);
+          "
+
+      - name: Publish the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          gh release edit "$TAG" --draft=false
+          gh release view "$TAG" --json tagName,isDraft,url,assets \
+            -q '"published \(.tagName) draft=\(.isDraft) \(.url)", (.assets[] | "  asset: \(.name) \(.size) bytes \(.digest // "")")'
+          if [ "$(gh release view "$TAG" --json isDraft -q .isDraft)" != "false" ]; then
+            echo "::error::$TAG is still a draft after publication"
+            exit 1
+          fi
