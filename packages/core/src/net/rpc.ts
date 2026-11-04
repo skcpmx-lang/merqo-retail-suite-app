@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 import http from 'node:http';
+import https from 'node:https';
 import type { AddressInfo } from 'node:net';
 import os from 'node:os';
 
@@ -39,6 +40,12 @@ export interface RpcResponse {
 
 export interface RpcHostOptions {
   port: number;
+  /**
+   * Optional TLS material (v1.1.4 Phase 3). When present the listener speaks HTTPS
+   * and clients pin the certificate fingerprint. The AES-GCM envelope is kept on
+   * top, so the payload is protected even if a client is mis-configured.
+   */
+  tls?: { certPem: string; keyPem: string; fingerprint?: string };
   token: string;
   version: string;
   businessName: () => string;
@@ -56,6 +63,9 @@ export interface RpcHostOptions {
 export interface RpcHost {
   port: number;
   addresses: string[];
+  /** `https` when TLS material was supplied. */
+  protocol: 'http' | 'https';
+  tls_fingerprint: string | null;
   sessionCount: () => number;
   stop: () => Promise<void>;
 }
@@ -196,7 +206,7 @@ export async function startRpcHost(opts: RpcHostOptions): Promise<RpcHost> {
   const allow = opts.allowRemote ?? isPrivateAddress;
   const loginFailures = new Map<string, { failures: number; first: number }>();
 
-  const server = http.createServer((req, res) => {
+  const handler = (req: http.IncomingMessage, res: http.ServerResponse) => {
     void (async () => {
       try {
         const remote = req.socket.remoteAddress ?? '';
@@ -323,7 +333,14 @@ export async function startRpcHost(opts: RpcHostOptions): Promise<RpcHost> {
         send(res, 500, { ok: false, error: (err as Error).message || 'সার্ভার ত্রুটি', code: 'ERROR' });
       }
     })();
-  });
+  };
+
+  // v1.1.4 Phase 3: HTTPS when certificate material is supplied. The AES-GCM
+  // envelope stays in place on top, so payload confidentiality does not depend on
+  // the client validating the certificate correctly.
+  const server = opts.tls
+    ? https.createServer({ cert: opts.tls.certPem, key: opts.tls.keyPem, minVersion: 'TLSv1.2' }, handler)
+    : http.createServer(handler);
 
   await new Promise<void>((resolve, reject) => {
     server.once('error', reject);
@@ -334,6 +351,8 @@ export async function startRpcHost(opts: RpcHostOptions): Promise<RpcHost> {
   return {
     port,
     addresses: lanUrls(port),
+    protocol: opts.tls ? 'https' : 'http',
+    tls_fingerprint: opts.tls?.fingerprint ?? null,
     sessionCount: () => sessions.size,
     stop: () =>
       new Promise<void>((resolve) => {
@@ -343,19 +362,128 @@ export async function startRpcHost(opts: RpcHostOptions): Promise<RpcHost> {
   };
 }
 
+export interface RpcClientTls {
+  /** PEM of the Main PC certificate, treated as the only trusted root. */
+  caPem: string;
+  /** SHA-256 of the DER certificate; a mismatch aborts the request. */
+  fingerprint: string;
+}
+
 export interface RpcClientOptions {
   baseUrl: string;
   token: string;
   timeoutMs?: number;
+  /** HTTPS + certificate pinning (v1.1.4 Phase 3). */
+  tls?: RpcClientTls;
 }
 
 /** Terminal-side client. Holds the session token in memory only. */
+/**
+ * Minimal HTTPS request with certificate pinning.
+ *
+ * `fetch` cannot express "trust exactly this self-signed certificate and verify its
+ * fingerprint", so the client speaks `https` directly. Both the CA (the pinned
+ * certificate) and the pin itself must be supplied — a missing pin is a hard
+ * failure, never a silent fallback to "trust anything on the LAN".
+ */
+async function httpsJson(
+  url: string,
+  init: { method: string; headers: Record<string, string>; body?: string },
+  opts: { caPem: string; fingerprint: string; timeoutMs: number },
+): Promise<{ status: number; text: string; code?: string; error?: string }> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (value: { status: number; text: string; code?: string; error?: string }) => {
+      if (settled) return;
+      settled = true;
+      resolve(value);
+    };
+    let request: ReturnType<typeof https.request>;
+    try {
+      request = https.request(
+        url,
+        {
+          method: init.method,
+          headers: init.headers,
+          ca: opts.caPem,
+          rejectUnauthorized: true,
+          minVersion: 'TLSv1.2',
+          timeout: opts.timeoutMs,
+        },
+        (res) => {
+          const socket = res.socket as import('node:tls').TLSSocket;
+          const peer = typeof socket.getPeerCertificate === 'function' ? socket.getPeerCertificate() : null;
+          const expected = String(opts.fingerprint ?? '').replace(/[^0-9a-fA-F]/g, '').toUpperCase();
+          const actual = peer?.raw ? crypto.createHash('sha256').update(peer.raw).digest('hex').toUpperCase() : '';
+          if (!expected || !actual || actual !== expected) {
+            res.destroy();
+            socket.destroy();
+            finish({
+              status: 0,
+              text: '',
+              code: 'CERT_MISMATCH',
+              error: `সার্ভারের সার্টিফিকেট মেলেনি (প্রত্যাশিত ${expected.slice(0, 8)}…, পাওয়া ${actual.slice(0, 8) || 'কিছুই না'})।`,
+            });
+            return;
+          }
+          const chunks: Buffer[] = [];
+          res.on('data', (chunk) => chunks.push(Buffer.from(chunk)));
+          res.on('end', () =>
+            finish({ status: res.statusCode ?? 0, text: Buffer.concat(chunks).toString('utf8') }),
+          );
+          res.on('error', (err) => finish({ status: 0, text: '', code: 'OFFLINE', error: err.message }));
+        },
+      );
+    } catch (err) {
+      finish({ status: 0, text: '', code: 'OFFLINE', error: (err as Error).message });
+      return;
+    }
+    request.on('timeout', () => {
+      request.destroy(new Error('timeout'));
+    });
+    request.on('error', (err: NodeJS.ErrnoException) => {
+      const code = err.code === 'ETIMEDOUT' ? 'TIMEOUT' : 'OFFLINE';
+      finish({ status: 0, text: '', code, error: err.message });
+    });
+    if (init.body) request.write(init.body);
+    request.end();
+  });
+}
+
 export function createRpcClient(opts: RpcClientOptions) {
   let session: string | null = null;
   const base = opts.baseUrl.replace(/\/+$/, '');
   const timeout = opts.timeoutMs ?? 20_000;
 
   async function post(path: string, body: unknown): Promise<RpcResponse> {
+    if (opts.tls) {
+      const res = await httpsJson(
+        `${base}${path}`,
+        {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            authorization: `Bearer ${opts.token}`,
+            'x-sauda-transport': String(LAN_TRANSPORT_VERSION),
+          },
+          body: JSON.stringify({ v: LAN_TRANSPORT_VERSION, enc: sealLanPayload(opts.token, JSON.stringify(body)) }),
+        },
+        { caPem: opts.tls.caPem, fingerprint: opts.tls.fingerprint, timeoutMs: timeout },
+      );
+      if (res.status === 0) return { ok: false, error: res.error ?? 'সংযোগ ব্যর্থ', code: res.code ?? 'OFFLINE' };
+      if (res.status === 426) {
+        return { ok: false, error: 'হোস্টের সংস্করণ পুরনো।', code: 'TRANSPORT_OUTDATED' };
+      }
+      try {
+        const envelope = JSON.parse(res.text) as { enc?: string } & RpcResponse;
+        if (typeof envelope?.enc === 'string') {
+          return JSON.parse(openLanPayload(opts.token, envelope.enc)) as RpcResponse;
+        }
+        return envelope as RpcResponse;
+      } catch {
+        return { ok: false, error: 'সার্ভারের উত্তর বোঝা যায়নি।', code: 'BAD_RESPONSE' };
+      }
+    }
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeout);
     try {
@@ -410,6 +538,19 @@ export function createRpcClient(opts: RpcClientOptions) {
       return res;
     },
     async health(): Promise<RpcResponse> {
+      if (opts.tls) {
+        const res = await httpsJson(
+          `${base}/health`,
+          { method: 'GET', headers: { authorization: `Bearer ${opts.token}` } },
+          { caPem: opts.tls.caPem, fingerprint: opts.tls.fingerprint, timeoutMs: timeout },
+        );
+        if (res.status === 0) return { ok: false, error: res.error ?? 'সংযোগ ব্যর্থ', code: res.code ?? 'OFFLINE' };
+        try {
+          return JSON.parse(res.text) as RpcResponse;
+        } catch {
+          return { ok: false, error: 'সার্ভারের উত্তর বোঝা যায়নি।', code: 'BAD_RESPONSE' };
+        }
+      }
       try {
         const res = await fetch(`${base}/health`, {
           headers: { authorization: `Bearer ${opts.token}` },
