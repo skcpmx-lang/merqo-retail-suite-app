@@ -14,6 +14,7 @@ import { applyMovement } from './inventory.js';
 import { isPostingEnabled, postSale, reverseDocument } from './accounting.js';
 import { nextDocumentNumber } from './invoice.js';
 import { insertPayment } from './payments.js';
+import { markSerialsSold } from './stock-ops.js';
 import { getSettings } from './settings.js';
 import { productPriceBreakdown, type PriceLevel } from './products.js';
 
@@ -27,6 +28,8 @@ export interface SaleLineInput {
   /** Line-level discount in poisa. */
   discountPaisa?: number | null;
   priceLevel?: PriceLevel;
+  /** Serial/IMEI numbers sold on this line (optional). */
+  serials?: string[];
 }
 
 export interface SalePaymentInput {
@@ -298,6 +301,20 @@ export function createSale(db: Db, input: SaleInput): CreateSaleResult {
         allowNegative,
       });
       consumeBatches(db, line.productId, line.qtyBaseMilli);
+    }
+
+    // Serial/IMEI tracking: every supplied serial must be available, and a line
+    // cannot hand out more serials than the quantity actually sold.
+    let serialCursor = 0;
+    for (const line of input.lines) {
+      const serials = (line.serials ?? []).map((x) => String(x).trim()).filter(Boolean);
+      if (serials.length === 0) continue;
+      const soldLine = computation.lines[serialCursor];
+      serialCursor++;
+      if (soldLine && serials.length > Math.ceil(soldLine.qtyMilli / 1000)) {
+        throw new Error(`"${soldLine.productName}" — বিক্রির পরিমাণের চেয়ে বেশি সিরিয়াল দেওয়া হয়েছে।`);
+      }
+      markSerialsSold(db, serials, saleId, input.actor);
     }
 
     if (computation.due !== 0 && input.customerId) {

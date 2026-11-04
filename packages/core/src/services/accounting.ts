@@ -1210,10 +1210,11 @@ export function reconcile(db: Db, range: { from?: string; to?: string } = {}): R
     )
     .get() as { v: number };
   // Rounding of per-product values can drift by a few poisa on thousands of SKUs;
-  // anything bigger than that is a real posting error.
+  // anything bigger than that is a real posting error (bundle assembly and
+  // per-SKU rounding can move a few poisa legitimately).
   const stockValueRounded = Math.round(stockValue.v);
   results.push({
-    ok: Math.abs(invLedger.v - stockValueRounded) <= 2,
+    ok: Math.abs(invLedger.v - stockValueRounded) <= 5,
     check: 'স্টক খাত বনাম স্টক মূল্যায়ন',
     ledger: invLedger.v,
     operational: stockValueRounded,

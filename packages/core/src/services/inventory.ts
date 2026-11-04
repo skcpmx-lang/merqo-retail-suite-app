@@ -64,7 +64,7 @@ export function defaultLocationId(db: Db): number {
   return id;
 }
 
-function mirrorLocation(db: Db, productId: number, locationId: number, deltaMilli: number): void {
+export function mirrorLocation(db: Db, productId: number, locationId: number, deltaMilli: number): void {
   db.prepare(
     `INSERT INTO stock_levels (product_id, location_id, qty_base_milli) VALUES (?,?,?)
      ON CONFLICT(product_id, location_id) DO UPDATE SET qty_base_milli = qty_base_milli + excluded.qty_base_milli`,
