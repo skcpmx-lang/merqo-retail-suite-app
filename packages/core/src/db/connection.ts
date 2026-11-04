@@ -5,6 +5,8 @@ import path from 'node:path';
 import { SCHEMA_V1, SCHEMA_VERSION } from './schema.js';
 import { seedReferenceData } from './seed.js';
 import { migrateToV2 } from './migration-v2.js';
+import { migrateToV3 } from './migration-v3.js';
+import { migrateToV4 } from './migration-v4.js';
 
 export type Db = SqliteDb;
 
@@ -124,6 +126,20 @@ export const MIGRATIONS: Migration[] = [
     name: 'advanced_retail_and_accounting',
     up: (db) => {
       migrateToV2(db);
+    },
+  },
+  {
+    version: 3,
+    name: 'purchase_orders_promotions_and_lan',
+    up: (db) => {
+      migrateToV3(db);
+    },
+  },
+  {
+    version: 4,
+    name: 'login_attempt_protection',
+    up: (db) => {
+      migrateToV4(db);
     },
   },
 ];

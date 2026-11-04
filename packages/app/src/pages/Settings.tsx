@@ -23,7 +23,16 @@ import {
 } from '../ui.js';
 import type { ActivationState, AppSettings, User } from '../types.js';
 
-type Section = 'business' | 'receipt' | 'stock' | 'catalog' | 'users' | 'license' | 'diagnostics';
+type Section =
+  | 'business'
+  | 'receipt'
+  | 'stock'
+  | 'catalog'
+  | 'users'
+  | 'appearance'
+  | 'network'
+  | 'license'
+  | 'diagnostics';
 
 const PERM_LABELS: Record<string, string> = {
   'pos.sell': 'বিক্রয় (POS)',
@@ -118,6 +127,8 @@ export function SettingsPage({
               { id: 'stock', label: 'বিক্রয় ও স্টক নিয়ম' },
               { id: 'catalog', label: 'ক্যাটালগ' },
               { id: 'users', label: 'ইউজার' },
+              { id: 'appearance', label: 'রূপ ও ভাষা' },
+              { id: 'network', label: 'নেটওয়ার্ক ও ডিসপ্লে' },
               { id: 'license', label: 'লাইসেন্স' },
               { id: 'diagnostics', label: 'ডায়াগনস্টিক' },
             ]}
@@ -135,6 +146,10 @@ export function SettingsPage({
         ) : null}
         {section === 'catalog' ? <CatalogSection /> : null}
         {section === 'users' ? <UsersSection currentUser={user} /> : null}
+        {section === 'appearance' ? (
+          <AppearanceForm settings={settings} patch={patch} save={save} saving={saving} />
+        ) : null}
+        {section === 'network' ? <NetworkForm settings={settings} patch={patch} save={save} saving={saving} /> : null}
         {section === 'license' ? <LicenseSection onChanged={onLicenseChanged} isAdmin={isAdmin} /> : null}
         {section === 'diagnostics' ? <DiagnosticsSection /> : null}
       </Card>
@@ -196,6 +211,15 @@ function BusinessForm({
         </Field>
         <Field label="ইমেইল">
           <TextInput value={settings.business_email} onChange={(v) => patch({ business_email: v })} />
+        </Field>
+        <Field label="ওয়েবসাইট">
+          <TextInput value={settings.business_website} onChange={(v) => patch({ business_website: v })} placeholder="www.example.com" />
+        </Field>
+        <Field label="প্রতিষ্ঠানের ধরন" hint="রিসিট ও রিপোর্টে ব্যবহৃত হয়">
+          <TextInput value={settings.business_type} onChange={(v) => patch({ business_type: v })} placeholder="খুচরা দোকান" />
+        </Field>
+        <Field label="ডকুমেন্ট ফুটার" span={2} hint="A4 ইনভয়েস ও স্টেটমেন্টের নিচে ছাপা হবে">
+          <TextInput value={settings.document_footer} onChange={(v) => patch({ document_footer: v })} />
         </Field>
         <Field label="মুদ্রা চিহ্ন">
           <TextInput value={settings.currency_symbol} onChange={(v) => patch({ currency_symbol: v })} maxLength={3} />
@@ -900,6 +924,229 @@ function UsersSection({ currentUser }: { currentUser: User }) {
 }
 
 /* ------------------------------------------------------------------ */
+
+function AppearanceForm({
+  settings,
+  patch,
+  save,
+  saving,
+}: {
+  settings: AppSettings;
+  patch: (p: Partial<AppSettings>) => void;
+  save: (p: Partial<AppSettings>) => Promise<void>;
+  saving: boolean;
+}) {
+  return (
+    <div className="card-body">
+      <div className="form-grid">
+        <Field label="থিম" hint="সিস্টেম নির্বাচন করলে উইন্ডোজের সেটিং অনুসরণ করবে" span={2}>
+          <div className="seg-toggle" role="group" aria-label="থিম">
+            {(['light', 'dark', 'system'] as const).map((value) => (
+              <button key={value} className={settings.theme === value ? 'on' : ''} onClick={() => patch({ theme: value })}>
+                {value === 'light' ? 'লাইট' : value === 'dark' ? 'ডার্ক' : 'সিস্টেম'}
+              </button>
+            ))}
+          </div>
+        </Field>
+        <Field label="ভাষা" hint="ইন্টারফেস ও নতুন রিপোর্টে প্রযোজ্য" span={2}>
+          <div className="seg-toggle" role="group" aria-label="ভাষা">
+            <button className={settings.language === 'bn' ? 'on' : ''} onClick={() => patch({ language: 'bn' })}>
+              বাংলা
+            </button>
+            <button className={settings.language === 'en' ? 'on' : ''} onClick={() => patch({ language: 'en' })}>
+              English
+            </button>
+          </div>
+        </Field>
+        <Field label="বাংলা সংখ্যা" hint="ইন্টারফেসে ০-৯ দেখাবে">
+          <Switch
+            checked={settings.bengali_digits === 1}
+            onChange={(v) => patch({ bengali_digits: v ? 1 : 0 })}
+            label="বাংলা অঙ্ক"
+          />
+        </Field>
+      </div>
+
+      <div className="section-title" style={{ marginTop: 16 }}>
+        সফটওয়্যার লক
+      </div>
+      <Banner tone="info">
+        লক বন্ধ করলে অ্যাপ খুললেই প্রাথমিক অ্যাডমিন হিসেবে ঢুকে যাবে — অনুমতি, অডিট লগ ও লাইসেন্স যা আছে ঠিকই থাকবে।
+        এটি উইন্ডোজের পাসওয়ার্ড বা ডিস্ক এনক্রিপশনের বিকল্প নয়।
+      </Banner>
+      <div className="form-grid" style={{ marginTop: 10 }}>
+        <Field label="লগইন পাসওয়ার্ড চাইবে" span={2}>
+          <Switch
+            checked={settings.login_lock_enabled === 1}
+            onChange={(v) => patch({ login_lock_enabled: v ? 1 : 0 })}
+            label="লগইন লক চালু"
+          />
+        </Field>
+        <Field label="নিষ্ক্রিয়তার পর লগআউট (মিনিট)" hint="০ = কখনো নয়">
+          <TextInput
+            value={settings.session_timeout_minutes}
+            onChange={(v) => patch({ session_timeout_minutes: Math.max(0, Number(v.replace(/[^\d]/g, '')) || 0) })}
+          />
+        </Field>
+      </div>
+
+      <div className="row" style={{ justifyContent: 'flex-end', marginTop: 14 }}>
+        <Button variant="primary" loading={saving} icon="check" onClick={() => void save(settings)}>
+          সংরক্ষণ করুন
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+function NetworkForm({
+  settings,
+  patch,
+  save,
+  saving,
+}: {
+  settings: AppSettings;
+  patch: (p: Partial<AppSettings>) => void;
+  save: (p: Partial<AppSettings>) => Promise<void>;
+  saving: boolean;
+}) {
+  const ui = useUI();
+  const [status, setStatus] = useState<any>(null);
+  const [busy, setBusy] = useState(false);
+
+  const refresh = async () => {
+    try {
+      setStatus(await call<any>('lan.status'));
+    } catch {
+      setStatus(null);
+    }
+  };
+
+  useEffect(() => {
+    void refresh();
+  }, []);
+
+  const run = async (fn: () => Promise<unknown>, message: string) => {
+    setBusy(true);
+    try {
+      await fn();
+      ui.success(message);
+      await refresh();
+    } catch (err) {
+      ui.error('কাজটি ব্যর্থ হয়েছে', (err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="card-body">
+      <div className="section-title">মাল্টি-টার্মিনাল (LAN)</div>
+      <Banner tone="info">
+        একটি কম্পিউটার হোস্ট হিসেবে ডাটাবেস ধরে রাখে; অন্য কম্পিউটার টার্মিনাল হিসেবে একই দোকানের ডেটা ব্যবহার করে।
+        একই নেটওয়ার্কে থাকা আবশ্যক। বাইরের ইন্টারনেটে পোর্ট খুলবেন না।
+      </Banner>
+      <div className="form-grid" style={{ marginTop: 10 }}>
+        <Field label="মোড" hint="পরিবর্তনের পর অ্যাপ রিস্টার্ট করুন">
+          <Select
+            value={settings.lan_mode}
+            onChange={(v) => patch({ lan_mode: v as AppSettings['lan_mode'] })}
+            options={[
+              { value: 'off', label: 'বন্ধ (শুধু এই পিসি)' },
+              { value: 'host', label: 'হোস্ট (এই পিসি ডেটা রাখবে)' },
+              { value: 'terminal', label: 'টার্মিনাল (হোস্টে যুক্ত হবে)' },
+            ]}
+          />
+        </Field>
+        <Field label="পোর্ট">
+          <TextInput
+            value={settings.lan_port}
+            onChange={(v) => patch({ lan_port: Math.max(1024, Math.min(65535, Number(v.replace(/[^\d]/g, '')) || 8787)) })}
+          />
+        </Field>
+        <Field label="হোস্ট ঠিকানা" span={2} hint="যেমন: http://192.168.0.10:8787">
+          <TextInput value={settings.lan_host_url} onChange={(v) => patch({ lan_host_url: v.trim() })} />
+        </Field>
+      </div>
+      <div className="row" style={{ gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
+        <Button size="sm" loading={busy} icon="check" onClick={() => void save(settings)}>
+          সেটিংস সংরক্ষণ
+        </Button>
+        <Button size="sm" variant="ghost" icon="shield" onClick={() => void run(() => call('lan.startHost'), 'হোস্ট চালু হয়েছে')}>
+          হোস্ট চালু
+        </Button>
+        <Button size="sm" variant="ghost" icon="close" onClick={() => void run(() => call('lan.stopHost'), 'হোস্ট বন্ধ হয়েছে')}>
+          হোস্ট বন্ধ
+        </Button>
+        <Button
+          size="sm"
+          variant="ghost"
+          icon="refresh"
+          onClick={() => void run(() => call('lan.regenerateToken'), 'নতুন টোকেন তৈরি হয়েছে — সব টার্মিনাল আবার যুক্ত করুন')}
+        >
+          টোকেন নবায়ন
+        </Button>
+      </div>
+      {status ? (
+        <div className="small muted" style={{ marginTop: 10 }}>
+          মোড: {status.mode ?? '—'} • হোস্ট: {status.running ? 'চালু' : 'বন্ধ'}
+          {status.host_url ? ` • ${status.host_url}` : ''}
+          {typeof status.clients === 'number' ? ` • সংযুক্ত: ${status.clients}` : ''}
+        </div>
+      ) : null}
+
+      <div className="section-title" style={{ marginTop: 20 }}>
+        কাস্টমার ডিসপ্লে
+      </div>
+      <div className="form-grid">
+        <Field label="দ্বিতীয় স্ক্রিন চালু" span={2}>
+          <Switch
+            checked={settings.customer_display_enabled === 1}
+            onChange={(v) => patch({ customer_display_enabled: v ? 1 : 0 })}
+            label="কাস্টমার ডিসপ্লে"
+          />
+        </Field>
+        <Field label="গিফট কার্ডের মেয়াদ (দিন)" hint="০ = মেয়াদ নেই">
+          <TextInput
+            value={settings.gift_card_expiry_days}
+            onChange={(v) => patch({ gift_card_expiry_days: Math.max(0, Number(v.replace(/[^\d]/g, '')) || 0) })}
+          />
+        </Field>
+        <Field label="বিক্রয়ের পর">
+          <Switch checked={settings.print_after_sale === 1} onChange={(v) => patch({ print_after_sale: v ? 1 : 0 })} label="স্বয়ংক্রিয় প্রিন্ট" />
+        </Field>
+      </div>
+
+      <div className="row" style={{ gap: 8, marginTop: 12, flexWrap: 'wrap' }}>
+        <Button size="sm" icon="pos" onClick={() => void call('display.open').then(() => ui.success('ডিসপ্লে খোলা হয়েছে')).catch((e) => ui.error('ব্যর্থ', (e as Error).message))}>
+          ডিসপ্লে খুলুন
+        </Button>
+        <Button size="sm" variant="ghost" icon="close" onClick={() => void call('display.close').then(() => ui.success('ডিসপ্লে বন্ধ হয়েছে')).catch(() => undefined)}>
+          ডিসপ্লে বন্ধ
+        </Button>
+        <Button
+          size="sm"
+          variant="ghost"
+          icon="print"
+          onClick={() =>
+            void call('print.document', 'labels', { size: 'thermal' })
+              .then((html) => call('print.render', html, {}))
+              .then(() => ui.success('প্রিন্ট প্রিভিউ খোলা হয়েছে'))
+              .catch((e) => ui.error('প্রিন্ট ব্যর্থ', (e as Error).message))
+          }
+        >
+          প্রিন্টার পরীক্ষা
+        </Button>
+      </div>
+
+      <div className="row" style={{ justifyContent: 'flex-end', marginTop: 14 }}>
+        <Button variant="primary" loading={saving} icon="check" onClick={() => void save(settings)}>
+          সংরক্ষণ করুন
+        </Button>
+      </div>
+    </div>
+  );
+}
 
 function LicenseSection({ onChanged, isAdmin }: { onChanged: () => Promise<void>; isAdmin: boolean }) {
   const ui = useUI();

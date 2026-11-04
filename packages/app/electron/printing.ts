@@ -42,12 +42,14 @@ function tempHtmlFile(html: string): string {
 }
 
 export interface PrintOptions {
-  widthMm: number;
+  /** Thermal paper width. Omit for a normal A4/A5 page printer. */
+  widthMm?: number;
   deviceName?: string;
   /** Extra feed after the content, in millimetres. */
   feedMm?: number;
   /** Force a fixed page height (label sheets) instead of measuring content. */
   pageHeightMm?: number;
+  landscape?: boolean;
 }
 
 export interface PrintResult {
@@ -87,17 +89,28 @@ export async function printHtml(html: string, opts: PrintOptions): Promise<Print
       }
     }
 
+    // A4/A5 documents go through the system driver with normal margins; only
+    // thermal receipts use the measured continuous-roll page size.
+    const pageOptions = opts.widthMm
+      ? {
+          margins: { marginType: 'none' as const },
+          pageSize: {
+            width: Math.round(opts.widthMm * MM_TO_MICRON),
+            height: Math.round(heightMm * MM_TO_MICRON),
+          },
+        }
+      : {
+          margins: { marginType: 'default' as const },
+          pageSize: 'A4' as const,
+          landscape: opts.landscape ?? false,
+        };
     const result = await new Promise<{ success: boolean; reason?: string }>((resolve) => {
       win!.webContents.print(
         {
           silent: true,
           printBackground: false,
           deviceName: opts.deviceName,
-          margins: { marginType: 'none' },
-          pageSize: {
-            width: Math.round(opts.widthMm * MM_TO_MICRON),
-            height: Math.round(heightMm * MM_TO_MICRON),
-          },
+          ...pageOptions,
         },
         (success, failureReason) => resolve({ success, reason: failureReason }),
       );
@@ -123,7 +136,11 @@ export async function printHtml(html: string, opts: PrintOptions): Promise<Print
 }
 
 /** Render HTML to a PDF file (Chromium performs full Bangla text shaping). */
-export async function htmlToPdf(html: string, target: string): Promise<string> {
+export async function htmlToPdf(
+  html: string,
+  target: string,
+  opts: { landscape?: boolean } = {},
+): Promise<string> {
   const file = tempHtmlFile(html);
   let win: BrowserWindow | null = null;
   try {
@@ -132,7 +149,7 @@ export async function htmlToPdf(html: string, target: string): Promise<string> {
     const pdf = await win.webContents.printToPDF({
       printBackground: true,
       pageSize: 'A4',
-      landscape: true,
+      landscape: opts.landscape ?? true,
       margins: { top: 0.5, bottom: 0.5, left: 0.4, right: 0.4 },
     });
     fs.writeFileSync(target, pdf);

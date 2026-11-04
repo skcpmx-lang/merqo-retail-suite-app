@@ -17,6 +17,7 @@ import { insertPayment } from './payments.js';
 import { markSerialsSold } from './stock-ops.js';
 import { assertCreditLimit, customerPriceLevel, earnLoyaltyForSale, reverseLoyaltyForSale } from './crm.js';
 import { getSettings } from './settings.js';
+import { checkCoupon, checkGiftCard, consumeGiftCard, giftCardMethodId, recordCouponRedemption } from './promotions.js';
 import { productPriceBreakdown, type PriceLevel } from './products.js';
 
 export interface SaleLineInput {
@@ -59,6 +60,12 @@ export interface SaleInput {
   allowBelowMinPrice?: boolean;
   /** Set by an authorised user (pos.discount) to exceed a product's max discount. */
   allowDiscountOverride?: boolean;
+  /** Promotion code (percentage or fixed discount). */
+  couponCode?: string | null;
+  /** Stored-value card code used as a tender. */
+  giftCardCode?: string | null;
+  /** How much of the bill should be taken from the card (defaults to the rest). */
+  giftCardAmountPaisa?: number | null;
 }
 
 export interface SaleComputation {
@@ -68,6 +75,9 @@ export interface SaleComputation {
   total: number;
   costTotal: number;
   profit: number;
+  couponCode: string | null;
+  couponDiscount: number;
+  giftCardApplied: number;
   paid: number;
   due: number;
   change: number;
@@ -92,6 +102,10 @@ export interface SaleComputation {
  * cart preview and by `createSale` for the persisted document, so the numbers on
  * screen and the numbers in the database can never disagree.
  */
+function normalizeCoupon(code: string | null | undefined): string {
+  return String(code ?? '').trim().toUpperCase();
+}
+
 export function computeSale(
   db: Db,
   input: SaleInput,
@@ -188,7 +202,22 @@ export function computeSale(
       );
     }
   }
-  const taxable = subtotal - discount;
+  // Promotion code: validated against the basket *after* manual discounts, so a
+  // coupon can never be stacked into a negative bill.
+  let couponCode: string | null = null;
+  let couponDiscount = 0;
+  if (input.couponCode && normalizeCoupon(input.couponCode)) {
+    const probe = checkCoupon(db, {
+      code: input.couponCode,
+      subtotalPaisa: subtotal - discount,
+      customerId: input.customerId ?? null,
+    });
+    if (!probe.ok) throw new Error(probe.reason ?? 'কুপন ব্যবহার করা যাচ্ছে না।');
+    couponCode = probe.coupon!.code;
+    couponDiscount = probe.discountPaisa;
+  }
+
+  const taxable = subtotal - discount - couponDiscount;
   const taxPercent = input.taxPercentX100 ?? settings.vat_percent_x100 ?? 0;
   const tax = taxPercent > 0 ? percentOfPaisa(taxable, taxPercent) : 0;
   const total = taxable + tax;
@@ -202,7 +231,23 @@ export function computeSale(
   if (paid < 0) throw new Error('পরিশোধিত টাকার পরিমাণ ঋণাত্মক হতে পারবে না।');
   const change = paid > total ? paid - total : 0;
   const appliedPaid = paid - change;
-  const due = total - appliedPaid;
+
+  // Stored value settles whatever the cash tenders leave open.
+  let giftCardApplied = 0;
+  if (input.giftCardCode && normalizeCoupon(input.giftCardCode)) {
+    const open = total - appliedPaid;
+    if (open > 0) {
+      const probe = checkGiftCard(db, {
+        code: input.giftCardCode,
+        amountPaisa: input.giftCardAmountPaisa != null ? Math.min(input.giftCardAmountPaisa, open) : open,
+      });
+      if (!probe.ok) throw new Error(probe.reason ?? 'কার্ড ব্যবহার করা যাচ্ছে না।');
+      giftCardApplied = probe.usablePaisa;
+    }
+  }
+
+  const paidTotal = appliedPaid + giftCardApplied;
+  const due = total - paidTotal;
   const profit = taxable - costTotal;
 
   return {
@@ -212,7 +257,10 @@ export function computeSale(
     total,
     costTotal,
     profit,
-    paid: appliedPaid,
+    couponCode,
+    couponDiscount,
+    giftCardApplied,
+    paid: paidTotal,
     due,
     change,
     lines,
@@ -243,10 +291,13 @@ export function createSale(db: Db, input: SaleInput): CreateSaleResult {
 
   const payments = (input.payments ?? []).filter((p) => Math.round(p.amount) > 0);
   let effectivePayments = payments.map((p) => ({ ...p, amount: Math.round(p.amount) }));
-  if (!effectivePayments.length && computation.paid > 0) {
+  // The stored-value part of `paid` gets its own tender row below, so the cash
+  // fallback must only cover what the customer actually handed over.
+  const cashPaid = computation.paid - computation.giftCardApplied;
+  if (!effectivePayments.length && cashPaid > 0) {
     const methodId = input.defaultMethodId ?? settings.default_payment_method_id;
     if (!methodId) throw new Error('পেমেন্ট মেথড নির্বাচন করুন।');
-    effectivePayments = [{ methodId, amount: computation.paid }];
+    effectivePayments = [{ methodId, amount: cashPaid }];
   }
   // Fold the change into the last payment so recorded cash equals real cash.
   const paidSum = effectivePayments.reduce((s, p) => s + p.amount, 0);
@@ -270,8 +321,8 @@ export function createSale(db: Db, input: SaleInput): CreateSaleResult {
       .prepare(
         `INSERT INTO sales (invoice_no, customer_id, user_id, sale_date, subtotal_paisa, discount_paisa, tax_paisa,
            total_paisa, paid_paisa, due_paisa, change_paisa, cost_total_paisa, profit_paisa, status, note,
-           cash_session_id, created_at)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,'completed',?,?,?)`,
+           cash_session_id, coupon_code, coupon_discount_paisa, gift_card_paisa, created_at)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,'completed',?,?,?,?,?,?)`,
       )
       .run(
         invoiceNo,
@@ -279,7 +330,7 @@ export function createSale(db: Db, input: SaleInput): CreateSaleResult {
         input.actor.id,
         saleDate,
         computation.subtotal,
-        computation.discount,
+        computation.discount + computation.couponDiscount,
         computation.tax,
         computation.total,
         computation.paid,
@@ -289,6 +340,9 @@ export function createSale(db: Db, input: SaleInput): CreateSaleResult {
         computation.profit,
         input.note ? input.note : null,
         session?.id ?? null,
+        computation.couponCode,
+        computation.couponDiscount,
+        computation.giftCardApplied,
         nowLocal(),
       );
     const saleId = Number(res.lastInsertRowid);
@@ -359,6 +413,46 @@ export function createSale(db: Db, input: SaleInput): CreateSaleResult {
       );
     }
 
+    if (computation.couponCode && computation.couponDiscount > 0) {
+      const couponRow = db.prepare('SELECT id FROM coupons WHERE code = ?').get(computation.couponCode) as
+        | { id: number }
+        | undefined;
+      if (!couponRow) throw new Error('কুপনটি আর পাওয়া যাচ্ছে না।');
+      recordCouponRedemption(db, {
+        couponId: couponRow.id,
+        saleId,
+        customerId: input.customerId ?? null,
+        code: computation.couponCode,
+        discountPaisa: computation.couponDiscount,
+        userId: input.actor.id,
+      });
+    }
+
+    if (computation.giftCardApplied > 0 && input.giftCardCode) {
+      const methodId = giftCardMethodId(db);
+      if (!methodId) throw new Error('গিফট কার্ড পেমেন্ট মেথড পাওয়া যায়নি।');
+      consumeGiftCard(db, {
+        code: input.giftCardCode,
+        amountPaisa: computation.giftCardApplied,
+        saleId,
+        userId: input.actor.id,
+      });
+      insertPayment(db, {
+        kind: 'sale',
+        partyType: input.customerId ? 'customer' : 'none',
+        customerId: input.customerId ?? null,
+        saleId,
+        amount: computation.giftCardApplied,
+        methodId,
+        reference: normalizeCoupon(input.giftCardCode),
+        note: 'স্টোরড ভ্যালু',
+        userId: input.actor.id,
+        date: saleDate,
+        direction: 'in',
+        affectsBalance: false,
+      });
+    }
+
     for (const p of effectivePayments) {
       insertPayment(db, {
         kind: 'sale',
@@ -390,6 +484,9 @@ export function createSale(db: Db, input: SaleInput): CreateSaleResult {
         cost: computation.costTotal,
         profit: computation.profit,
         items: computation.lines.length,
+        coupon: computation.couponCode,
+        couponDiscount: computation.couponDiscount,
+        giftCard: computation.giftCardApplied,
       },
     });
     if (isPostingEnabled(db)) postSale(db, saleId);

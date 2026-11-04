@@ -189,10 +189,61 @@ import {
   type Permission,
   type ReportId,
   type User,
+  /* v1.1 */
+  createPurchaseOrder,
+  getPurchaseOrder,
+  getPurchaseOrderByNo,
+  listPurchaseOrders,
+  receivePurchaseOrder,
+  cancelPurchaseOrder,
+  purchaseOrderRemaining,
+  purchaseOrderSummary,
+  previewReceive,
+  createCoupon,
+  updateCoupon,
+  listCoupons,
+  checkCoupon,
+  couponRedemptions,
+  issueGiftCard,
+  listGiftCards,
+  checkGiftCard,
+  adjustGiftCard,
+  voidGiftCard,
+  giftCardSummary,
+  giftCardTransactions,
+  getGiftCardByCode,
+  expireGiftCards,
+  listNotifications,
+  unreadCount,
+  markNotificationRead,
+  markAllNotificationsRead,
+  businessAlerts,
+  syncAlertsToNotifications,
+  clockIn,
+  clockOut,
+  listAttendance,
+  openAttendance,
+  correctAttendance,
+  attendanceSummary,
+  buildReceiptHtml as buildReceiptDocument,
+  buildInvoiceHtml,
+  buildPurchaseDocumentHtml,
+  buildStatementHtml,
+  buildReportHtml,
+  buildLabelSheetHtml,
+  buildStockDocumentHtml,
+  buildLicenseDocumentHtml,
+  generateLanToken,
+  lanUrls,
+  startRpcHost,
+  type RpcHost,
+  type BrandInfo,
+  type DocFormat,
 } from '@sauda/core';
 import { appPaths, assertInside, readRecentLogs, writeLog } from './paths.js';
-import { buildReceiptHtml } from './receipt.js';
+import { receiptWidth } from '@sauda/core';
 import { printHtml, listPrinters, htmlToPdf } from './printing.js';
+import { lanStatus, startLanHost, stopLanHost, testLanConnection } from './lan.js';
 import { code128Svg, qrSvg } from './barcode.js';
 
 export interface AppContext {
@@ -200,6 +251,14 @@ export interface AppContext {
   user: User | null;
   openDb: () => Db;
   reopenDb: () => Db;
+  /**
+   * Runs another route through whichever transport this terminal uses (local in
+   * host mode, LAN in terminal mode). Print documents rely on it so they can be
+   * rendered on the machine that owns the printer.
+   */
+  fetch?: (method: string, args?: unknown[]) => Promise<{ ok: boolean; data?: unknown; error?: string; code?: string }>;
+  /** Customer-facing second window hooks (Electron only). */
+  display?: { push: (state: unknown) => void; open: () => void; close: () => void; isOpen: () => boolean };
 }
 
 type Handler = (ctx: AppContext, ...args: any[]) => any;
@@ -684,37 +743,110 @@ on(
   'any',
 );
 
-on('print.receiptHtml', async (ctx, saleId: number, opts: { duplicate?: boolean } = {}) => {
-  const sale = getSale(ctx.db, saleId);
-  if (!sale) throw new Error('ইনভয়েস পাওয়া যায়নি।');
-  const settings = getSettings(ctx.db);
-  let logoDataUrl: string | null = null;
-  if (settings.business_logo && fs.existsSync(settings.business_logo)) {
-    const ext = path.extname(settings.business_logo).slice(1).toLowerCase();
-    const mime = ext === 'jpg' ? 'jpeg' : ext;
-    logoDataUrl = `data:image/${mime};base64,${fs.readFileSync(settings.business_logo).toString('base64')}`;
-  }
-  return buildReceiptHtml({ sale, settings, logoDataUrl, duplicate: opts.duplicate });
-}, 'report.view');
+function receiptHtmlFor(sale: any, settings: AppSettings, opts: { duplicate?: boolean; barcodeSvg?: string | null } = {}): string {
+  const fmt = docFormat(settings);
+  const paid = (sale.payments ?? []).map((p: any) => ({
+    method_name: p.method_name ?? '—',
+    amount_paisa: p.amount_paisa,
+  }));
+  return buildReceiptDocument({
+    sale: {
+      invoice_no: sale.invoice_no,
+      sale_date: sale.sale_date,
+      cashier_name: sale.cashier_name ?? null,
+      customer_name: sale.customer_name ?? null,
+      subtotal_paisa: sale.subtotal_paisa,
+      discount_paisa: sale.discount_paisa,
+      coupon_discount_paisa: sale.coupon_discount_paisa ?? 0,
+      tax_paisa: sale.tax_paisa,
+      total_paisa: sale.total_paisa,
+      paid_paisa: sale.paid_paisa,
+      due_paisa: sale.due_paisa,
+      change_paisa: sale.change_paisa,
+      gift_card_paisa: sale.gift_card_paisa ?? 0,
+      loyalty_points_earned: sale.loyalty_points_earned ?? 0,
+      customer_points: sale.customer_points ?? null,
+      status: sale.status,
+      items: (sale.items ?? []).map((i: any) => ({
+        product_name: i.product_name,
+        qty_milli: i.qty_milli,
+        unit_short_name: i.unit_label,
+        unit_price_paisa: i.unit_price_paisa,
+        discount_paisa: i.discount_paisa,
+        line_total_paisa: i.line_total_paisa,
+      })),
+      payments: paid,
+    },
+    width: receiptWidth(settings),
+    fontSize: settings.receipt_font_size,
+    brand: {
+      name: settings.business_name || PRODUCT_NAME,
+      address: settings.business_address || undefined,
+      phone: settings.business_phone || undefined,
+      logoDataUrl: logoDataUrlFor(settings),
+      header: settings.receipt_header || undefined,
+      footer: settings.receipt_footer || undefined,
+      showLogo: settings.receipt_show_logo === 1,
+    },
+    fmt,
+    duplicate: opts.duplicate,
+    qrDataUrl: settings.receipt_show_qr === 1 ? qrSvg(`SAUDA:${sale.invoice_no}`, { sizePx: 220, margin: 1 }) : null,
+    barcodeSvgDataUrl: opts.barcodeSvg ?? null,
+  });
+}
+
+on(
+  'print.receiptHtml',
+  async (ctx, saleId: number, opts: { duplicate?: boolean } = {}) => {
+    const sale = await readVia<any>(ctx, 'sales.get', [saleId]);
+    if (!sale) throw new Error('ইনভয়েস পাওয়া যায়নি।');
+    return receiptHtmlFor(sale, getSettings(ctx.db), { duplicate: opts.duplicate });
+  },
+  'report.view',
+);
 
 on('print.printers', async () => listPrinters(), 'any');
 on(
   'print.print',
   async (ctx, saleId: number, opts: { deviceName?: string; duplicate?: boolean } = {}) => {
-    const sale = getSale(ctx.db, saleId);
-    if (!sale) throw new Error('ইনভয়েস পাওয়া যায়নি।');
     const settings = getSettings(ctx.db);
-    let logoDataUrl: string | null = null;
-    if (settings.business_logo && fs.existsSync(settings.business_logo)) {
-      const ext = path.extname(settings.business_logo).slice(1).toLowerCase();
-      logoDataUrl = `data:image/${ext === 'jpg' ? 'jpeg' : ext};base64,${fs.readFileSync(settings.business_logo).toString('base64')}`;
-    }
-    const html = buildReceiptHtml({ sale, settings, logoDataUrl, duplicate: opts.duplicate });
+    const sale = await readVia<any>(ctx, 'sales.get', [saleId]);
+    if (!sale) throw new Error('ইনভয়েস পাওয়া যায়নি।');
+    const html = receiptHtmlFor(sale, settings, { duplicate: opts.duplicate });
     const deviceName = opts.deviceName || settings.printer_name || undefined;
-    const result = await printHtml(html, { widthMm: settings.receipt_width, deviceName });
-    return result;
+    return printHtml(html, { widthMm: settings.receipt_width, deviceName });
   },
   'pos.sell',
+);
+
+/** Prints any HTML document (invoice, statement, report…) on a page printer. */
+on(
+  'print.render',
+  async (ctx, html: string, opts: { deviceName?: string; landscape?: boolean } = {}) => {
+    if (typeof html !== 'string' || !html.startsWith('<!doctype html')) {
+      throw new Error('প্রিন্ট ডকুমেন্ট সঠিক নয়।');
+    }
+    return printHtml(html, { deviceName: opts.deviceName, landscape: opts.landscape });
+  },
+  'report.view',
+);
+
+/** Opens the same document in the OS PDF dialog (A4 by default). */
+on(
+  'print.pdf',
+  async (_ctx, html: string, opts: { landscape?: boolean; defaultName?: string } = {}) => {
+    if (typeof html !== 'string' || !html.startsWith('<!doctype html')) {
+      throw new Error('প্রিন্ট ডকুমেন্ট সঠিক নয়।');
+    }
+    const res = await dialog.showSaveDialog({
+      title: 'PDF হিসেবে সংরক্ষণ করুন',
+      defaultPath: path.join(app.getPath('documents'), `${opts.defaultName ?? 'sauda-document'}.pdf`),
+      filters: [{ name: 'PDF', extensions: ['pdf'] }],
+    });
+    if (res.canceled || !res.filePath) return null;
+    return htmlToPdf(html, res.filePath, { landscape: opts.landscape });
+  },
+  'report.view',
 );
 
 /* ------------------------------------------------------------------ */
@@ -1374,6 +1506,613 @@ function reportHtml(report: any, settings: AppSettings): string {
   <p class="sub" style="margin-top:10px">${esc(PRODUCT_NAME)} v${PRODUCT_VERSION} দ্বারা তৈরি রিপোর্ট।</p>
   </body></html>`;
 }
+
+
+/* ------------------------------------------------------------------ */
+/* v1.1 helpers: documents, transport, branding                       */
+/* ------------------------------------------------------------------ */
+
+function docFormat(settings: AppSettings): DocFormat {
+  return {
+    currency: settings.currency_symbol || '৳',
+    bengaliDigits: (settings.bengali_digits === 1 ? 1 : 0) as 0 | 1,
+  };
+}
+
+function logoDataUrlFor(settings: AppSettings): string | null {
+  const file = settings.business_logo;
+  if (!file || !fs.existsSync(file)) return null;
+  const ext = path.extname(file).slice(1).toLowerCase();
+  const mime = ext === 'jpg' ? 'jpeg' : ext === 'png' || ext === 'webp' || ext === 'jpeg' ? ext : 'png';
+  try {
+    return `data:image/${mime};base64,${fs.readFileSync(file).toString('base64')}`;
+  } catch {
+    return null;
+  }
+}
+
+function brandFor(settings: AppSettings): BrandInfo {
+  return {
+    name: settings.business_name || PRODUCT_NAME,
+    address: [settings.business_address, settings.business_type].filter(Boolean).join(' • '),
+    phone: settings.business_phone || undefined,
+    email: settings.business_email || undefined,
+    website: settings.business_website || undefined,
+    logoDataUrl: logoDataUrlFor(settings),
+    footer: settings.receipt_footer || undefined,
+    documentFooter: settings.document_footer || undefined,
+  };
+}
+
+/** Reads data through the active transport (local DB or LAN host). */
+async function readVia<T>(ctx: AppContext, method: string, args: unknown[] = []): Promise<T> {
+  if (!ctx.fetch) throw new Error('ডেটা সংযোগ তৈরি হয়নি — অ্যাপ্লিকেশন আবার চালু করুন।');
+  const res = await ctx.fetch(method, args);
+  if (!res.ok) {
+    const err = new Error(res.error || 'ডেটা আনা যায়নি') as Error & { code?: string };
+    err.code = res.code;
+    throw err;
+  }
+  return res.data as T;
+}
+
+function formatReportCell(column: any, value: any, fmt: DocFormat): string {
+  if (value === null || value === undefined || value === '') return '';
+  switch (column?.format) {
+    case 'money':
+      return formatPaisa(Number(value)).replace(/^৳\s?/, '');
+    case 'qty':
+      return String(Number(value) / 1000);
+    case 'percent':
+      return `${(Number(value) / 100).toFixed(2)}%`;
+    case 'date':
+      return String(value).slice(0, 10);
+    default:
+      return escapeHtml(String(value));
+  }
+}
+
+
+/* ------------------------------------------------------------------ */
+/* v1.1 — Purchase orders                                             */
+/* ------------------------------------------------------------------ */
+
+on('purchases.poList', (ctx, filter) => listPurchaseOrders(ctx.db, filter ?? {}), 'purchase.manage');
+on('purchases.poGet', (ctx, id: number) => getPurchaseOrder(ctx.db, id), 'purchase.manage');
+on('purchases.poByNo', (ctx, no: string) => getPurchaseOrderByNo(ctx.db, no), 'purchase.manage');
+on('purchases.poSummary', (ctx) => purchaseOrderSummary(ctx.db), 'purchase.manage');
+on(
+  'purchases.poCreate',
+  (ctx, input) => createPurchaseOrder(ctx.db, { ...input, actor: { id: ctx.user!.id, username: ctx.user!.username } }),
+  'purchase.manage',
+);
+on(
+  'purchases.poReceive',
+  (ctx, input) =>
+    receivePurchaseOrder(ctx.db, { ...input, actor: { id: ctx.user!.id, username: ctx.user!.username } }),
+  'purchase.manage',
+);
+on('purchases.poPreview', (ctx, input) => previewReceive(ctx.db, input), 'purchase.manage');
+on(
+  'purchases.poCancel',
+  (ctx, id: number, reason: string) =>
+    cancelPurchaseOrder(ctx.db, id, reason, { id: ctx.user!.id, username: ctx.user!.username }),
+  'purchase.manage',
+);
+on('purchases.poRemaining', (ctx, id: number) => purchaseOrderRemaining(ctx.db, id), 'purchase.manage');
+
+/* ------------------------------------------------------------------ */
+/* v1.1 — Promotions: coupons, vouchers, gift cards                   */
+/* ------------------------------------------------------------------ */
+
+on('promotions.coupons', (ctx, filter) => listCoupons(ctx.db, filter ?? {}), 'pos.discount');
+on(
+  'promotions.couponCreate',
+  (ctx, input) => createCoupon(ctx.db, input, { id: ctx.user!.id, username: ctx.user!.username }),
+  'pos.discount',
+);
+on(
+  'promotions.couponUpdate',
+  (ctx, id: number, patch) => updateCoupon(ctx.db, id, patch, { id: ctx.user!.id, username: ctx.user!.username }),
+  'pos.discount',
+);
+on('promotions.couponCheck', (ctx, input) => checkCoupon(ctx.db, input), 'pos.sell');
+on('promotions.couponRedemptions', (ctx, id: number) => couponRedemptions(ctx.db, id), 'pos.discount');
+
+on('promotions.giftCards', (ctx, filter) => listGiftCards(ctx.db, filter ?? {}), 'pos.discount');
+on('promotions.giftCardCheck', (ctx, input) => checkGiftCard(ctx.db, input), 'pos.sell');
+on('promotions.giftCardByCode', (ctx, code: string) => getGiftCardByCode(ctx.db, code), 'pos.sell');
+on('promotions.giftCardTransactions', (ctx, id: number) => giftCardTransactions(ctx.db, id), 'pos.discount');
+on('promotions.giftCardSummary', (ctx) => giftCardSummary(ctx.db), 'report.view');
+on(
+  'promotions.giftCardIssue',
+  (ctx, input) => issueGiftCard(ctx.db, input, { id: ctx.user!.id, username: ctx.user!.username }),
+  'settings.manage',
+);
+on(
+  'promotions.giftCardAdjust',
+  (ctx, input) =>
+    adjustGiftCard(ctx.db, { ...input, userId: ctx.user!.id }),
+  'settings.manage',
+);
+on(
+  'promotions.giftCardVoid',
+  (ctx, id: number, reason: string) =>
+    voidGiftCard(ctx.db, { cardId: id, reason, actor: { id: ctx.user!.id, username: ctx.user!.username } }),
+  'settings.manage',
+);
+on('promotions.giftCardExpireRun', (ctx) => expireGiftCards(ctx.db), 'settings.manage');
+
+/* ------------------------------------------------------------------ */
+/* v1.1 — Notifications & alerts                                      */
+/* ------------------------------------------------------------------ */
+
+on('notifications.list', (ctx, opts) => listNotifications(ctx.db, opts ?? {}), 'any');
+on('notifications.unread', (ctx) => unreadCount(ctx.db), 'any');
+on('notifications.markRead', (ctx, id: number) => {
+  markNotificationRead(ctx.db, id);
+  return true;
+}, 'any');
+on('notifications.markAllRead', (ctx) => {
+  markAllNotificationsRead(ctx.db);
+  return true;
+}, 'any');
+on('notifications.alerts', (ctx) => businessAlerts(ctx.db), 'report.view');
+on('notifications.sync', (ctx) => syncAlertsToNotifications(ctx.db), 'report.view');
+
+/* ------------------------------------------------------------------ */
+/* v1.1 — Attendance                                                  */
+/* ------------------------------------------------------------------ */
+
+on('attendance.list', (ctx, filter) => listAttendance(ctx.db, filter ?? {}), 'report.view');
+on('attendance.open', (ctx) => openAttendance(ctx.db), 'any');
+on('attendance.summary', (ctx, date?: string) => attendanceSummary(ctx.db, date), 'report.view');
+on(
+  'attendance.clockIn',
+  (ctx, input) => clockIn(ctx.db, { ...(input ?? {}), actor: { id: ctx.user!.id, username: ctx.user!.username } }),
+  'any',
+);
+on(
+  'attendance.clockOut',
+  (ctx, input) => clockOut(ctx.db, { ...(input ?? {}), actor: { id: ctx.user!.id, username: ctx.user!.username } }),
+  'any',
+);
+on(
+  'attendance.correct',
+  (ctx, input) => correctAttendance(ctx.db, { ...input, actor: { id: ctx.user!.id, username: ctx.user!.username } }),
+  'user.manage',
+);
+
+/* ------------------------------------------------------------------ */
+/* v1.1 — Branding                                                    */
+/* ------------------------------------------------------------------ */
+
+on(
+  'settings.logoDataUrl',
+  (ctx) => logoDataUrlFor(getSettings(ctx.db)),
+  'any',
+);
+on(
+  'settings.pickLogo',
+  async () => {
+    const res = await dialog.showOpenDialog({
+      title: 'ব্যবসার লোগো নির্বাচন করুন',
+      filters: [{ name: 'ছবি', extensions: ['png', 'jpg', 'jpeg', 'webp'] }],
+      properties: ['openFile'],
+    });
+    if (res.canceled || !res.filePaths[0]) return null;
+    const src = res.filePaths[0];
+    const ext = path.extname(src).slice(1).toLowerCase();
+    if (!['png', 'jpg', 'jpeg', 'webp'].includes(ext)) throw new Error('শুধুমাত্র PNG, JPG বা WebP ছবি চলবে।');
+    if (fs.statSync(src).size > 2 * 1024 * 1024) throw new Error('লোগোর আকার ২ মেগাবাইটের কম হতে হবে।');
+    const target = path.join(appPaths().dataDir, `logo-${Date.now()}.${ext}`);
+    fs.copyFileSync(src, target);
+    return target;
+  },
+  'settings.manage',
+);
+
+/* ------------------------------------------------------------------ */
+/* v1.1 — Print documents (rendered on the machine that prints)        */
+/* ------------------------------------------------------------------ */
+
+on(
+  'print.document',
+  async (ctx, kind: string, params: any) => {
+    const settings = getSettings(ctx.db);
+    const fmt = docFormat(settings);
+    const brand = brandFor(settings);
+    switch (kind) {
+      case 'invoice': {
+        const sale = await readVia<any>(ctx, 'sales.get', [params.saleId]);
+        if (!sale) throw new Error('ইনভয়েস পাওয়া যায়নি।');
+        const html = buildInvoiceHtml({
+          doc: {
+            number: sale.invoice_no,
+            date: sale.sale_date,
+            status: sale.status,
+            party: {
+              title: 'কাস্টমার',
+              name: sale.customer_name ?? 'ওয়াক-ইন কাস্টমার',
+              phone: sale.customer_phone ?? null,
+              address: sale.customer_address ?? null,
+            },
+            lines: (sale.items ?? []).map((i: any) => ({
+              name: i.product_name,
+              sku: i.sku ?? null,
+              unit: i.unit_label,
+              qtyMilli: i.qty_milli,
+              unitPricePaisa: i.unit_price_paisa,
+              discountPaisa: i.discount_paisa,
+              totalPaisa: i.line_total_paisa,
+            })),
+            subtotalPaisa: sale.subtotal_paisa,
+            discountPaisa: sale.discount_paisa,
+            couponCode: sale.coupon_code ?? null,
+            couponDiscountPaisa: sale.coupon_discount_paisa ?? 0,
+            taxPaisa: sale.tax_paisa,
+            totalPaisa: sale.total_paisa,
+            paidPaisa: sale.paid_paisa,
+            duePaisa: sale.due_paisa,
+            changePaisa: sale.change_paisa,
+            cashier: sale.cashier_name ?? null,
+            note: sale.note ?? null,
+            payments: (sale.payments ?? []).map((p: any) => ({ method: p.method_name ?? '—', amountPaisa: p.amount_paisa })),
+          },
+          brand,
+          fmt,
+          copyOf: params.copyOf ?? null,
+        });
+        return html;
+      }
+      case 'purchase':
+      case 'po': {
+        const doc =
+          kind === 'po'
+            ? await readVia<any>(ctx, 'purchases.poGet', [params.poId])
+            : await readVia<any>(ctx, 'purchases.get', [params.purchaseId]);
+        if (!doc) throw new Error('ডকুমেন্ট পাওয়া যায়নি।');
+        const lines =
+          kind === 'po'
+            ? (doc.items ?? []).map((i: any) => ({
+                name: i.product_name,
+                sku: i.sku ?? null,
+                unit: i.unit_label,
+                qtyMilli: i.qty_milli,
+                unitPricePaisa: i.unit_cost_paisa,
+                totalPaisa: i.line_total_paisa,
+              }))
+            : (doc.items ?? []).map((i: any) => ({
+                name: i.product_name,
+                sku: i.sku ?? null,
+                unit: i.unit_label,
+                qtyMilli: i.qty_milli,
+                unitPricePaisa: i.unit_price_paisa,
+                discountPaisa: i.discount_paisa,
+                totalPaisa: i.line_total_paisa,
+              }));
+        return buildPurchaseDocumentHtml({
+          doc: {
+            number: kind === 'po' ? doc.po_no : doc.purchase_no,
+            date: kind === 'po' ? doc.order_date : doc.purchase_date,
+            expectedDate: kind === 'po' ? doc.expected_date : null,
+            status: kind === 'po' ? doc.status : null,
+            receivedPercent: kind === 'po' ? doc.received_percent : null,
+            supplier: {
+              title: 'সাপ্লায়ার',
+              name: doc.supplier_name ?? '—',
+              phone: doc.supplier_phone ?? null,
+              address: doc.supplier_address ?? null,
+            },
+            lines,
+            subtotalPaisa: doc.subtotal_paisa,
+            discountPaisa: doc.discount_paisa,
+            taxPaisa: doc.tax_paisa ?? 0,
+            otherCostPaisa: doc.other_cost_paisa ?? 0,
+            totalPaisa: doc.total_paisa,
+            paidPaisa: doc.paid_paisa ?? 0,
+            duePaisa: doc.due_paisa ?? 0,
+            note: doc.note ?? null,
+          },
+          brand,
+          fmt,
+          kind: kind === 'po' ? 'po' : 'purchase',
+        });
+      }
+      case 'statement': {
+        const isCustomer = params.party === 'customer';
+        const st = await readVia<any>(ctx, isCustomer ? 'customers.statement' : 'suppliers.statement', [
+          params.partyId,
+          params.from,
+          params.to,
+        ]);
+        return buildStatementHtml({
+          title: isCustomer ? 'কাস্টমার স্টেটমেন্ট' : 'সাপ্লায়ার স্টেটমেন্ট',
+          partyName: isCustomer ? st.customer?.name ?? '—' : st.supplier?.name ?? '—',
+          partyMeta: [
+            isCustomer ? st.customer?.phone : st.supplier?.phone,
+            isCustomer ? st.customer?.address : st.supplier?.address,
+          ],
+          from: params.from ?? st.from ?? '',
+          to: params.to ?? st.to ?? '',
+          openingPaisa: st.opening_balance ?? 0,
+          closingPaisa: st.closing_balance ?? 0,
+          rows: (st.rows ?? []).map((r: any) => ({
+            date: r.date,
+            ref: r.reference,
+            description: r.description,
+            debitPaisa: r.debit,
+            creditPaisa: r.credit,
+            balancePaisa: r.balance,
+          })),
+          brand,
+          fmt,
+        });
+      }
+      case 'report': {
+        const report = runReport(ctx.db, params.id as ReportId, params.filter ?? {});
+        const columns = (report.columns ?? []).map((c: any) => ({
+          label: c.label,
+          align: c.align ?? 'left',
+          width: c.width ? `${c.width}px` : undefined,
+        }));
+        const rows = (report.rows ?? []).map((row: any) =>
+          (report.columns ?? []).map((c: any) => formatReportCell(c, row[c.key], fmt)),
+        );
+        const totals = report.totals && Object.keys(report.totals).length
+          ? (report.columns ?? []).map((c: any, i: number) =>
+              i === 0 ? 'মোট' : report.totals[c.key] !== undefined ? formatReportCell(c, report.totals[c.key], fmt) : '',
+            )
+          : null;
+        return buildReportHtml({
+          title: report.title,
+          subtitle: report.subtitle,
+          columns,
+          rows,
+          totals,
+          brand,
+          landscape: columns.length > 6,
+        });
+      }
+      case 'transfer': {
+        const doc = await readVia<any>(ctx, 'stock.transferItems', [params.transferId]);
+        return buildStockDocumentHtml({
+          kind: 'transfer',
+          title: 'স্টক ট্রান্সফার',
+          number: doc?.transfer?.transfer_no ?? String(params.transferId),
+          date: doc?.transfer?.created_at ?? '',
+          fromLocation: doc?.transfer?.from_location_name,
+          toLocation: doc?.transfer?.to_location_name,
+          lines: (doc?.items ?? []).map((i: any) => ({
+            name: i.product_name,
+            sku: i.sku,
+            sentMilli: i.qty_base_milli,
+            unit: i.unit_label,
+          })),
+          brand,
+          fmt,
+          note: doc?.transfer?.note ?? null,
+        });
+      }
+      case 'count': {
+        const items = await readVia<any[]>(ctx, 'stock.countItems', [params.countId]);
+        const count = (items?.[0] as any)?.count ?? null;
+        return buildStockDocumentHtml({
+          kind: 'count',
+          title: 'ফিজিক্যাল স্টক কাউন্ট',
+          number: count?.count_no ?? String(params.countId),
+          date: count?.created_at ?? '',
+          lines: (items ?? []).map((i: any) => ({
+            name: i.product_name,
+            sku: i.sku,
+            countedMilli: i.counted_base_milli,
+            diffMilli: (i.counted_base_milli ?? 0) - (i.system_base_milli ?? 0),
+            unit: i.unit_label,
+          })),
+          brand,
+          fmt,
+          note: count?.note ?? null,
+        });
+      }
+      case 'valuation': {
+        const rows = await readVia<any>(ctx, 'inventory.stockValue', []);
+        return buildStockDocumentHtml({
+          kind: 'valuation',
+          title: 'স্টক মূল্যায়ন',
+          number: `VAL-${new Date().toISOString().slice(0, 10)}`,
+          date: new Date().toISOString().slice(0, 10),
+          lines: (rows?.rows ?? rows ?? []).map((r: any) => ({
+            name: r.name ?? r.product_name,
+            sku: r.sku,
+            valuePaisa: r.value_paisa ?? r.stock_value_paisa ?? 0,
+          })),
+          brand,
+          fmt,
+          totalValuePaisa: rows?.total_paisa ?? null,
+        });
+      }
+      case 'labels': {
+        const labels = listProductLabels(ctx.db, params.productIds ?? []);
+        const copies = Math.min(50, Math.max(1, Number(params.copies ?? 1)));
+        const expanded: any[] = [];
+        for (const label of labels) {
+          for (let i = 0; i < copies; i++) {
+            expanded.push({
+              name: label.name,
+              code: label.code ?? '',
+              sku: label.unit ?? null,
+              priceText: formatPaisa(label.price_paisa),
+            });
+          }
+        }
+        return buildLabelSheetHtml({
+          labels: expanded,
+          barcodeSvg: (code) => `data:image/svg+xml;base64,${Buffer.from(code128Svg(code, { height: 34, moduleWidth: 1.25, margin: 2 })).toString('base64')}`,
+          size: params.size ?? 'a4',
+          columns: params.columns,
+        });
+      }
+      case 'license': {
+        const state = getActivationState(ctx.db);
+        const payload = state.license;
+        if (!payload) throw new Error('সক্রিয় লাইসেন্স নেই।');
+        return buildLicenseDocumentHtml({
+          org: payload.org,
+          licenseId: payload.license_id,
+          edition: payload.edition,
+          issuedAt: payload.issued_at,
+          expiresAt: payload.expires_at,
+          maxDevices: payload.max_devices,
+          features: payload.features ?? [],
+          fingerprint: payload.fingerprint,
+          keyId: ctx.db
+            ? ((ctx.db.prepare("SELECT value FROM meta WHERE key = 'license_key_id'").get() as { value?: string } | undefined)
+                ?.value ?? '—')
+            : '—',
+          brand,
+          version: PRODUCT_VERSION,
+        });
+      }
+      default:
+        throw new Error(`অজানা ডকুমেন্ট: ${kind}`);
+    }
+  },
+  'report.view',
+);
+
+/* ------------------------------------------------------------------ */
+/* v1.1 — LAN multi-terminal                                          */
+/* ------------------------------------------------------------------ */
+
+on('lan.status', (ctx) => lanStatus(getSettings(ctx.db)), 'settings.manage');
+on(
+  'lan.startHost',
+  async (ctx, opts: { port?: number } = {}) => {
+    const settings = getSettings(ctx.db);
+    const token = settings.lan_token || generateLanToken();
+    if (!settings.lan_token) updateSettings(ctx.db, { lan_token: token }, null);
+    const host = await startLanHost({
+      getDb: () => ctx.openDb(),
+      port: opts.port ?? settings.lan_port ?? 4747,
+      token,
+      authenticate: async (username, password) => {
+        const result = login(ctx.openDb(), username, password);
+        return {
+          id: result.user.id,
+          username: result.user.username,
+          full_name: result.user.full_name,
+          role: result.user.role,
+          permissions: result.user.permissions ?? [],
+        };
+      },
+      invoke: async (method, args, user) => {
+        // A LAN request runs against a *fresh* context so it can never disturb
+        // the operator sitting at the host machine.
+        const lanCtx: AppContext = {
+          ...ctx,
+          user: user
+            ? ({
+                id: user.id,
+                username: user.username,
+                full_name: user.full_name,
+                role: user.role,
+                permissions: user.permissions,
+              } as unknown as User)
+            : null,
+        };
+        return invokeRoute(lanCtx, method, args);
+      },
+      version: PRODUCT_VERSION,
+      businessName: () => getSettings(ctx.openDb()).business_name || PRODUCT_NAME,
+    });
+    updateSettings(ctx.db, { lan_mode: 'host', lan_port: host.port }, null);
+    return { port: host.port, urls: lanUrls(host.port), token };
+  },
+  'settings.manage',
+);
+on('lan.stopHost', async () => {
+  await stopLanHost();
+  return true;
+}, 'settings.manage');
+on(
+  'lan.configureTerminal',
+  async (ctx, input: { hostUrl: string; token: string }) => {
+    const url = String(input.hostUrl ?? '').trim();
+    if (!/^https?:\/\/[^\s]+$/.test(url)) throw new Error('সার্ভারের ঠিকানা সঠিক নয় (যেমন http://192.168.0.10:4747)।');
+    if (String(input.token ?? '').length < 32) throw new Error('LAN টোকেন সঠিক নয়।');
+    updateSettings(ctx.db, { lan_mode: 'terminal', lan_host_url: url, lan_token: input.token }, null);
+    return { ok: true };
+  },
+  'settings.manage',
+);
+on(
+  'lan.test',
+  async (ctx, input?: { hostUrl?: string; token?: string }) => {
+    const settings = getSettings(ctx.db);
+    const url = input?.hostUrl || settings.lan_host_url;
+    const token = input?.token || settings.lan_token;
+    if (!url || !token) return { ok: false, error: 'ঠিকানা বা টোকেন দেওয়া নেই।' };
+    return testLanConnection(url, token);
+  },
+  'settings.manage',
+);
+on(
+  'lan.modeOff',
+  async (ctx) => {
+    await stopLanHost();
+    updateSettings(ctx.db, { lan_mode: 'off' }, null);
+    return true;
+  },
+  'settings.manage',
+);
+on(
+  'lan.regenerateToken',
+  (ctx) => {
+    const token = generateLanToken();
+    updateSettings(ctx.db, { lan_token: token }, null);
+    return token;
+  },
+  'settings.manage',
+);
+
+/* ------------------------------------------------------------------ */
+/* v1.1 — Customer display                                            */
+/* ------------------------------------------------------------------ */
+
+on('display.open', (ctx) => {
+  ctx.display?.open();
+  return ctx.display?.isOpen() ?? false;
+}, 'pos.sell');
+on('display.close', (ctx) => {
+  ctx.display?.close();
+  return true;
+}, 'pos.sell');
+on('display.push', (ctx, state) => {
+  ctx.display?.push(state);
+  return true;
+}, 'pos.sell');
+on('display.status', (ctx) => ({ open: ctx.display?.isOpen() ?? false }), 'pos.sell');
+
+/* ------------------------------------------------------------------ */
+/* v1.1 — Session bootstrap (software lock can be disabled)           */
+/* ------------------------------------------------------------------ */
+
+on(
+  'auth.bootstrap',
+  (ctx) => {
+    const settings = getSettings(ctx.db);
+    if (ctx.user) return ctx.user;
+    if (settings.login_lock_enabled === 1) return null;
+    const admin = ctx.db
+      .prepare("SELECT * FROM users WHERE role = 'admin' AND is_active = 1 ORDER BY id LIMIT 1")
+      .get() as User | undefined;
+    if (!admin) return null;
+    ctx.user = admin;
+    return admin;
+  },
+  'any',
+  true,
+);
 
 /* ------------------------------------------------------------------ */
 /* Dispatcher                                                         */

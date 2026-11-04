@@ -36,6 +36,9 @@ export interface SetupInput {
   receiptWidth?: 58 | 80;
   invoicePrefix?: string;
   currencySymbol?: string;
+  /** Optional software lock — the owner can run a single-user till without it. */
+  loginLockEnabled?: boolean;
+  language?: 'bn' | 'en';
 }
 
 /** First-run wizard: creates the admin account and the shop profile. */
@@ -69,6 +72,8 @@ export function initializeApp(db: Db, input: SetupInput): { userId: number } {
         currency_symbol: input.currencySymbol || settings.currency_symbol,
         default_payment_method_id: cash?.id ?? null,
         default_unit_id: piece?.id ?? null,
+        login_lock_enabled: input.loginLockEnabled === false ? 0 : 1,
+        language: input.language === 'en' ? 'en' : 'bn',
       },
       { id: user.id, username: user.username },
     );

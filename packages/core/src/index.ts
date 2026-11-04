@@ -15,6 +15,10 @@ export * from './services/catalog.js';
 export * from './services/inventory.js';
 export * from './services/stock-ops.js';
 export * from './services/pos.js';
+export * from './services/promotions.js';
+export * from './services/purchase-orders.js';
+export * from './services/notifications.js';
+export * from './services/attendance.js';
 export * from './services/crm.js';
 export * from './services/products.js';
 export * from './services/customers.js';
@@ -42,3 +46,5 @@ export * from './licensing/issue.js';
 export * from './licensing/store.js';
 
 export * from './export/tabular.js';
+export * from './print/index.js';
+export * from './net/index.js';

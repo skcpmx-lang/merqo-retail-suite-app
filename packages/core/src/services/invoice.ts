@@ -3,7 +3,7 @@ import { nextCounter } from '../db/connection.js';
 import { nowLocal } from '../domain/datetime.js';
 import type { AppSettings } from '../domain/types.js';
 
-export type DocumentKind = 'sale' | 'purchase' | 'return' | 'return_purchase';
+export type DocumentKind = 'sale' | 'purchase' | 'return' | 'return_purchase' | 'po';
 
 export interface NumberContext {
   prefix: string;
@@ -36,6 +36,13 @@ function contextFor(settings: AppSettings, kind: DocumentKind): NumberContext {
         format: settings.invoice_format,
         table: 'returns',
         column: 'return_no',
+      };
+    case 'po':
+      return {
+        prefix: `${settings.purchase_prefix || 'PUR'}-PO`,
+        format: settings.invoice_format,
+        table: 'purchase_orders',
+        column: 'po_no',
       };
   }
 }

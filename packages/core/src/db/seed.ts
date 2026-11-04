@@ -56,6 +56,19 @@ export const DEFAULT_SETTINGS: AppSettings = {
   duplicate_sale_guard_seconds: 30,
   tax_register_enabled: 0,
   accounting_enabled: 1,
+  // v1.1
+  business_website: '',
+  business_type: '',
+  document_footer: '',
+  language: 'bn',
+  login_lock_enabled: 1,
+  customer_display_enabled: 0,
+  gift_card_expiry_days: 0,
+  lan_mode: 'off',
+  lan_port: 4747,
+  lan_token: '',
+  lan_host_url: '',
+  receipt_show_qr: 1,
 };
 
 interface UnitSeed {

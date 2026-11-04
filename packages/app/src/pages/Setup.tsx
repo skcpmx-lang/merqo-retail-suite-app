@@ -17,6 +17,8 @@ export function SetupPage({ onDone }: { onDone: () => void }) {
     receiptWidth: '80',
     invoicePrefix: 'INV',
     currencySymbol: '৳',
+    loginLockEnabled: true,
+    language: 'bn' as 'bn' | 'en',
   });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -58,6 +60,8 @@ export function SetupPage({ onDone }: { onDone: () => void }) {
         receiptWidth: Number(form.receiptWidth) as 58 | 80,
         invoicePrefix: form.invoicePrefix,
         currencySymbol: form.currencySymbol,
+        loginLockEnabled: form.loginLockEnabled,
+        language: form.language,
       });
       onDone();
     } catch (err) {
@@ -134,9 +138,31 @@ export function SetupPage({ onDone }: { onDone: () => void }) {
             <Field label="পাসওয়ার্ড আবার লিখুন *" span={2}>
               <TextInput type="password" value={form.adminPassword2} onChange={(v) => set({ adminPassword2: v })} />
             </Field>
+            <Field label="সফটওয়্যার লক" span={2} hint="একক ব্যবহারকারীর দোকানে বন্ধ রাখতে পারেন — পরে সেটিংস থেকে চালু করা যাবে">
+              <div className="seg-toggle" role="group" aria-label="সফটওয়্যার লক">
+                <button className={form.loginLockEnabled ? 'on' : ''} onClick={() => set({ loginLockEnabled: true })}>
+                  পাসওয়ার্ড চাইব
+                </button>
+                <button className={!form.loginLockEnabled ? 'on' : ''} onClick={() => set({ loginLockEnabled: false })}>
+                  লক বন্ধ
+                </button>
+              </div>
+            </Field>
+            <Field label="ভাষা" span={2}>
+              <div className="seg-toggle" role="group" aria-label="ভাষা">
+                <button className={form.language === 'bn' ? 'on' : ''} onClick={() => set({ language: 'bn' })}>
+                  বাংলা
+                </button>
+                <button className={form.language === 'en' ? 'on' : ''} onClick={() => set({ language: 'en' })}>
+                  English
+                </button>
+              </div>
+            </Field>
             <div className="span-2">
               <Banner tone="info" icon="shield">
-                অ্যাডমিন সব ধরনের কাজ করতে পারবেন। পরে সেটিংস থেকে ক্যাশিয়ার অ্যাকাউন্ট তৈরি করা যাবে।
+                {form.loginLockEnabled
+                  ? 'অ্যাডমিন সব ধরনের কাজ করতে পারবেন। পরে সেটিংস থেকে ক্যাশিয়ার অ্যাকাউন্ট তৈরি করা যাবে।'
+                  : 'লক বন্ধ থাকলেও অ্যাডমিন পাসওয়ার্ড সংরক্ষিত থাকবে — পরে লক চালু করলেই কাজে লাগবে। অনুমতি ও লাইসেন্স অপরিবর্তিত থাকবে।'}
               </Banner>
             </div>
           </div>
