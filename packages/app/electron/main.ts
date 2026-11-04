@@ -1,6 +1,7 @@
 import { app, BrowserWindow, ipcMain, Menu, session, shell, dialog } from 'electron';
 import path from 'node:path';
 import fs from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import {
   closeDatabase,
   getMeta,
@@ -110,6 +111,72 @@ function bootstrapTransport(): void {
   };
 }
 
+/* ------------------------------------------------------------------ */
+/* Trust boundary                                                      */
+/* ------------------------------------------------------------------ */
+
+/** The only document(s) allowed to call the bridge: our own bundled renderer. */
+const rendererIndexPath = path.join(__dirname, '../renderer/index.html');
+
+function normaliseFsPath(value: string): string {
+  const resolved = path.resolve(value);
+  return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+}
+
+/**
+ * True when `url` is the app's own renderer document (any hash/query) or the
+ * loopback dev server used during development. Everything else — remote pages,
+ * redirects, `data:` documents, other local files — is untrusted.
+ */
+function isTrustedRendererUrl(url: string): boolean {
+  if (!url) return false;
+  if (isDev && process.env.SAUDA_DEV_URL) {
+    try {
+      const dev = new URL(process.env.SAUDA_DEV_URL);
+      const next = new URL(url);
+      return next.origin === dev.origin;
+    } catch {
+      return false;
+    }
+  }
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol !== 'file:') return false;
+    return normaliseFsPath(fileURLToPath(parsed)) === normaliseFsPath(rendererIndexPath);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Every IPC call must come from our renderer. Before v1.1.3 the channel trusted
+ * whatever frame was attached, so any navigation (a `file://` origin compares as
+ * "null" to itself) would have inherited the full, licence-gated bridge.
+ */
+function isTrustedSender(event: { senderFrame?: { url?: string } | null }): boolean {
+  const frameUrl = event?.senderFrame?.url ?? '';
+  return isTrustedRendererUrl(frameUrl);
+}
+
+/** External links open in the system browser, but only for known hosts. */
+const EXTERNAL_LINK_ALLOWLIST = [
+  'merqo',
+  'sauda',
+  'github.com/skcpmx-lang/merqo-retail-suite-app',
+];
+
+function isAllowedExternalLink(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol !== 'https:') return false;
+    return EXTERNAL_LINK_ALLOWLIST.some(
+      (entry) => parsed.hostname === entry || parsed.hostname.endsWith(`.${entry}`),
+    );
+  } catch {
+    return false;
+  }
+}
+
 function openDisplayWindow(): void {
   if (displayWindow && !displayWindow.isDestroyed()) {
     displayWindow.focus();
@@ -125,16 +192,23 @@ function openDisplayWindow(): void {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false,
+      nodeIntegrationInWorker: false,
+      sandbox: true,
+      webSecurity: true,
+      allowRunningInsecureContent: false,
       devTools: isDev,
     },
   });
-  const indexPath = path.join(__dirname, '../renderer/index.html');
+  const indexPath = rendererIndexPath;
   if (isDev && process.env.SAUDA_DEV_URL) {
     void display.loadURL(`${process.env.SAUDA_DEV_URL}#display`);
   } else {
     void display.loadFile(indexPath, { hash: 'display' });
   }
+  display.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  display.webContents.on('will-navigate', (event, url) => {
+    if (!isTrustedRendererUrl(url)) event.preventDefault();
+  });
   display.on('closed', () => {
     displayWindow = null;
   });
@@ -146,6 +220,13 @@ function closeDisplayWindow(): void {
   displayWindow = null;
 }
 
+/**
+ * Creates a scheduled backup if one is due.
+ *
+ * v1.1.3: this only ever ran at startup, so a shop that leaves the till open for
+ * a week never got a daily backup. `scheduleAutoBackup()` re-checks on a timer and
+ * the outcome is pushed to the UI instead of dying quietly in the log file.
+ */
 function runAutoBackup(): void {
   try {
     if (!shouldAutoBackup(db)) return;
@@ -157,8 +238,31 @@ function runAutoBackup(): void {
       note: 'স্বয়ংক্রিয় ব্যাকআপ',
     });
     writeLog('info', 'auto backup created', { file: result.filePath });
+    notifyRenderer('backup', `স্বয়ংক্রিয় ব্যাকআপ সম্পন্ন — ${path.basename(result.filePath)}`);
   } catch (err) {
     writeLog('warn', 'auto backup failed', err);
+    notifyRenderer('backup', `স্বয়ংক্রিয় ব্যাকআপ ব্যর্থ — ${(err as Error).message}`);
+  }
+}
+
+let autoBackupTimer: NodeJS.Timeout | null = null;
+
+function scheduleAutoBackup(): void {
+  runAutoBackup();
+  // 15 minutes is frequent enough for a daily/weekly policy and cheap (one indexed
+  // SELECT when nothing is due).
+  autoBackupTimer = setInterval(runAutoBackup, 15 * 60 * 1000);
+  autoBackupTimer.unref?.();
+}
+
+function stopAutoBackup(): void {
+  if (autoBackupTimer) clearInterval(autoBackupTimer);
+  autoBackupTimer = null;
+}
+
+function notifyRenderer(type: string, message: string): void {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('sauda:event', { type, message });
   }
 }
 
@@ -187,13 +291,16 @@ function createWindow(): void {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false,
+      nodeIntegrationInWorker: false,
+      sandbox: true,
+      webSecurity: true,
+      allowRunningInsecureContent: false,
       spellcheck: false,
       devTools: isDev,
     },
   });
 
-  const indexPath = path.join(__dirname, '../renderer/index.html');
+  const indexPath = rendererIndexPath;
   if (isDev && process.env.SAUDA_DEV_URL) {
     void mainWindow.loadURL(process.env.SAUDA_DEV_URL);
   } else {
@@ -206,14 +313,17 @@ function createWindow(): void {
   });
 
   // Never allow navigating away from the app or opening new electron windows.
+  // (v1.1.3) `file://` URLs all report origin "null", so the old origin check let
+  // a local file take over the window and inherit the bridge. Compare the actual
+  // document path instead, and only open allow-listed https links externally.
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    if (/^https?:\/\//.test(url)) void shell.openExternal(url);
+    if (isAllowedExternalLink(url)) void shell.openExternal(url);
     return { action: 'deny' };
   });
   mainWindow.webContents.on('will-navigate', (event, url) => {
-    const current = mainWindow?.webContents.getURL() ?? '';
-    if (new URL(url).origin !== new URL(current).origin) event.preventDefault();
+    if (!isTrustedRendererUrl(url)) event.preventDefault();
   });
+  mainWindow.webContents.on('will-attach-webview', (event) => event.preventDefault());
   mainWindow.webContents.on('render-process-gone', (_e, details) => {
     writeLog('error', 'renderer crashed', details);
   });
@@ -299,14 +409,21 @@ if (!singleInstance) {
     };
     buildMenu();
     createWindow();
-    runAutoBackup();
+    scheduleAutoBackup();
     writeLog('info', 'app started', { version: PRODUCT_VERSION, db: appPaths().dbPath });
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) createWindow();
     });
   });
 
-  ipcMain.handle('sauda:invoke', async (_event, method: string, args: unknown[]) => {
+  ipcMain.handle('sauda:invoke', async (event, method: string, args: unknown[]) => {
+    if (!isTrustedSender(event)) {
+      writeLog('warn', 'ipc rejected: untrusted sender', { url: event?.senderFrame?.url ?? '' });
+      return { ok: false, error: 'অননুমোদিত উৎস থেকে অনুরোধ — প্রত্যাখ্যাত।', code: 'UNTRUSTED_SENDER' };
+    }
+    if (typeof method !== 'string' || !method) {
+      return { ok: false, error: 'অজানা অনুরোধ।', code: 'NOT_FOUND' };
+    }
     const callArgs = Array.isArray(args) ? args : [];
     if (transport.mode === 'terminal' && transport.client && !isLocalRoute(method)) {
       const res = await transport.client.invoke(method, callArgs);
@@ -324,6 +441,7 @@ if (!singleInstance) {
   });
 
   app.on('before-quit', () => {
+    stopAutoBackup();
     resetLanClient();
     void stopLanHost().catch(() => undefined);
     splashSafe(() => closeDatabase(db), 'closeDatabase', undefined);

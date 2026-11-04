@@ -312,7 +312,12 @@ export function shouldAutoBackup(db: Db): boolean {
     | undefined;
   if (!last) return true;
   const lastDate = new Date(last.created_at.replace(' ', 'T')).getTime();
+  if (!Number.isFinite(lastDate)) return true;
   const gapDays = (Date.now() - lastDate) / 86_400_000;
+  // A negative gap means the stored timestamp is in the future — a clock change, a
+  // timezone move or a restored backup. Treat it as "due" instead of silently
+  // disabling backups until the wall clock catches up (v1.1.3).
+  if (gapDays < 0) return true;
   if (settings.auto_backup_interval === 'daily') return gapDays >= 1;
   if (settings.auto_backup_interval === 'weekly') return gapDays >= 7;
   return gapDays >= 30;

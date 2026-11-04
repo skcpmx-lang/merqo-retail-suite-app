@@ -115,14 +115,58 @@ export function validatePasswordStrength(password: string): void {
   if (password.length > 128) throw new Error('পাসওয়ার্ড ১২৮ অক্ষরের বেশি হতে পারবে না।');
 }
 
-function rowToUser(row: any): User {
-  let perms: string[] = [];
+/**
+ * The only columns that may ever leave this module.
+ *
+ * v1.1.3 security fix: `SELECT *` + `{ ...row }` used to put `password_hash` and
+ * `password_salt` into every login/user IPC response, the renderer state and any
+ * dump of it. The public DTO is now built field by field, and the credential
+ * columns are read only by the two functions that must (login + own-password
+ * change), through `getCredentialRow()`.
+ */
+export const USER_PUBLIC_COLUMNS =
+  'id, username, full_name, role, permissions, is_active, created_at, updated_at, last_login_at';
+
+/** Internal shape that includes the credential columns — never returned publicly. */
+export interface UserCredentialRow {
+  id: number;
+  username: string;
+  full_name: string;
+  role: UserRole;
+  permissions: string;
+  is_active: 0 | 1;
+  created_at: string;
+  updated_at: string;
+  last_login_at: string | null;
+  password_hash: string;
+  password_salt: string;
+}
+
+function parsePermissions(raw: unknown): string[] {
   try {
-    perms = JSON.parse(row.permissions || '[]');
+    const parsed = JSON.parse(String(raw ?? '[]'));
+    return Array.isArray(parsed) ? parsed.filter((p): p is string => typeof p === 'string') : [];
   } catch {
-    perms = [];
+    return [];
   }
-  return { ...row, permissions: perms } as User;
+}
+
+/**
+ * Explicit allow-list mapping. Anything not named here cannot leak, even if a
+ * future schema adds a secret column to `users`.
+ */
+function rowToUser(row: Record<string, unknown>): User {
+  return {
+    id: Number(row.id),
+    username: String(row.username ?? ''),
+    full_name: String(row.full_name ?? ''),
+    role: row.role as UserRole,
+    permissions: parsePermissions(row.permissions),
+    is_active: (Number(row.is_active) === 1 ? 1 : 0) as 0 | 1,
+    created_at: String(row.created_at ?? ''),
+    updated_at: String(row.updated_at ?? ''),
+    last_login_at: row.last_login_at ? String(row.last_login_at) : null,
+  };
 }
 
 export function userCount(db: Db): number {
@@ -130,17 +174,35 @@ export function userCount(db: Db): number {
 }
 
 export function listUsers(db: Db): User[] {
-  const rows = db.prepare('SELECT * FROM users ORDER BY role, full_name').all() as any[];
+  const rows = db
+    .prepare(`SELECT ${USER_PUBLIC_COLUMNS} FROM users ORDER BY role, full_name`)
+    .all() as Record<string, unknown>[];
   return rows.map(rowToUser);
 }
 
 export function getUser(db: Db, id: number): User | null {
-  const row = db.prepare('SELECT * FROM users WHERE id = ?').get(id) as any;
+  const row = db.prepare(`SELECT ${USER_PUBLIC_COLUMNS} FROM users WHERE id = ?`).get(id) as
+    | Record<string, unknown>
+    | undefined;
   return row ? rowToUser(row) : null;
 }
 
-export function getByUsername(db: Db, username: string): any | null {
-  return db.prepare('SELECT * FROM users WHERE lower(username) = lower(?)').get(normalizeText(username)) ?? null;
+/** Credential lookup — internal to authentication flows only. Not exported publicly. */
+function getCredentialRow(db: Db, username: string): UserCredentialRow | null {
+  return (
+    (db.prepare('SELECT * FROM users WHERE lower(username) = lower(?)').get(normalizeText(username)) as
+      | UserCredentialRow
+      | undefined) ?? null
+  );
+}
+
+function getCredentialRowById(db: Db, id: number): UserCredentialRow | null {
+  return (db.prepare('SELECT * FROM users WHERE id = ?').get(id) as UserCredentialRow | undefined) ?? null;
+}
+
+/** True when a username is already taken (used by user creation and CSV import). */
+export function usernameExists(db: Db, username: string): boolean {
+  return getCredentialRow(db, username) !== null;
 }
 
 export interface CreateUserInput {
@@ -161,7 +223,7 @@ export function createUser(db: Db, input: CreateUserInput): User {
   if (!fullName) throw new Error('পুরো নাম দিতে হবে।');
   validatePasswordStrength(input.password);
   if (!['admin', 'manager', 'cashier'].includes(input.role)) throw new Error('রোল সঠিক নয়।');
-  if (getByUsername(db, username)) throw new Error('এই ইউজারনেম আগেই ব্যবহৃত হয়েছে।');
+  if (usernameExists(db, username)) throw new Error('এই ইউজারনেম আগেই ব্যবহৃত হয়েছে।');
 
   const perms = input.permissions ?? DEFAULT_ROLE_PERMISSIONS[input.role];
   const { hash, salt } = hashPassword(input.password);
@@ -260,7 +322,7 @@ export function resetPassword(
 }
 
 export function changeOwnPassword(db: Db, id: number, oldPassword: string, newPassword: string): void {
-  const row = db.prepare('SELECT * FROM users WHERE id = ?').get(id) as any;
+  const row = getCredentialRowById(db, id);
   if (!row) throw new Error('ইউজার পাওয়া যায়নি।');
   if (!verifyPassword(oldPassword, row.password_salt, row.password_hash)) {
     throw new Error('বর্তমান পাসওয়ার্ড সঠিক নয়।');
@@ -298,6 +360,35 @@ function attemptRow(db: Db, username: string): AttemptRow | null {
 }
 
 /**
+ * Lockout expiry is stored as UTC ("YYYY-MM-DD HH:mm:ss" without a zone suffix, the
+ * shape older databases already contain) and must be *read back as UTC*.
+ *
+ * v1.1.3 fix: the reader used `new Date("2026-11-04T09:45:16")`, which JavaScript
+ * interprets in the machine's local zone. At Bangladesh Standard Time (UTC+6) a
+ * five-minute cool-down therefore looked six hours old and had already "expired",
+ * so the lockout could be skipped simply by waiting a second — or by restarting.
+ * Everything is compared in UTC now, and legacy rows are read the same way.
+ */
+export function parseLockedUntilUtc(value: string | null | undefined): number | null {
+  if (!value) return null;
+  const text = String(value).trim();
+  if (!text) return null;
+  const hasZone = /(?:Z|[+-]\d{2}:?\d{2})$/i.test(text);
+  const iso = text.replace(' ', 'T');
+  const stamp = Date.parse(hasZone ? iso : `${iso}Z`);
+  return Number.isNaN(stamp) ? null : stamp;
+}
+
+/** Local wall-clock timestamps (as written by `nowLocal()`) read back as local. */
+function parseLocalStamp(value: string | null | undefined): number | null {
+  if (!value) return null;
+  const text = String(value).trim();
+  if (!text) return null;
+  const stamp = Date.parse(text.replace(' ', 'T'));
+  return Number.isNaN(stamp) ? null : stamp;
+}
+
+/**
  * Throws while a username is in cool-down. Deliberately does not reveal whether
  * the account exists: callers only ever see "try again in N minutes".
  */
@@ -305,8 +396,8 @@ export function assertNotLocked(db: Db, username: string): void {
   const key = normalizeText(username).toLowerCase();
   const row = attemptRow(db, key);
   if (!row?.locked_until) return;
-  const until = new Date(row.locked_until.replace(' ', 'T')).getTime();
-  if (Number.isNaN(until) || until <= Date.now()) return;
+  const until = parseLockedUntilUtc(row.locked_until);
+  if (until === null || until <= Date.now()) return;
   const minutes = Math.max(1, Math.ceil((until - Date.now()) / 60_000));
   throw new Error(`অনেকবার ভুল পাসওয়ার্ড দেওয়া হয়েছে। ${minutes} মিনিট পর আবার চেষ্টা করুন।`);
 }
@@ -317,10 +408,10 @@ export function registerLoginFailure(db: Db, username: string): void {
   if (!key) return;
   const now = nowLocal();
   const row = attemptRow(db, key);
-  const windowExpired =
-    row?.first_failure_at && Date.now() - new Date(row.first_failure_at.replace(' ', 'T')).getTime() > 15 * 60_000;
+  const firstAt = parseLocalStamp(row?.first_failure_at ?? null);
+  const windowExpired = firstAt !== null ? Date.now() - firstAt > 15 * 60_000 : true;
   const failures = row && !windowExpired ? row.failures + 1 : 1;
-  const first = row && !windowExpired ? row.first_failure_at : now;
+  const first = row && !windowExpired ? row.first_failure_at! : now;
   const lockedUntil =
     failures >= LOGIN_MAX_FAILURES
       ? new Date(Date.now() + LOGIN_LOCKOUT_MINUTES * 60_000).toISOString().slice(0, 19).replace('T', ' ')
@@ -352,7 +443,7 @@ const DUMMY_HASH = hashPassword('sauda-dummy-password', DUMMY_SALT).hash;
 
 export function login(db: Db, username: string, password: string): LoginResult {
   assertNotLocked(db, username);
-  const row = getByUsername(db, username);
+  const row = getCredentialRow(db, username);
   if (!row) {
     verifyPassword(password, DUMMY_SALT, DUMMY_HASH);
     registerLoginFailure(db, username);

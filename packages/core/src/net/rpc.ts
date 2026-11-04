@@ -13,7 +13,12 @@ import os from 'node:os';
  *    so permissions are always resolved on the host from the real user record;
  *  - only private (RFC1918 / loopback) peers are accepted;
  *  - bodies are capped, methods are allow-listed by the caller, and every reply
- *    is JSON so a terminal cannot smuggle binary content.
+ *    is JSON so a terminal cannot smuggle binary content;
+ *  - v1.1.3: request and response bodies are encrypted with AES-256-GCM using a
+ *    key derived from the LAN token, so a shop's sales and customer data are no
+ *    longer readable by anyone sniffing the local network. A terminal that still
+ *    speaks the old plaintext protocol is rejected (426) rather than downgraded;
+ *  - v1.1.3: repeated login failures from one address are rate-limited.
  */
 export interface RpcUser {
   id: number;
@@ -56,6 +61,59 @@ export interface RpcHost {
 }
 
 const MAX_BODY = 2 * 1024 * 1024;
+
+/* ------------------------------------------------------------------ */
+/* Encrypted transport (v2)                                           */
+/* ------------------------------------------------------------------ */
+
+export const LAN_TRANSPORT_VERSION = 2;
+const LAN_AAD = Buffer.from('sauda-lan-transport-v2');
+const keyCache = new Map<string, Buffer>();
+
+/**
+ * AES-256 key derived from the shop's 256-bit LAN token.
+ *
+ * The token is already high-entropy and never leaves the shop's own machines, so a
+ * fixed salt is safe here; scrypt is used so that a weak, hand-typed token still
+ * costs an attacker real work. The result is cached because derivation is slow.
+ */
+export function deriveLanKey(token: string): Buffer {
+  const cached = keyCache.get(token);
+  if (cached) return cached;
+  const key = crypto.scryptSync(token, 'sauda-lan-transport-v2', 32);
+  if (keyCache.size > 16) keyCache.clear();
+  keyCache.set(token, key);
+  return key;
+}
+
+/** Seals a JSON string: base64(nonce || tag || ciphertext). */
+export function sealLanPayload(token: string, plaintext: string): string {
+  const key = deriveLanKey(token);
+  const nonce = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv('aes-256-gcm', key, nonce);
+  cipher.setAAD(LAN_AAD);
+  const ciphertext = Buffer.concat([cipher.update(plaintext, 'utf8'), cipher.final()]);
+  const tag = cipher.getAuthTag();
+  return Buffer.concat([nonce, tag, ciphertext]).toString('base64');
+}
+
+/** Opens a sealed payload. Throws on tampering, wrong token or bad base64. */
+export function openLanPayload(token: string, sealed: string): string {
+  const raw = Buffer.from(String(sealed ?? ''), 'base64');
+  if (raw.length < 12 + 16 + 1) throw new Error('সিল করা অনুরোধটি অসম্পূর্ণ।');
+  const nonce = raw.subarray(0, 12);
+  const tag = raw.subarray(12, 28);
+  const ciphertext = raw.subarray(28);
+  const key = deriveLanKey(token);
+  const decipher = crypto.createDecipheriv('aes-256-gcm', key, nonce);
+  decipher.setAAD(LAN_AAD);
+  decipher.setAuthTag(tag);
+  return Buffer.concat([decipher.update(ciphertext), decipher.final()]).toString('utf8');
+}
+
+/** Login throttling: 10 failures per address inside 15 minutes. */
+const LOGIN_WINDOW_MS = 15 * 60 * 1000;
+const LOGIN_MAX_FAILURES_PER_ADDRESS = 10;
 
 /** RFC1918 + loopback + link-local only. */
 export function isPrivateAddress(address: string): boolean {
@@ -121,10 +179,22 @@ function send(res: http.ServerResponse, status: number, payload: RpcResponse): v
   res.end(body);
 }
 
+/** Sends a response whose body is sealed with the shop token (v2 transport). */
+function sendSealed(res: http.ServerResponse, token: string, status: number, payload: RpcResponse): void {
+  const body = JSON.stringify({ v: LAN_TRANSPORT_VERSION, enc: sealLanPayload(token, JSON.stringify(payload)) });
+  res.writeHead(status, {
+    'content-type': 'application/json; charset=utf-8',
+    'content-length': Buffer.byteLength(body),
+    'cache-control': 'no-store',
+  });
+  res.end(body);
+}
+
 export async function startRpcHost(opts: RpcHostOptions): Promise<RpcHost> {
   const ttl = opts.sessionTtlMs ?? 12 * 60 * 60 * 1000;
   const sessions = new Map<string, { user: RpcUser; seen: number }>();
   const allow = opts.allowRemote ?? isPrivateAddress;
+  const loginFailures = new Map<string, { failures: number; first: number }>();
 
   const server = http.createServer((req, res) => {
     void (async () => {
@@ -135,9 +205,20 @@ export async function startRpcHost(opts: RpcHostOptions): Promise<RpcHost> {
           return;
         }
         if (req.method === 'GET' && req.url === '/health') {
+          // Business identity is only disclosed to a caller that already holds the
+          // token (v1.1.3) — an unauthenticated probe on the LAN learns nothing.
+          const bearer = String(req.headers.authorization ?? '');
+          const presented = bearer.startsWith('Bearer ') ? bearer.slice(7) : '';
+          const known = presented.length > 0 && timingSafeEquals(presented, opts.token);
           send(res, 200, {
             ok: true,
-            data: { app: 'sauda', version: opts.version, business: opts.businessName(), time: new Date().toISOString() },
+            data: {
+              app: 'sauda',
+              version: opts.version,
+              transport: LAN_TRANSPORT_VERSION,
+              ...(known ? { business: opts.businessName() } : {}),
+              time: new Date().toISOString(),
+            },
           });
           return;
         }
@@ -152,28 +233,66 @@ export async function startRpcHost(opts: RpcHostOptions): Promise<RpcHost> {
           return;
         }
         let body: { method?: string; args?: unknown[]; session?: string | null };
+        const rawBody = await readBody(req);
+        let envelope: { v?: number; enc?: string };
         try {
-          body = JSON.parse(await readBody(req));
+          envelope = JSON.parse(rawBody) as { v?: number; enc?: string };
         } catch {
           send(res, 400, { ok: false, error: 'অনুরোধ বোঝা যায়নি।', code: 'BAD_REQUEST' });
+          return;
+        }
+        if (Number(envelope?.v) !== LAN_TRANSPORT_VERSION || typeof envelope.enc !== 'string') {
+          // No plaintext fallback: accepting it would let an attacker force a
+          // downgrade and read every sale in clear text again.
+          send(res, 426, {
+            ok: false,
+            error: 'টার্মিনালের সংস্করণ পুরোনো — দুটি মেশিনেই নতুন সংস্করণ ইনস্টল করুন।',
+            code: 'TRANSPORT_OUTDATED',
+          });
+          return;
+        }
+        try {
+          body = JSON.parse(openLanPayload(opts.token, envelope.enc));
+        } catch {
+          send(res, 400, {
+            ok: false,
+            error: 'সিল করা অনুরোধ ভাঙা বা পরিবর্তিত — প্রত্যাখ্যাত।',
+            code: 'TRANSPORT_CORRUPT',
+          });
           return;
         }
         const method = String(body.method ?? '');
         const args = Array.isArray(body.args) ? body.args : [];
         if (!method) {
-          send(res, 400, { ok: false, error: 'মেথড নেই।', code: 'BAD_REQUEST' });
+          sendSealed(res, opts.token, 400, { ok: false, error: 'মেথড নেই।', code: 'BAD_REQUEST' });
           return;
         }
 
         // Login is the only route that may run without a session.
         if (method === 'auth.login') {
+          const bucket = loginFailures.get(remote);
+          if (bucket && Date.now() - bucket.first < LOGIN_WINDOW_MS && bucket.failures >= LOGIN_MAX_FAILURES_PER_ADDRESS) {
+            sendSealed(res, opts.token, 429, {
+              ok: false,
+              error: 'অনেকবার ভুল লগইন — কিছুক্ষণ পর আবার চেষ্টা করুন।',
+              code: 'RATE_LIMITED',
+            });
+            return;
+          }
           try {
             const user = await opts.authenticate(String(args[0] ?? ''), String(args[1] ?? ''));
+            loginFailures.delete(remote);
             const session = crypto.randomBytes(32).toString('hex');
             sessions.set(session, { user, seen: Date.now() });
-            send(res, 200, { ok: true, data: user, session });
+            sendSealed(res, opts.token, 200, { ok: true, data: user, session });
           } catch (err) {
-            send(res, 200, { ok: false, error: (err as Error).message, code: 'AUTH_FAILED' });
+            const previous = loginFailures.get(remote);
+            const fresh = !previous || Date.now() - previous.first >= LOGIN_WINDOW_MS;
+            loginFailures.set(remote, {
+              failures: fresh ? 1 : previous!.failures + 1,
+              first: fresh ? Date.now() : previous!.first,
+            });
+            sendSealed(res, opts.token, 200, { ok: false, error: (err as Error).message, code: 'AUTH_FAILED' });
           }
           return;
         }
@@ -182,19 +301,23 @@ export async function startRpcHost(opts: RpcHostOptions): Promise<RpcHost> {
         const entry = sessionId ? sessions.get(sessionId) : undefined;
         if (!entry || Date.now() - entry.seen > ttl) {
           if (entry) sessions.delete(sessionId);
-          send(res, 401, { ok: false, error: 'সেশন শেষ হয়েছে — আবার লগইন করুন।', code: 'AUTH_REQUIRED' });
+          sendSealed(res, opts.token, 401, {
+            ok: false,
+            error: 'সেশন শেষ হয়েছে — আবার লগইন করুন।',
+            code: 'AUTH_REQUIRED',
+          });
           return;
         }
         entry.seen = Date.now();
 
         if (method === 'auth.logout') {
           sessions.delete(sessionId);
-          send(res, 200, { ok: true, data: true });
+          sendSealed(res, opts.token, 200, { ok: true, data: true });
           return;
         }
 
         const result = await opts.invoke(method, args, entry.user);
-        send(res, 200, result);
+        sendSealed(res, opts.token, 200, result);
       } catch (err) {
         opts.onLog?.('error', 'lan request failed', err);
         send(res, 500, { ok: false, error: (err as Error).message || 'সার্ভার ত্রুটি', code: 'ERROR' });
@@ -241,16 +364,25 @@ export function createRpcClient(opts: RpcClientOptions) {
         headers: {
           'content-type': 'application/json',
           authorization: `Bearer ${opts.token}`,
+          'x-sauda-transport': String(LAN_TRANSPORT_VERSION),
         },
-        body: JSON.stringify(body),
+        body: JSON.stringify({ v: LAN_TRANSPORT_VERSION, enc: sealLanPayload(opts.token, JSON.stringify(body)) }),
         signal: controller.signal,
       });
       const text = await res.text();
       let parsed: RpcResponse;
       try {
-        parsed = JSON.parse(text) as RpcResponse;
+        const envelope = JSON.parse(text) as { v?: number; enc?: string } & RpcResponse;
+        if (typeof envelope?.enc === 'string') {
+          parsed = JSON.parse(openLanPayload(opts.token, envelope.enc)) as RpcResponse;
+        } else {
+          parsed = envelope as RpcResponse;
+        }
       } catch {
         return { ok: false, error: 'সার্ভারের উত্তর বোঝা যায়নি।', code: 'BAD_RESPONSE' };
+      }
+      if (res.status === 426) {
+        return { ok: false, error: parsed.error ?? 'হোস্টের সংস্করণ পুরোনো।', code: 'TRANSPORT_OUTDATED' };
       }
       return parsed;
     } catch (err) {
@@ -279,7 +411,10 @@ export function createRpcClient(opts: RpcClientOptions) {
     },
     async health(): Promise<RpcResponse> {
       try {
-        const res = await fetch(`${base}/health`, { signal: AbortSignal.timeout(timeout) });
+        const res = await fetch(`${base}/health`, {
+          headers: { authorization: `Bearer ${opts.token}` },
+          signal: AbortSignal.timeout(timeout),
+        });
         return (await res.json()) as RpcResponse;
       } catch (err) {
         return { ok: false, error: (err as Error).message, code: 'OFFLINE' };

@@ -5,13 +5,15 @@
 ## ১. এখনই সবুজ (প্রমাণসহ)
 
 ```
-npm run verify
-✔ typecheck: core / app / license generator
-✔ 99/99 core tests (6 files)
-✔ ui wiring: 26 files · 48 icons · 187 css classes · 131 ipc routes · 105 call sites
-✔ build: app (renderer 465.58 kB js / 125.29 kB gzip · 29.94 kB css, production CSP connect-src 'none')
-✔ build: license generator
-✔ secrets scan: no key material tracked
+npm run verify                      # v1.1.3-এ শেষবার চালানো (২০২৬-১১-০৪)
+✔ typecheck: core / app / license generator          → 0 error
+✔ tests: 282 / 282 (25 files)
+✔ ui wiring: 35 files · 48 icons · 240 css · 243 ipc routes · 185 call sites
+✔ license generator wiring: 12 pages · 37 routes · 0 problems
+✔ build: app + build: license generator
+✔ secrets: filename + content + env-override scan    → clean
+✔ electron trust boundary: both IPC bridges guarded
+✔ npm audit --omit=dev                               → 0 high/critical
 ```
 
 GitHub Actions: `CI` ওয়ার্কফ্লো (ubuntu-latest) সবুজ; `Release (Windows installers)` ওয়ার্কফ্লো
@@ -37,9 +39,14 @@ GitHub Actions: `CI` ওয়ার্কফ্লো (ubuntu-latest) সবু
 
 0. **ইনস্টলারে কোড সাইন নেই** — SmartScreen “unknown publisher” দেখাবে। সার্টিফিকেট ছাড়া এটি
    সমাধান হয় না (`FINAL_COMMERCIAL_READINESS.md` R1)।
-0. **রেন্ডারার sandbox বন্ধ** (`sandbox: false`) — contextIsolation, nodeIntegration বন্ধ ও কঠোর CSP
-   দিয়ে ক্ষতিপূরণ করা হয়েছে; ১.১-এ sandbox-সাপোর্টেড preload।
-0. **লগইন থ্রটলিং নেই** — লোকাল মেশিনে পাসওয়ার্ড অনুমান করা সম্ভব; প্রতিটি ব্যর্থ চেষ্টা অডিট লগে যায়।
+0. **রেন্ডারার sandbox চালু** (`sandbox: true`, v1.1.3) — দুই অ্যাপেই। IPC-তে sender যাচাই ও নেভিগেশন
+   allowlist যোগ হয়েছে।
+0. **লগইন থ্রটলিং আছে** — প্রতি ইউজারনেমে ৫ ব্যর্থতায় ৫ মিনিট কুলডাউন (UTC-তে, v1.1.3-এ ঠিক করা),
+   এবং LAN-এ প্রতি সোর্স-অ্যাড্রেসে ১৫ মিনিটে ১০ ব্যর্থতায় 429। প্রতিটি ব্যর্থ চেষ্টা অডিট লগে যায়।
+0. **LAN এনক্রিপশন সিমেট্রিক** — AES-256-GCM, শপ টোকেন থেকে উদ্ভূত কী। TLS/সার্টিফিকেট নয়; টোকেন
+   যার কাছে আছে সে ডিক্রিপ্ট করতে পারে (কাঙ্ক্ষিত)। ফরওয়ার্ড-সিক্রেসি নেই।
+0. **POS সিরিয়াল পিকার** — কোড ও টেস্ট আছে; আসল UI-তে ক্লিক-থ্রু এই পরিবেশে দেখা যায়নি
+   (`FINAL_QA_CHECKLIST_V113.md` §৪.৭)।
 0. **রিপোর্টের তারিখ ফিল্টার `date(sale_date)` ব্যবহার করে** — `idx_sales_date` কাজে লাগে না
    (`SCAN sales`)। ২ লক্ষ বিক্রয়ে ২০.৩ ms বনাম ৫.৫৫ ms মাপা হয়েছে; ৫০ হাজারে সবচেয়ে ধীর রিপোর্ট ১০১ ms।
    পরবর্তী অপ্টিমাইজেশনের প্রথম আইটেম।
@@ -51,7 +58,9 @@ GitHub Actions: `CI` ওয়ার্কফ্লো (ubuntu-latest) সবু
 4. **কোড সাইনিং নেই** — Windows SmartScreen সতর্কতা দেখাবে; সার্টিফিকেট যোগ করলে সমাধান হবে।
 5. **ফন্ট নির্ভরতা** — বাংলা রেন্ডারিং Windows-এর “Nirmala UI”-এর উপর; অপরিহার্য হলে ফন্ট বান্ডল করা যাবে।
 6. **QR** — `qrcode-generator` (MIT) দিয়ে তৈরি; প্রোডাক্টের QR ডিফল্ট পেলোড `SAUDA:<id>`।
-7. **রিপোর্ট লিমিট** — বড় ডেটাসেটে (লক্ষ সারি) রিপোর্ট মেমোরিতে আসে; ভবিষ্যতে স্ট্রিমিং দরকার হতে পারে।
+7. **ব্যাকআপ শিডিউল** — অ্যাপ খোলা থাকলে প্রতি ১৫ মিনিটে; অ্যাপ বন্ধ থাকলে ব্যাকআপ হয় না (অ্যাপ চালু
+   না থাকা অবস্থায় আগে থেকেই প্ল্যান করা ব্যাকআপ সমর্থিত নয় — `docs/15`)।
+8. **রিপোর্ট লিমিট** — বড় ডেটাসেটে (লক্ষ সারি) রিপোর্ট মেমোরিতে আসে; ভবিষ্যতে স্ট্রিমিং দরকার হতে পারে।
 
 ## ৪. পরবর্তী কাজের তালিকা (অগ্রাধিকার অনুসারে)
 

@@ -264,6 +264,32 @@ export function recordCouponRedemption(
   ).run(args.couponId, args.saleId, args.customerId, args.code, args.discountPaisa, args.userId, nowLocal());
 }
 
+/**
+ * Reverses the coupon a sale consumed.
+ *
+ * v1.1.3 fix: voiding an invoice used to leave `coupons.used_count` incremented
+ * and the `coupon_redemptions` row in place, so a cancelled sale permanently burnt
+ * one use of a limited coupon (and one use of a customer's allowance). The
+ * redemption row is removed and the counter is decremented exactly once — the
+ * `UNIQUE (sale_id)` row is the idempotency guard, so a repeated void is a no-op.
+ */
+export function restoreCouponsForSale(
+  db: Db,
+  args: { saleId: number; userId?: number | null; note?: string | null },
+): { restored: boolean; code: string | null; discountPaisa: number } {
+  const row = db
+    .prepare('SELECT id, coupon_id, code, discount_paisa FROM coupon_redemptions WHERE sale_id = ?')
+    .get(args.saleId) as { id: number; coupon_id: number; code: string; discount_paisa: number } | undefined;
+  if (!row) return { restored: false, code: null, discountPaisa: 0 };
+
+  db.prepare('DELETE FROM coupon_redemptions WHERE id = ?').run(row.id);
+  db.prepare('UPDATE coupons SET used_count = MAX(used_count - 1, 0), updated_at = ? WHERE id = ?').run(
+    nowLocal(),
+    row.coupon_id,
+  );
+  return { restored: true, code: row.code, discountPaisa: row.discount_paisa };
+}
+
 /* ------------------------------------------------------------------ */
 /* Stored value — gift cards and vouchers                             */
 /* ------------------------------------------------------------------ */

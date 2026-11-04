@@ -14,7 +14,7 @@ import { applyMovement } from './inventory.js';
 import { isPostingEnabled, postSale, reverseDocument } from './accounting.js';
 import { nextDocumentNumber } from './invoice.js';
 import { insertPayment } from './payments.js';
-import { markSerialsSold } from './stock-ops.js';
+import { markSerialsSold, releaseSerialsForSale } from './stock-ops.js';
 import { assertCreditLimit, customerPriceLevel, earnLoyaltyForSale, reverseLoyaltyForSale } from './crm.js';
 import { getSettings } from './settings.js';
 import {
@@ -23,6 +23,7 @@ import {
   consumeGiftCard,
   giftCardMethodId,
   recordCouponRedemption,
+  restoreCouponsForSale,
   restoreGiftCardsForSale,
 } from './promotions.js';
 import { productPriceBreakdown, type PriceLevel } from './products.js';
@@ -666,6 +667,13 @@ export function voidSale(db: Db, saleId: number, reason: string, actor: { id: nu
       userId: actor.id,
       note: `ইনভয়েস বাতিল ${sale.invoice_no}`,
     });
+    // A cancelled sale must not consume a coupon use, nor keep its serial/IMEI
+    // numbers marked "sold" (v1.1.3: both used to leak permanently).
+    const coupons = restoreCouponsForSale(db, { saleId, userId: actor.id, note: `ইনভয়েস বাতিল ${sale.invoice_no}` });
+    const serialsReleased = releaseSerialsForSale(db, saleId, {
+      actor,
+      note: `ইনভয়েস বাতিল ${sale.invoice_no}`,
+    });
     // Points earned on a voided invoice are taken back; points the customer
     // spent on it are handed back (the ledger stores the net, so this is exact).
     reverseLoyaltyForSale(db, saleId, `ইনভয়েস বাতিল: ${sale.invoice_no}`, actor);
@@ -684,6 +692,9 @@ export function voidSale(db: Db, saleId: number, reason: string, actor: { id: nu
         reason,
         giftCardRestored: giftRestored.amountPaisa,
         giftCards: giftRestored.cards,
+        couponRestored: coupons.restored ? coupons.code : null,
+        couponDiscountReversed: coupons.discountPaisa,
+        serialsReleased,
       },
     });
   });

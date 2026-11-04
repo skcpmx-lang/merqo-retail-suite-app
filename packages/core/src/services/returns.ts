@@ -12,11 +12,18 @@ import { getSettings } from './settings.js';
 import { getSale } from './sales.js';
 import { getPurchase } from './purchases.js';
 import { reverseLoyaltyForSale } from './crm.js';
+import { returnSerialsFromSale } from './stock-ops.js';
 
 export interface ReturnItemInput {
   lineId: number;
   qtyMilli: number;
   condition?: 'good' | 'damaged' | 'expired';
+  /**
+   * Serial/IMEI numbers handed back for this line (v1.1.3). Each one must have
+   * been sold by the invoice being returned against; good + restocked units go back
+   * into the sellable pool, damaged ones do not.
+   */
+  serials?: string[];
 }
 
 export interface SaleReturnInput {
@@ -48,7 +55,7 @@ export function createSaleReturn(db: Db, input: SaleReturnInput): ReturnResult {
   const settings = getSettings(db);
   const restock = input.restock !== false;
 
-  const computed: { item: ReturnItem; saleItemId: number; costMicro: number }[] = [];
+  const computed: { item: ReturnItem; saleItemId: number; costMicro: number; serials: string[] }[] = [];
   let total = 0;
   for (const req of input.items) {
     const saleItem = (sale.items ?? []).find((i) => i.id === req.lineId);
@@ -68,9 +75,24 @@ export function createSaleReturn(db: Db, input: SaleReturnInput): ReturnResult {
     total += lineTotal;
     const qtyBase = roundDiv(qty * saleItem.factor_milli, 1000);
     const condition = req.condition ?? 'good';
+    const serials = (req.serials ?? []).map((x) => String(x).trim()).filter(Boolean);
+    if (serials.length) {
+      // One serial per whole unit; a serial on a fractional/weight line is a mistake.
+      const maxSerials = Math.floor(qty / 1000);
+      if (qty % 1000 !== 0) {
+        throw new Error(`"${saleItem.product_name}" ভগ্নাংশ পরিমাণে সিরিয়াল ফেরত দেওয়া যায় না।`);
+      }
+      if (serials.length > maxSerials) {
+        throw new Error(`"${saleItem.product_name}" এর জন্য সর্বোচ্চ ${maxSerials}টি সিরিয়াল ফেরত দেওয়া যায়।`);
+      }
+      if (new Set(serials).size !== serials.length) {
+        throw new Error(`"${saleItem.product_name}" এর সিরিয়াল তালিকায় একই নম্বর দুইবার আছে।`);
+      }
+    }
     computed.push({
       saleItemId: saleItem.id,
       costMicro: saleItem.cost_micro,
+      serials,
       item: {
         id: 0,
         return_id: 0,
@@ -162,6 +184,17 @@ export function createSaleReturn(db: Db, input: SaleReturnInput): ReturnResult {
         item.qty_milli,
         item.sale_item_id,
       );
+      if (c.serials.length) {
+        returnSerialsFromSale(db, {
+          saleId: input.saleId,
+          productId: item.product_id,
+          serials: c.serials,
+          condition: item.condition,
+          restock: item.restocked === 1,
+          actor: input.actor,
+          note: `রিটার্ন ${returnNo}`,
+        });
+      }
       if (item.restocked === 1) {
         applyMovement(db, {
           productId: item.product_id,

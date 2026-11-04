@@ -30,15 +30,14 @@ jobs:
           ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
         run: npm ci --no-audit --no-fund
 
-      - name: Typecheck core
-        shell: bash
-        run: node node_modules/typescript/bin/tsc -p packages/core/tsconfig.json --noEmit 2>&1 | tee verify-typecheck.log
-
-      - name: Run core tests
+      # v1.1.3: the release runs exactly the same gate as a pull request —
+      # typecheck, all tests, UI/IPC wiring audits, both builds, secret scans and a
+      # production dependency audit — instead of a weaker subset.
+      - name: Verify (typecheck, tests, audits, builds, secrets, audit)
         shell: bash
         run: |
           set -o pipefail
-          node node_modules/vitest/vitest.mjs run --reporter=verbose 2>&1 | tee verify-tests.log
+          npm run verify 2>&1 | tee verify-gate.log
 
       - name: Surface failure summary
         if: failure()
@@ -51,8 +50,7 @@ jobs:
               catch { return '(missing ' + f + ')'; }
             };
             const clean = (t) => t.replace(/%/g, '%25').replace(/\r/g, ' ');
-            console.log('::error title=typecheck::' + clean(tail('verify-typecheck.log', 6)));
-            console.log('::error title=tests::' + clean(tail('verify-tests.log', 14)));
+            console.log('::error title=verify::' + clean(tail('verify-gate.log', 20)));
           "
 
       - name: Upload verification logs
