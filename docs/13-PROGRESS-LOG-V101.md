@@ -11,8 +11,8 @@ Live log so a new session can resume exactly here. Update at the end of every st
 | S1 migration + schema v2 | **DONE** | 17 new tables, 13 new columns, default location + stock mirror, chart of accounts; 5 migration tests incl. real v1→v2 with trading data; 104/104 |
 | S2 accounting | **DONE (core)** | double-entry ledger, 22-account chart, auto-posting for sale/purchase/payment/expense/return/void/cash/opening, trial balance, P&L, balance sheet, ledger, day book, cash book, reconciliation; 12 tests; **found+fixed a 1000× cost scale bug** |
 | S3 inventory | **DONE (core)** | locations/godown, stock transfers (mirror-only, total untouched), physical count with posting, reorder + suggested qty with stated reason, WAC valuation, dead stock, serial/IMEI register + sell-once, bundles with value-preserving assembly; 11 tests |
-| S4 POS | IN PROGRESS | |
-| S5 CRM | PENDING | |
+| S4 POS | **DONE (core + UI)** | hold/resume/cancel cart (F3/F4), quick-pick favourites (right-click to pin), split payment rows, credit note, exchange (walk-in + credit), permission-checked discounts/price edits, cash session + difference reporting |
+| S5 CRM | IN PROGRESS | |
 | S6 products | PENDING | |
 | S7 licensing | PENDING | |
 | S8 UI | PENDING | |

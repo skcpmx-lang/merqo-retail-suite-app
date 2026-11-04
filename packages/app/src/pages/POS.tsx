@@ -85,9 +85,13 @@ export function POSPage({
   const [computeError, setComputeError] = useState<string | null>(null);
 
   const [payOpen, setPayOpen] = useState(false);
-  const [paidPaisa, setPaidPaisa] = useState(0);
+  const [payments, setPayments] = useState<{ methodId: number | ''; amount: number; reference: string }[]>([]);
   const [methodId, setMethodId] = useState<number | ''>('');
   const [reference, setReference] = useState('');
+  const [quickPicks, setQuickPicks] = useState<any[]>([]);
+  const [held, setHeld] = useState<any[]>([]);
+  const [heldOpen, setHeldOpen] = useState(false);
+  const [heldNote, setHeldNote] = useState('');
   const [saving, setSaving] = useState(false);
 
   const [receiptHtml, setReceiptHtml] = useState<string | null>(null);
@@ -273,6 +277,109 @@ export function POSPage({
     };
   }, [lines, customerId, discountType, discountValue, taxPercentX100]);
 
+  /* ---------------- quick picks & held sales ---------------- */
+  const refreshQuickPicks = useCallback(async () => {
+    try {
+      setQuickPicks(await call<any[]>('pos.quickPicks', 12));
+    } catch {
+      /* quick picks are an optimisation; the grid still works without them */
+    }
+  }, []);
+
+  const refreshHeld = useCallback(async () => {
+    try {
+      setHeld(await call<any[]>('pos.held', 'held'));
+    } catch {
+      setHeld([]);
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshQuickPicks();
+    void refreshHeld();
+  }, [refreshQuickPicks, refreshHeld]);
+
+  const toggleFavourite = async (productId: number) => {
+    try {
+      const res = await call<{ added: boolean }>('pos.toggleFavourite', productId);
+      ui.toast('info', res.added ? 'প্রিয় তালিকায় যোগ হয়েছে' : 'প্রিয় তালিকা থেকে বাদ');
+      await refreshQuickPicks();
+    } catch (err) {
+      ui.error('সংরক্ষণ ব্যর্থ', (err as Error).message);
+    }
+  };
+
+  const doHold = async () => {
+    if (!lines.length) return;
+    try {
+      const res = await call<any>('pos.hold', {
+        customerId: customerId || null,
+        lines: lines.map((l) => ({
+          productId: l.productId,
+          unitId: l.unitId,
+          qtyMilli: l.qtyMilli,
+          unitPricePaisa: l.priceEdited ? l.unitPricePaisa : null,
+          discountPaisa: l.discountPaisa || null,
+        })),
+        note: heldNote || null,
+        totalPaisa: computation?.total ?? 0,
+      });
+      clearCart();
+      setHeldNote('');
+      await refreshHeld();
+      ui.success('বিক্রয় হোল্ড হয়েছে', `রেফারেন্স ${res.ref_no}`);
+    } catch (err) {
+      ui.error('হোল্ড করা যায়নি', (err as Error).message);
+    }
+  };
+
+  const resumeHeld = async (id: number) => {
+    try {
+      const row = await call<any>('pos.resume', id);
+      const stored = JSON.parse(row.lines_json) as any[];
+      const restored: CartLine[] = [];
+      for (const l of stored) {
+        const product = await call<ProductWithMeta | null>('products.get', l.productId);
+        if (!product) continue;
+        const unit = units.find((u) => u.id === l.unitId) ?? units.find((u) => u.id === product.unit_id);
+        restored.push({
+          key: `L${lineSeq++}`,
+          productId: product.id,
+          name: product.name,
+          unitId: unit?.id ?? product.unit_id,
+          unitLabel: unit?.short_name ?? '',
+          factorMilli: unit?.factor_milli ?? 1000,
+          qtyMilli: l.qtyMilli,
+          basePricePaisa: product.sale_price,
+          unitPricePaisa: l.unitPricePaisa ?? product.sale_price,
+          priceEdited: l.unitPricePaisa != null,
+          discountPaisa: l.discountPaisa ?? 0,
+          stockBaseMilli: product.stock_base_milli,
+          minStockMilli: product.min_stock_base_milli,
+        });
+      }
+      setLines(restored);
+      setCustomerId(row.customer_id ?? '');
+      setHeldOpen(false);
+      await refreshHeld();
+      ui.success('বিক্রয় রিসিউম হয়েছে', row.ref_no);
+    } catch (err) {
+      ui.error('রিসিউম করা যায়নি', (err as Error).message);
+    }
+  };
+
+  const cancelHeld = async (id: number) => {
+    const reason = window.prompt('বাতিলের কারণ লিখুন:');
+    if (!reason) return;
+    try {
+      await call('pos.cancelHold', id, reason);
+      await refreshHeld();
+      ui.success('হোল্ড বাতিল হয়েছে');
+    } catch (err) {
+      ui.error('বাতিল করা যায়নি', (err as Error).message);
+    }
+  };
+
   /* ---------------- barcode ---------------- */
   const scan = async (code: string) => {
     const term = code.trim();
@@ -301,6 +408,14 @@ export function POSPage({
         e.preventDefault();
         openPayment();
       }
+      if (e.key === 'F3' && lines.length) {
+        e.preventDefault();
+        void doHold();
+      }
+      if (e.key === 'F4') {
+        e.preventDefault();
+        setHeldOpen(true);
+      }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
@@ -314,11 +429,20 @@ export function POSPage({
       ui.error('বিক্রয় সম্পন্ন করা যাবে না', computeError);
       return;
     }
-    setPaidPaisa(computation.total);
+    setPayments([{ methodId: methodId || (methods.find((m) => m.is_cash === 1)?.id ?? ''), amount: computation.total, reference: '' }]);
     setPayOpen(true);
     setReference('');
   };
 
+  const paidPaisa = payments.reduce((sum, p) => sum + Math.max(0, Math.round(p.amount)), 0);
+  const setPaidPaisa = (amount: number) => {
+    // Single-method shortcut used by the quick amount buttons: keep the first
+    // row's method and put the whole amount there.
+    setPayments((prev) => {
+      const method = prev[0]?.methodId ?? methodId ?? '';
+      return [{ methodId: method, amount, reference: prev[0]?.reference ?? '' }];
+    });
+  };
   const selectedCustomer = customers.find((c) => c.id === customerId) ?? null;
   const changePaisa = Math.max(0, paidPaisa - (computation?.total ?? 0));
   const duePaisa = Math.max(0, (computation?.total ?? 0) - paidPaisa);
@@ -341,7 +465,13 @@ export function POSPage({
         taxPercentX100,
         paidPaisa,
         defaultMethodId: methodId || null,
-        payments: paidPaisa > 0 && methodId ? [{ methodId: Number(methodId), amount: paidPaisa, reference: reference || null }] : [],
+        payments: payments
+          .filter((p) => p.methodId && Math.round(p.amount) > 0)
+          .map((p) => ({
+            methodId: Number(p.methodId),
+            amount: Math.round(p.amount),
+            reference: p.reference || reference || null,
+          })),
         note: note || null,
       });
       setPayOpen(false);
@@ -443,6 +573,27 @@ export function POSPage({
             </div>
           </div>
 
+          {quickPicks.length ? (
+            <div className="chip-row" style={{ gap: 6 }}>
+              <span className="tiny muted" style={{ alignSelf: 'center' }}>দ্রুত বিক্রয়:</span>
+              {quickPicks.map((p) => (
+                <button
+                  key={p.id}
+                  className="chip"
+                  onClick={() => addProduct(p)}
+                  onContextMenu={(e) => {
+                    e.preventDefault();
+                    void toggleFavourite(p.id);
+                  }}
+                  title={`${p.name} — ${money(p.sale_price)} (রাইট-ক্লিক: প্রিয় তালিকা)`}
+                >
+                  {p.is_favourite ? '★ ' : ''}
+                  {p.name}
+                </button>
+              ))}
+            </div>
+          ) : null}
+
           <div className="chip-row">
             <button className={`chip ${categoryId === null ? 'active' : ''}`} onClick={() => setCategoryId(null)}>
               সব
@@ -525,11 +676,21 @@ export function POSPage({
                 {lineCount} টি আইটেম • মোট ইউনিট {fmtQty(unitCount * 1000)}
               </div>
             </div>
-            {lines.length ? (
-              <Button size="sm" variant="ghost" onClick={() => ui.confirm({ title: 'কার্ট খালি করুন', message: 'সব আইটেম মুছে ফেলবেন?', danger: true, confirmLabel: 'খালি করুন' }).then((r) => r.ok && clearCart())}>
-                খালি
+            <div className="row" style={{ gap: 4 }}>
+              <Button size="sm" variant="ghost" onClick={() => setHeldOpen(true)} title="হোল্ড করা বিক্রয় (F4)">
+                হোল্ড তালিকা{held.length ? ` (${held.length})` : ''}
               </Button>
-            ) : null}
+              {lines.length ? (
+                <>
+                  <Button size="sm" variant="ghost" onClick={doHold} title="হোল্ড করুন (F3)">
+                    হোল্ড
+                  </Button>
+                  <Button size="sm" variant="ghost" onClick={() => ui.confirm({ title: 'কার্ট খালি করুন', message: 'সব আইটেম মুছে ফেলবেন?', danger: true, confirmLabel: 'খালি করুন' }).then((r) => r.ok && clearCart())}>
+                    খালি
+                  </Button>
+                </>
+              ) : null}
+            </div>
           </div>
 
           <div className="cart-body">
@@ -758,16 +919,39 @@ export function POSPage({
           }
         >
           <div className="form-grid">
-            <Field label="পেমেন্ট মাধ্যম">
-              <Select
-                value={methodId}
-                onChange={(v) => setMethodId(v ? Number(v) : '')}
-                options={methods.map((m) => ({ value: m.id, label: m.name }))}
-              />
-            </Field>
-            <Field label="প্রাপ্ত টাকা">
-              <MoneyInput value={paidPaisa} onChange={setPaidPaisa} autoFocus />
-            </Field>
+            <div className="span-2">
+              <div className="row" style={{ justifyContent: 'space-between', marginBottom: 6 }}>
+                <span className="tiny muted">পেমেন্ট (একাধিক মাধ্যমে ভাগ করা যাবে)</span>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => setPayments((prev) => [...prev, { methodId: methods.find((m) => m.is_cash === 1)?.id ?? '', amount: 0, reference: '' }])}
+                >
+                  + মাধ্যম যোগ
+                </Button>
+              </div>
+              {payments.map((p, idx) => (
+                <div key={idx} className="row" style={{ gap: 6, marginBottom: 6, alignItems: 'flex-end' }}>
+                  <Select
+                    value={p.methodId}
+                    onChange={(v) => setPayments((prev) => prev.map((x, i) => (i === idx ? { ...x, methodId: v ? Number(v) : '' } : x)))}
+                    options={methods.map((m) => ({ value: m.id, label: m.name }))}
+                  />
+                  <MoneyInput
+                    value={p.amount}
+                    onChange={(amount) => setPayments((prev) => prev.map((x, i) => (i === idx ? { ...x, amount } : x)))}
+                  />
+                  {payments.length > 1 ? (
+                    <IconButton
+                      icon="trash"
+                      danger
+                      title="সরান"
+                      onClick={() => setPayments((prev) => prev.filter((_, i) => i !== idx))}
+                    />
+                  ) : null}
+                </div>
+              ))}
+            </div>
             <div className="span-2">
               <div className="row" style={{ gap: 7, flexWrap: 'wrap' }}>
                 {[computation.total, Math.ceil(computation.total / 10000) * 10000, Math.ceil(computation.total / 50000) * 50000].map(
@@ -823,6 +1007,42 @@ export function POSPage({
               <TextInput value={note} onChange={setNote} placeholder="যেমন: দোকানে ডেলিভারি" />
             </Field>
           </div>
+        </Modal>
+      ) : null}
+
+      {heldOpen ? (
+        <Modal
+          title="হোল্ড করা বিক্রয়"
+          sub="পরে সম্পন্ন করার জন্য রাখা কার্টগুলো"
+          size="md"
+          onClose={() => setHeldOpen(false)}
+          footer={<Button onClick={() => setHeldOpen(false)}>বন্ধ করুন</Button>}
+        >
+          {held.length === 0 ? (
+            <EmptyState icon="cart" title="কোনো হোল্ড করা বিক্রয় নেই" message="F3 চেপে বর্তমান কার্ট হোল্ড করতে পারেন।" />
+          ) : (
+            <div className="stack" style={{ gap: 8 }}>
+              {held.map((h) => (
+                <div key={h.id} className="row" style={{ justifyContent: 'space-between', gap: 8, alignItems: 'center' }}>
+                  <div>
+                    <div className="bold">{h.ref_no}</div>
+                    <div className="tiny muted">
+                      {h.item_count} আইটেম • {money(h.total_paisa)} • {h.customer_name || 'ওয়াক-ইন'} • {dateTime(h.created_at)}
+                    </div>
+                    {h.note ? <div className="tiny muted">{h.note}</div> : null}
+                  </div>
+                  <div className="row" style={{ gap: 4 }}>
+                    <Button size="sm" variant="primary" onClick={() => resumeHeld(h.id)}>
+                      রিসিউম
+                    </Button>
+                    <Button size="sm" variant="ghost" onClick={() => cancelHeld(h.id)}>
+                      বাতিল
+                    </Button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
         </Modal>
       ) : null}
 

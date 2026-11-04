@@ -1227,3 +1227,42 @@ export function reconcile(db: Db, range: { from?: string; to?: string } = {}): R
 
   return results;
 }
+
+/**
+ * Manual journal voucher (adjustments, opening balances, corrections).
+ * The entry must balance; the voucher is never editable afterwards — mistakes
+ * are corrected by posting a reversing voucher, exactly like the automatic
+ * documents.
+ */
+export function postManualEntry(
+  db: Db,
+  input: {
+    date?: string;
+    memo: string;
+    lines: { accountId?: number; code?: string; debit?: number; credit?: number; memo?: string }[];
+    actor?: { id: number; username: string } | null;
+  },
+): JournalEntryRow {
+  const memo = (input.memo ?? '').trim();
+  if (!memo) throw new Error('ভাউচারের বিবরণ লিখতে হবে।');
+  if (!input.lines || input.lines.length < 2) throw new Error('ভাউচারে অন্তত দুটি লাইন দরকার।');
+  const entry = postEntry(db, {
+    date: input.date ?? nowLocal(),
+    source: 'manual',
+    sourceId: nextCounter(db, 'manual_voucher'),
+    memo,
+    lines: input.lines.map((l) => ({ ...l, memo: l.memo ?? undefined })),
+    userId: input.actor?.id ?? null,
+    idempotent: false,
+  });
+  if (!entry) throw new Error('ভাউচারে কোনো অঙ্ক নেই।');
+  audit(db, {
+    userId: input.actor?.id ?? null,
+    username: input.actor?.username,
+    action: 'accounting.manual_voucher',
+    entity: 'journal_entry',
+    entityId: entry.id,
+    details: { entryNo: entry.entry_no, memo, lines: input.lines.length },
+  });
+  return entry;
+}

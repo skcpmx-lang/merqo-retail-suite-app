@@ -120,6 +120,35 @@ export function migrateToV2(db: Db, log?: (msg: string) => void): void {
     insert.run(code, name, nameBn, type, isCash, isBank, now);
   }
 
+  /* ---------- permissions introduced in v1.0.1 ---------- */
+  // Existing managers keep their custom lists untouched. Only managers who
+  // still hold the full v1.0.0 default set receive the new permissions, so a
+  // deliberately restricted account is never widened behind the owner's back.
+  const NEW_MANAGER_PERMS = ['accounting.view', 'stock.transfer', 'stock.count', 'loyalty.manage'];
+  const OLD_MANAGER_DEFAULTS = [
+    'pos.sell', 'pos.discount', 'pos.price_edit', 'product.view', 'product.manage',
+    'stock.adjust', 'purchase.manage', 'customer.manage', 'supplier.manage',
+    'expense.manage', 'cash.manage', 'return.manage', 'report.view',
+    'backup.manage', 'audit.view',
+  ];
+  const managers = db.prepare("SELECT id, permissions FROM users WHERE role = 'manager'").all() as {
+    id: number;
+    permissions: string;
+  }[];
+  for (const m of managers) {
+    let perms: string[] = [];
+    try {
+      perms = JSON.parse(m.permissions || '[]');
+    } catch {
+      continue;
+    }
+    if (!OLD_MANAGER_DEFAULTS.every((p) => perms.includes(p))) continue;
+    const merged = [...new Set([...perms, ...NEW_MANAGER_PERMS])];
+    if (merged.length === perms.length) continue;
+    db.prepare('UPDATE users SET permissions = ? WHERE id = ?').run(JSON.stringify(merged), m.id);
+    log?.(`migration v2: manager ${m.id} granted v1.0.1 permissions`);
+  }
+
   // New settings keys live in DEFAULT_SETTINGS (db/seed.ts) so the normal
   // seeding path inserts them with the correct serialisation on every open.
 }
