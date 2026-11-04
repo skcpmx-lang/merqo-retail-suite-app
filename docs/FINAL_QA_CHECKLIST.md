@@ -107,4 +107,5 @@ Tester: ____________________  Installer SHA-256: _______________________________
 |---|---|---|---|
 | Part 1 automated | PASS | 2026-11-04 | audit (see `FINAL_AUDIT_BASELINE.md`) |
 | Part 2 manual | ☐ pending | | |
+| Release published | `v1.0.0`, run 41788965176, both installers + `SHA256SUMS.txt` | 2026-11-04 | `FINAL_RELEASE_VERIFICATION.md` §3 |
 | Commercial verdict | **B** until Part 2 is complete | | |
