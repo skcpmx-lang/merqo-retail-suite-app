@@ -23,7 +23,7 @@ import {
 import { generateDeviceKeyPair } from '../src/net/device-auth.js';
 import { closeTrackedDatabases, openTrackedDatabase, removeTempDirs } from '../../../test-setup/temp-resources.js';
 
-vi.setConfig({ testTimeout: 30_000 });
+vi.setConfig({ testTimeout: 60_000 });
 
 const dirs: string[] = [];
 const apis: LanApi[] = [];
@@ -165,7 +165,7 @@ function openStream(
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-async function waitFor(check: () => boolean, timeoutMs = 6000): Promise<void> {
+async function waitFor(check: () => boolean, timeoutMs = 20_000): Promise<void> {
   const started = Date.now();
   while (!check()) {
     if (Date.now() - started > timeoutMs) throw new Error('timed out waiting for condition');

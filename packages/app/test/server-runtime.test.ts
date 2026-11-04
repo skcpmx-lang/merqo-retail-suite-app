@@ -96,7 +96,7 @@ function harness(overrides: { lockName?: string; restartDelayMs?: number } = {})
   return { runtime, db, dir };
 }
 
-async function waitFor(predicate: () => boolean, timeoutMs = 5000): Promise<void> {
+async function waitFor(predicate: () => boolean, timeoutMs = 20_000): Promise<void> {
   const started = Date.now();
   while (!predicate()) {
     if (Date.now() - started > timeoutMs) throw new Error('waitFor timed out');

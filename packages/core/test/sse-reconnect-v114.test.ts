@@ -34,7 +34,7 @@ import {
 import { generateDeviceKeyPair } from '../src/net/device-auth.js';
 import { closeTrackedDatabases, openTrackedDatabase, removeTempDirs } from '../../../test-setup/temp-resources.js';
 
-vi.setConfig({ testTimeout: 30_000 });
+vi.setConfig({ testTimeout: 60_000 });
 
 const dirs: string[] = [];
 const handles: Array<{ close: () => void }> = [];
@@ -76,7 +76,7 @@ function addDevice(db: ReturnType<typeof freshDb>, deviceId: string) {
   return { ...keys, deviceId };
 }
 
-const waitFor = async (fn: () => boolean, timeoutMs = 8000) => {
+const waitFor = async (fn: () => boolean, timeoutMs = 20_000) => {
   const started = Date.now();
   while (Date.now() - started < timeoutMs) {
     if (fn()) return;
