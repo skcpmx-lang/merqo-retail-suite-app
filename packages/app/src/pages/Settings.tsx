@@ -1016,7 +1016,7 @@ function NetworkForm({
 
   const refresh = async () => {
     try {
-      setStatus(await call<any>('lan.status'));
+      setStatus(await call<any>('server.status'));
     } catch {
       setStatus(null);
     }
@@ -1024,6 +1024,9 @@ function NetworkForm({
 
   useEffect(() => {
     void refresh();
+    // Live-ish status without hammering the server: two polls a minute.
+    const timer = setInterval(() => void refresh(), 30_000);
+    return () => clearInterval(timer);
   }, []);
 
   const run = async (fn: () => Promise<unknown>, message: string) => {
@@ -1072,11 +1075,14 @@ function NetworkForm({
         <Button size="sm" loading={busy} icon="check" onClick={() => void save(settings)}>
           সেটিংস সংরক্ষণ
         </Button>
-        <Button size="sm" variant="ghost" icon="shield" onClick={() => void run(() => call('lan.startHost'), 'হোস্ট চালু হয়েছে')}>
-          হোস্ট চালু
+        <Button size="sm" variant="ghost" icon="shield" onClick={() => void run(() => call('lan.startHost'), 'সার্ভার চালু হয়েছে')}>
+          সার্ভার চালু
         </Button>
-        <Button size="sm" variant="ghost" icon="close" onClick={() => void run(() => call('lan.stopHost'), 'হোস্ট বন্ধ হয়েছে')}>
-          হোস্ট বন্ধ
+        <Button size="sm" variant="ghost" icon="refresh" onClick={() => void run(() => call('server.restart'), 'সার্ভার রিস্টার্ট হয়েছে')}>
+          রিস্টার্ট
+        </Button>
+        <Button size="sm" variant="ghost" icon="close" onClick={() => void run(() => call('server.stop'), 'সার্ভার বন্ধ হয়েছে')}>
+          সার্ভার বন্ধ
         </Button>
         <Button
           size="sm"
@@ -1087,13 +1093,64 @@ function NetworkForm({
           টোকেন নবায়ন
         </Button>
       </div>
-      {status ? (
-        <div className="small muted" style={{ marginTop: 10 }}>
-          মোড: {status.mode ?? '—'} • হোস্ট: {status.running ? 'চালু' : 'বন্ধ'}
-          {status.host_url ? ` • ${status.host_url}` : ''}
-          {typeof status.clients === 'number' ? ` • সংযুক্ত: ${status.clients}` : ''}
+
+      <div className="form-grid" style={{ marginTop: 12 }}>
+        <Field label="উইন্ডো বন্ধ করলেও সার্ভার চালু থাকবে" hint="ট্রে থেকে নিয়ন্ত্রণ করা যায়">
+          <Switch
+            checked={settings.server_keep_running === 1}
+            onChange={(v) => void run(() => call('server.setKeepRunning', v), v ? 'সার্ভার চালু থাকবে' : 'উইন্ডো বন্ধে সার্ভারও বন্ধ হবে')}
+            label={settings.server_keep_running === 1 ? 'চালু' : 'বন্ধ'}
+          />
+        </Field>
+        <Field label="উইন্ডোজ চালু হলে সার্ভার নিজেই শুরু হবে" hint="শুধু হোস্ট মোডে">
+          <Switch
+            checked={settings.server_autostart === 1}
+            onChange={(v) => void run(() => call('server.setAutostart', v), v ? 'অটো-স্টার্ট চালু' : 'অটো-স্টার্ট বন্ধ')}
+            label={settings.server_autostart === 1 ? 'চালু' : 'বন্ধ'}
+          />
+        </Field>
+      </div>
+
+      {status?.health ? (
+        <div className="card" style={{ marginTop: 12, padding: 12 }}>
+          <div className="row" style={{ justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
+            <strong>সার্ভার অবস্থা</strong>
+            <span
+              className="badge"
+              data-tone={status.health.state === 'running' ? 'success' : status.health.state === 'error' ? 'danger' : 'warning'}
+            >
+              {status.health.state === 'running'
+                ? 'চালু'
+                : status.health.state === 'starting'
+                  ? 'চালু হচ্ছে'
+                  : status.health.state === 'stopping'
+                    ? 'বন্ধ হচ্ছে'
+                    : status.health.state === 'error'
+                      ? 'ত্রুটি'
+                      : 'বন্ধ'}
+            </span>
+          </div>
+          <div className="small muted" style={{ marginTop: 6 }}>
+            পোর্ট: {status.health.port ?? '—'} • ক্লায়েন্ট: {status.health.clients ?? 0} • রিস্টার্ট:{' '}
+            {status.health.restarts ?? 0} • ডেটাবেজ: {status.health.db_ok ? 'ঠিক আছে' : 'সমস্যা'} • শেষ ব্যাকআপ:{' '}
+            {status.health.last_backup_at || '—'}
+          </div>
+          {status.health.last_error ? (
+            <div className="small" style={{ marginTop: 6, color: 'var(--danger, #b3261e)' }}>
+              {status.health.last_error}
+            </div>
+          ) : null}
+          {status.health.addresses?.length ? (
+            <div className="small muted" style={{ marginTop: 6 }}>
+              ঠিকানা: {status.health.addresses.join(' · ')}
+            </div>
+          ) : null}
         </div>
-      ) : null}
+      ) : (
+        <div className="small muted" style={{ marginTop: 10 }}>
+          সার্ভার তথ্য পাওয়া যায়নি — অ্যাপ রিস্টার্ট করুন।
+        </div>
+      )}
 
       <div className="section-title" style={{ marginTop: 20 }}>
         কাস্টমার ডিসপ্লে

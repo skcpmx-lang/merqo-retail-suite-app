@@ -625,6 +625,10 @@ export interface AppSettings {
   lan_port: number;
   lan_token: string;
   lan_host_url: string;
+  /** v1.1.4: start the Main Server automatically when the app launches. */
+  server_autostart: 0 | 1;
+  /** v1.1.4: keep the server (and tray) alive when the POS window is closed. */
+  server_keep_running: 0 | 1;
   receipt_show_qr: 0 | 1;
 }
 

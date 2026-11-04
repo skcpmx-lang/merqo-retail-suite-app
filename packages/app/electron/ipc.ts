@@ -244,7 +244,8 @@ import {
 import { appPaths, assertInside, readRecentLogs, writeLog } from './paths.js';
 import { receiptWidth } from '@sauda/core';
 import { printHtml, listPrinters, htmlToPdf } from './printing.js';
-import { lanStatus, startLanHost, stopLanHost, testLanConnection } from './lan.js';
+import { testLanConnection } from './lan.js';
+import { getServerRuntime, serverHealth } from './server.js';
 import { code128Svg, qrSvg } from './barcode.js';
 
 export interface AppContext {
@@ -2007,54 +2008,115 @@ on(
 /* v1.1 — LAN multi-terminal                                          */
 /* ------------------------------------------------------------------ */
 
-on('lan.status', (ctx) => lanStatus(getSettings(ctx.db)), 'settings.manage');
+/** LAN + Main Server status (v1.1.4: the runtime is the single source of truth). */
+on(
+  'lan.status',
+  (ctx) => {
+    const settings = getSettings(ctx.db);
+    const health = serverHealth();
+    return {
+      mode: settings.lan_mode,
+      host_running: Boolean(health && health.state === 'running'),
+      port: health?.port ?? (settings.lan_port || null),
+      urls: health?.addresses ?? [],
+      host_url: settings.lan_host_url || '',
+      token: settings.lan_token || '',
+      has_token: Boolean(settings.lan_token),
+      server: health,
+    };
+  },
+  'settings.manage',
+);
+
+on(
+  'server.status',
+  (ctx) => {
+    const settings = getSettings(ctx.db);
+    return {
+      health: serverHealth(),
+      mode: settings.lan_mode,
+      autostart: settings.server_autostart,
+      keep_running: settings.server_keep_running,
+    };
+  },
+  'settings.manage',
+);
+
+on(
+  'server.start',
+  async (ctx, port?: number) => {
+    const runtime = getServerRuntime();
+    if (!runtime) throw new Error('সার্ভার রানটাইম তৈরি হয়নি — অ্যাপ আবার চালু করুন।');
+    const settings = getSettings(ctx.db);
+    if (!settings.lan_token) {
+      const token = generateLanToken();
+      updateSettings(ctx.db, { lan_token: token }, null);
+    }
+    const targetPort = port ?? settings.lan_port ?? 4747;
+    updateSettings(ctx.db, { lan_mode: 'host', lan_port: targetPort }, ctx.user ?? null);
+    const health = await runtime.start(targetPort);
+    return { ...health, token: getSettings(ctx.db).lan_token };
+  },
+  'settings.manage',
+);
+
+on(
+  'server.stop',
+  async () => {
+    const runtime = getServerRuntime();
+    if (!runtime) return { stopped: true, clients: 0 };
+    const clients = runtime.health().clients;
+    const health = await runtime.stop();
+    return { ...health, clients };
+  },
+  'settings.manage',
+);
+
+on(
+  'server.restart',
+  async () => {
+    const runtime = getServerRuntime();
+    if (!runtime) throw new Error('সার্ভার রানটাইম তৈরি হয়নি — অ্যাপ আবার চালু করুন।');
+    return runtime.restart();
+  },
+  'settings.manage',
+);
+
+on(
+  'server.setAutostart',
+  (ctx, enabled: boolean) => {
+    const settings = updateSettings(ctx.db, { server_autostart: enabled ? 1 : 0 }, ctx.user ?? null);
+    return { autostart: settings.server_autostart };
+  },
+  'settings.manage',
+);
+
+on(
+  'server.setKeepRunning',
+  (ctx, enabled: boolean) => {
+    const settings = updateSettings(ctx.db, { server_keep_running: enabled ? 1 : 0 }, ctx.user ?? null);
+    return { keep_running: settings.server_keep_running };
+  },
+  'settings.manage',
+);
+
 on(
   'lan.startHost',
   async (ctx, opts: { port?: number } = {}) => {
+    const runtime = getServerRuntime();
+    if (!runtime) throw new Error('সার্ভার রানটাইম তৈরি হয়নি — অ্যাপ আবার চালু করুন।');
     const settings = getSettings(ctx.db);
     const token = settings.lan_token || generateLanToken();
     if (!settings.lan_token) updateSettings(ctx.db, { lan_token: token }, null);
-    const host = await startLanHost({
-      getDb: () => ctx.openDb(),
-      port: opts.port ?? settings.lan_port ?? 4747,
-      token,
-      authenticate: async (username, password) => {
-        const result = login(ctx.openDb(), username, password);
-        return {
-          id: result.user.id,
-          username: result.user.username,
-          full_name: result.user.full_name,
-          role: result.user.role,
-          permissions: result.user.permissions ?? [],
-        };
-      },
-      invoke: async (method, args, user) => {
-        // A LAN request runs against a *fresh* context so it can never disturb
-        // the operator sitting at the host machine.
-        const lanCtx: AppContext = {
-          ...ctx,
-          user: user
-            ? ({
-                id: user.id,
-                username: user.username,
-                full_name: user.full_name,
-                role: user.role,
-                permissions: user.permissions,
-              } as unknown as User)
-            : null,
-        };
-        return invokeRoute(lanCtx, method, args);
-      },
-      version: PRODUCT_VERSION,
-      businessName: () => getSettings(ctx.openDb()).business_name || PRODUCT_NAME,
-    });
-    updateSettings(ctx.db, { lan_mode: 'host', lan_port: host.port }, null);
-    return { port: host.port, urls: lanUrls(host.port), token };
+    const targetPort = opts.port ?? settings.lan_port ?? 4747;
+    updateSettings(ctx.db, { lan_mode: 'host', lan_port: targetPort }, null);
+    const health = await runtime.start(targetPort);
+    return { port: health.port, urls: health.addresses, token };
   },
   'settings.manage',
 );
 on('lan.stopHost', async () => {
-  await stopLanHost();
+  await getServerRuntime()?.stop();
   return true;
 }, 'settings.manage');
 on(
@@ -2082,7 +2144,7 @@ on(
 on(
   'lan.modeOff',
   async (ctx) => {
-    await stopLanHost();
+    await getServerRuntime()?.stop();
     updateSettings(ctx.db, { lan_mode: 'off' }, null);
     return true;
   },
