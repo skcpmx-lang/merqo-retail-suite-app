@@ -16,10 +16,30 @@ import {
 } from '@sauda/core';
 import { appPaths, writeLog, readRecentLogs } from './paths.js';
 import { invokeRoute, type AppContext } from './ipc.js';
+import { lanClient, resetLanClient, stopLanHost } from './lan.js';
+import type { RpcClient } from '@sauda/core';
 
 const isDev = !app.isPackaged;
 let mainWindow: BrowserWindow | null = null;
+let displayWindow: BrowserWindow | null = null;
 let db: Db;
+
+/**
+ * Transport state. A *host* owns the writable database; a *terminal* keeps no
+ * business data and forwards every route to the host over the LAN.
+ */
+const transport: { mode: 'off' | 'host' | 'terminal'; client: RpcClient | null; hostUrl: string } = {
+  mode: 'off',
+  client: null,
+  hostUrl: '',
+};
+
+/** Routes that must always run on the machine the operator is sitting at. */
+const LOCAL_PREFIXES = ['print.', 'app.', 'lan.', 'display.', 'meta.', 'license.fingerprint'];
+
+function isLocalRoute(method: string): boolean {
+  return LOCAL_PREFIXES.some((p) => method.startsWith(p));
+}
 
 const ctx: AppContext = {
   db: null as unknown as Db,
@@ -64,6 +84,66 @@ function bootstrapDatabase(): void {
   db.prepare("INSERT INTO meta (key, value) VALUES ('first_run_at', ?) ON CONFLICT(key) DO NOTHING").run(
     new Date().toISOString(),
   );
+}
+
+/** Reads the LAN configuration and prepares the terminal client if needed. */
+function bootstrapTransport(): void {
+  try {
+    const settings = getSettings(db);
+    if (settings.lan_mode === 'terminal' && settings.lan_host_url && settings.lan_token) {
+      transport.mode = 'terminal';
+      transport.hostUrl = settings.lan_host_url;
+      transport.client = lanClient(settings.lan_host_url, settings.lan_token);
+      writeLog('info', 'terminal mode', { host: settings.lan_host_url });
+    } else {
+      transport.mode = settings.lan_mode === 'host' ? 'host' : 'off';
+    }
+  } catch (err) {
+    writeLog('warn', 'transport bootstrap failed', err);
+  }
+  // `fetch` inside route handlers always goes through the active transport.
+  ctx.fetch = async (method, args = []) => {
+    if (transport.mode === 'terminal' && transport.client && !isLocalRoute(method) && method !== 'auth.login') {
+      return transport.client.invoke(method, args);
+    }
+    return invokeRoute(ctx, method, args);
+  };
+}
+
+function openDisplayWindow(): void {
+  if (displayWindow && !displayWindow.isDestroyed()) {
+    displayWindow.focus();
+    return;
+  }
+  const display = new BrowserWindow({
+    width: 1024,
+    height: 700,
+    title: 'কাস্টমার ডিসপ্লে',
+    autoHideMenuBar: true,
+    backgroundColor: '#0b1220',
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: false,
+      devTools: isDev,
+    },
+  });
+  const indexPath = path.join(__dirname, '../renderer/index.html');
+  if (isDev && process.env.SAUDA_DEV_URL) {
+    void display.loadURL(`${process.env.SAUDA_DEV_URL}#display`);
+  } else {
+    void display.loadFile(indexPath, { hash: 'display' });
+  }
+  display.on('closed', () => {
+    displayWindow = null;
+  });
+  displayWindow = display;
+}
+
+function closeDisplayWindow(): void {
+  if (displayWindow && !displayWindow.isDestroyed()) displayWindow.close();
+  displayWindow = null;
 }
 
 function runAutoBackup(): void {
@@ -206,6 +286,17 @@ if (!singleInstance) {
   app.whenReady().then(() => {
     lockDownPermissions();
     bootstrapDatabase();
+    bootstrapTransport();
+    ctx.display = {
+      open: openDisplayWindow,
+      close: closeDisplayWindow,
+      push: (state: unknown) => {
+        if (displayWindow && !displayWindow.isDestroyed()) {
+          displayWindow.webContents.send('sauda:event', { type: 'display', message: JSON.stringify(state ?? null) });
+        }
+      },
+      isOpen: () => Boolean(displayWindow && !displayWindow.isDestroyed()),
+    };
     buildMenu();
     createWindow();
     runAutoBackup();
@@ -216,7 +307,16 @@ if (!singleInstance) {
   });
 
   ipcMain.handle('sauda:invoke', async (_event, method: string, args: unknown[]) => {
-    return invokeRoute(ctx, method, Array.isArray(args) ? args : []);
+    const callArgs = Array.isArray(args) ? args : [];
+    if (transport.mode === 'terminal' && transport.client && !isLocalRoute(method)) {
+      const res = await transport.client.invoke(method, callArgs);
+      if (method === 'auth.login' && res.ok) {
+        ctx.user = (res.data as typeof ctx.user) ?? null;
+      }
+      if (method === 'auth.logout') ctx.user = null;
+      return res;
+    }
+    return invokeRoute(ctx, method, callArgs);
   });
 
   app.on('window-all-closed', () => {
@@ -224,6 +324,8 @@ if (!singleInstance) {
   });
 
   app.on('before-quit', () => {
+    resetLanClient();
+    void stopLanHost().catch(() => undefined);
     splashSafe(() => closeDatabase(db), 'closeDatabase', undefined);
   });
 }

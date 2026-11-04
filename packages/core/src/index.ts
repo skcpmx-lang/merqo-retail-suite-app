@@ -46,3 +46,5 @@ export * from './licensing/issue.js';
 export * from './licensing/store.js';
 
 export * from './export/tabular.js';
+export * from './print/index.js';
+export * from './net/index.js';
