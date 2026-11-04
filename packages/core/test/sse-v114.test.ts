@@ -26,8 +26,9 @@ import {
   type LanApi,
 } from '../src/index.js';
 import { generateDeviceKeyPair } from '../src/net/device-auth.js';
+import { closeTrackedDatabases, openTrackedDatabase, removeTempDirs } from '../../../test-setup/temp-resources.js';
 
-vi.setConfig({ testTimeout: 30_000 });
+vi.setConfig({ testTimeout: 60_000 });
 
 const dirs: string[] = [];
 const apis: LanApi[] = [];
@@ -40,7 +41,7 @@ function tempDir(): string {
 }
 
 function freshDb(dir: string) {
-  const db = openDatabase({ file: path.join(dir, 'shop.db'), appVersion: '1.1.4' });
+  const db = openTrackedDatabase({ file: path.join(dir, 'shop.db'), appVersion: '1.1.4' });
   initializeApp(db, {
     businessName: 'ইভেন্ট স্টোর',
     businessAddress: 'ঢাকা',
@@ -166,18 +167,45 @@ function openStream(
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-async function waitFor(check: () => boolean, timeoutMs = 4000): Promise<void> {
+/**
+ * Wait budget for CI.
+ *
+ * These suites use real sockets, timers and a shared Windows runner, so a condition that takes
+ * milliseconds on an idle machine can take seconds under load. A 4 s cap produced a flaky
+ * `windows-latest` failure (PR run 41908435678, "closes every stream when the server stops") on code
+ * that had just passed on the same commit. The wait is still bounded and the error still names what
+ * timed out, so a genuine hang fails instead of hanging.
+ */
+const WAIT_BUDGET_MS = 20_000;
+
+async function waitFor(check: () => boolean, label = 'the condition', timeoutMs = WAIT_BUDGET_MS): Promise<void> {
   const started = Date.now();
   while (!check()) {
-    if (Date.now() - started > timeoutMs) throw new Error('timed out waiting for condition');
+    if (Date.now() - started > timeoutMs) {
+      throw new Error(`timed out after ${timeoutMs} ms waiting for: ${label}`);
+    }
     await sleep(20);
+  }
+}
+
+/** Awaits a promise but fails with a clear message instead of blocking until the test timeout. */
+async function within<T>(promise: Promise<T>, label: string, timeoutMs = WAIT_BUDGET_MS): Promise<T> {
+  let timer: NodeJS.Timeout;
+  const guard = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`timed out after ${timeoutMs} ms waiting for: ${label}`)), timeoutMs);
+  });
+  try {
+    return await Promise.race([promise, guard]);
+  } finally {
+    clearTimeout(timer!);
   }
 }
 
 afterAll(async () => {
   for (const h of handles) h.close();
   for (const api of apis) await api.stop().catch(() => undefined);
-  for (const dir of dirs) fs.rmSync(dir, { recursive: true, force: true });
+  closeTrackedDatabases();
+  removeTempDirs(dirs);
 });
 
 describe('event stream authorisation', () => {
@@ -293,8 +321,8 @@ describe('event delivery', () => {
 
     revokeDevice(db, device.deviceId, { userId: 1, label: 'admin' } as never, 'stolen laptop');
     // The heartbeat/poll re-check closes it without any push channel.
-    await waitFor(() => api.streamCount() === 0);
-    const reason = await stream.closed;
+    await waitFor(() => api.streamCount() === 0, 'the server drops the revoked stream');
+    const reason = await within(stream.closed, 'the client is told the stream was revoked');
     expect(reason).toContain('revoked');
   });
 
@@ -305,11 +333,13 @@ describe('event delivery', () => {
     const token = session(db, device.deviceId);
     const { api, certPem } = await startApi(dir, db);
     const stream = openStream(api, certPem, { device, session: token });
-    await waitFor(() => api.streamCount() === 1);
+    await waitFor(() => api.streamCount() === 1, 'the server sees the open stream');
     await api.stop();
-    await waitFor(() => api.streamCount() === 0);
-    const reason = await stream.closed;
+    // Stopping the server must close the stream on both sides. Which side observes it first is a
+    // race on a loaded runner, so wait for each with its own budget instead of assuming an order.
+    const reason = await within(stream.closed, 'the client observes the closed stream');
     expect(reason).toBeTruthy();
+    await waitFor(() => api.streamCount() === 0, 'the server drops the closed stream');
   });
 });
 
@@ -363,10 +393,10 @@ describe('event stream client', () => {
 
     // The client reconnects by itself and resumes from its last id — so it still
     // receives the event written while it was disconnected.
-    await waitFor(() => received.length >= 2, 8000);
+    await waitFor(() => received.length >= 2, 'two events are delivered after a reconnect', 20_000);
     expect(received[1]).toBe(before.seq + 1);
     expect(gaps).toHaveLength(0);
-    await waitFor(() => restarted.api.streamCount() === 1, 8000);
+    await waitFor(() => restarted.api.streamCount() === 1, 'the restarted server accepts the stream', 20_000);
   }, 30_000);
 
   it('reports a gap when the sequence jumps', async () => {

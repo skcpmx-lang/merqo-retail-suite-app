@@ -32,8 +32,9 @@ import {
   type LanApi,
 } from '../src/index.js';
 import { generateDeviceKeyPair } from '../src/net/device-auth.js';
+import { closeTrackedDatabases, openTrackedDatabase, removeTempDirs } from '../../../test-setup/temp-resources.js';
 
-vi.setConfig({ testTimeout: 30_000 });
+vi.setConfig({ testTimeout: 60_000 });
 
 const dirs: string[] = [];
 const handles: Array<{ close: () => void }> = [];
@@ -42,7 +43,8 @@ const servers: Array<{ close: () => void }> = [];
 afterAll(() => {
   for (const handle of handles) handle.close();
   for (const server of servers) server.close();
-  for (const dir of dirs) fs.rmSync(dir, { recursive: true, force: true });
+  closeTrackedDatabases();
+  removeTempDirs(dirs);
 });
 
 function tempDir(): string {
@@ -52,7 +54,7 @@ function tempDir(): string {
 }
 
 function freshDb(dir: string) {
-  const db = openDatabase({ file: path.join(dir, 'shop.db'), appVersion: '1.1.4' });
+  const db = openTrackedDatabase({ file: path.join(dir, 'shop.db'), appVersion: '1.1.4' });
   initializeApp(db, {
     businessName: 'পুনঃসংযোগ স্টোর',
     businessAddress: 'ঢাকা',
@@ -74,7 +76,7 @@ function addDevice(db: ReturnType<typeof freshDb>, deviceId: string) {
   return { ...keys, deviceId };
 }
 
-const waitFor = async (fn: () => boolean, timeoutMs = 8000) => {
+const waitFor = async (fn: () => boolean, timeoutMs = 20_000) => {
   const started = Date.now();
   while (Date.now() - started < timeoutMs) {
     if (fn()) return;

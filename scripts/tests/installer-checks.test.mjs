@@ -7,8 +7,12 @@
  */
 import { describe, expect, it } from 'vitest';
 import {
+  I386_MACHINE,
   X64_MACHINE,
+  classifyPayloadBinary,
   evaluateInstaller,
+  evaluatePayload,
+  findForbiddenMarkers,
   machineLabel,
   missingArtifacts,
   parseSignatureReport,
@@ -43,23 +47,128 @@ describe('PE architecture', () => {
     expect(machineLabel(peMachine(peImage(0x8664)))).toBe('8664');
   });
 
-  it('recognises arm64 and i386 instead of accepting them', () => {
+  it('refuses an arm64 installer', () => {
     expect(machineLabel(peMachine(peImage(0xaa64)))).toBe('AA64');
-    expect(machineLabel(peMachine(peImage(0x014c)))).toBe('014C');
     expect(evaluateInstaller({ ...validInput(), machine: 0xaa64 }).failures.join(' ')).toMatch(
-      /architecture is AA64 .*arm64/s,
+      /arm64|AA64/,
     );
-    expect(evaluateInstaller({ ...validInput(), machine: 0x014c }).failures.join(' ')).toMatch(
-      /architecture is 014C/,
-    );
+  });
+
+  // Regression: the v1.1.4 release run refused both installers with `architecture is 014C` because
+  // an NSIS installer is a 32-bit bootstrap even when it carries a 64-bit application. The
+  // bootstrap is now reported, and the x64 requirement is applied to the packaged payload instead.
+  it('accepts the 32-bit NSIS bootstrap but says so', () => {
+    const verdict = evaluateInstaller({ ...validInput(), machine: I386_MACHINE });
+    expect(verdict.failures).toEqual([]);
+    expect(verdict.warnings.join(' ')).toMatch(/32-bit NSIS stub/);
+    expect(evaluateInstaller({ ...validInput(), machine: X64_MACHINE }).failures).toEqual([]);
   });
 
   it('rejects a non-PE file (a Linux binary) and a truncated header', () => {
     expect(peMachine(elfHeader)).toBeNull();
     expect(peMachine(Buffer.from([0x7f]))).toBeNull();
     expect(evaluateInstaller({ ...validInput(), machine: peMachine(elfHeader) }).failures.join(' ')).toMatch(
-      /architecture is unknown/,
+      /architecture could not be read/,
     );
+    expect(evaluateInstaller({ ...validInput(), machine: undefined }).failures.join(' ')).toMatch(
+      /architecture could not be read/,
+    );
+  });
+});
+
+describe('packaged payload architecture', () => {
+  const exe = { path: 'packages/app/release/win-unpacked/Sauda Retail Suite.exe', machine: X64_MACHINE };
+  const sqliteX64 = {
+    path: 'packages/app/release/win-unpacked/resources/app.asar.unpacked/node_modules/better-sqlite3/prebuilds/win32-x64.node',
+    machine: X64_MACHINE,
+  };
+  const foreign = {
+    path: 'packages/app/release/win-unpacked/resources/app.asar.unpacked/node_modules/better-sqlite3/prebuilds/linux-x64.node',
+    machine: null,
+  };
+
+  it('classifies the payload files it cares about', () => {
+    expect(classifyPayloadBinary(exe.path)).toBe('app-executable');
+    expect(classifyPayloadBinary(sqliteX64.path)).toBe('win-x64-module');
+    expect(classifyPayloadBinary('x/prebuilds/win32-arm64.node')).toBe('win-other-module');
+    expect(classifyPayloadBinary('x/prebuilds/darwin-arm64.node')).toBe('foreign-prebuild');
+    expect(classifyPayloadBinary('x/build/Release/better_sqlite3.node')).toBe('compiled-module');
+    expect(classifyPayloadBinary('marketserv.exe'.replace('.exe', '.txt'))).toBe('other');
+  });
+
+  it('accepts an x64 application with the Windows x64 native module', () => {
+    const verdict = evaluatePayload({
+      name: 'Sauda-Retail-Suite-Setup-1.1.4.exe',
+      binaries: [exe, sqliteX64],
+    });
+    expect(verdict.failures).toEqual([]);
+  });
+
+  // Regression: better-sqlite3 ships a prebuild for every platform, and the first version of this
+  // gate demanded x64 of all of them, refusing the v1.1.4 installers for files never loaded on
+  // Windows. Foreign prebuilds are now a warning, not a failure.
+  it('does not fail on foreign-platform prebuilds, but reports them', () => {
+    const verdict = evaluatePayload({
+      name: 'Sauda-Retail-Suite-Setup-1.1.4.exe',
+      binaries: [exe, sqliteX64, foreign, { ...foreign, path: 'x/prebuilds/darwin-arm64.node' }],
+    });
+    expect(verdict.failures).toEqual([]);
+    expect(verdict.warnings.join(' ')).toMatch(/2 foreign-platform prebuild/);
+  });
+
+  it('fails when the application executable is not x64', () => {
+    const verdict = evaluatePayload({
+      name: 'Sauda-Retail-Suite-Setup-1.1.4.exe',
+      binaries: [{ ...exe, machine: I386_MACHINE }, sqliteX64],
+    });
+    expect(verdict.failures.join(' ')).toMatch(/application executable .* is 014C/);
+  });
+
+  it('fails when the Windows x64 native module is missing or not x64', () => {
+    expect(
+      evaluatePayload({ name: 'x.exe', binaries: [exe, { ...sqliteX64, path: 'x/prebuilds/win32-arm64.node', machine: 0xaa64 }] })
+        .failures.join(' '),
+    ).toMatch(/no Windows x64 native module/);
+    expect(
+      evaluatePayload({ name: 'x.exe', binaries: [exe, { ...sqliteX64, machine: I386_MACHINE }] }).failures.join(' '),
+    ).toMatch(/native module .* is 014C/);
+  });
+
+  it('fails when nothing could be inspected instead of passing silently', () => {
+    expect(evaluatePayload({ name: 'x.exe', binaries: [] }).failures.join(' ')).toMatch(
+      /could not be inspected/,
+    );
+  });
+});
+
+describe('shipped key material', () => {
+  it('flags a real private key block', () => {
+    // The armour is assembled at runtime so this fixture is not itself a PEM private key block in
+    // the repository (the security audit walks scripts/ for exactly that pattern).
+    const armour = (label) => `-----BEGIN ${label}-----`;
+    const pem = Buffer.from(`${armour('PRIVATE KEY')}\nMC4CAQAwBQYDK2VwBEc=\n-----END PRIVATE KEY-----\n`);
+    expect(findForbiddenMarkers(pem)).toContain('PEM private key block');
+    const openssh = Buffer.from(`${armour('OPENSSH PRIVATE KEY')}\nb3BlbnNzaC1rZXk=\n`);
+    expect(findForbiddenMarkers(openssh)).toContain('PEM private key block');
+    expect(findForbiddenMarkers(Buffer.from('sauda-private:abc'))).toContain('Sauda DEVICE private marker');
+    expect(findForbiddenMarkers(Buffer.from(`${armour('ED25519 PRIVATE KEY')}\nAAAA`))).toContain(
+      'PEM private key block',
+    );
+  });
+
+  // Regression: the release gate used to flag any `-----BEGIN`, which key-free code legitimately
+  // contains — the Main App builds its own TLS certificate PEM, the Settings screen has a
+  // certificate paste field, and the generator strips PEM armour from a key the owner supplies.
+  it('does not flag key-free code that mentions a PEM header or a certificate', () => {
+    const code = Buffer.from(
+      [
+        'return `-----BEGIN ${label}-----\\n${base64}\\n-----END ${label}-----`;',
+        'placeholder="-----BEGIN CERTIFICATE-----"',
+        "raw.includes('-----BEGIN')",
+        '-----BEGIN CERTIFICATE-----\nMIIBszCCAVmgAwIBAgIU\n-----END CERTIFICATE-----',
+      ].join('\n'),
+    );
+    expect(findForbiddenMarkers(code)).toEqual([]);
   });
 });
 

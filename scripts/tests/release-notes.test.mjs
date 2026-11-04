@@ -11,6 +11,10 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'
 const notesPath = path.join(repoRoot, 'docs', 'V1.1.4_RELEASE_NOTES.md');
 const currentNotes = fs.readFileSync(notesPath, 'utf8');
 
+/** The pre-build shape of the same document: the two measured values are still placeholders. */
+const templateNotes = currentNotes
+  .replace(/— \d{4,} B — SHA-256 `[0-9a-f]{64}`/g, '— <bytes> B — SHA-256 `<sha256>`');
+
 const filledNotes = `# Sauda Retail Suite v1.1.4
 
 ## What’s new
@@ -45,12 +49,29 @@ describe('reviewed release notes', () => {
     expect(issues).toEqual([]);
   });
 
-  it('still has placeholders, so it is not yet publishable (fail closed)', () => {
+  // The notes were finalised with the measured build output before v1.1.4 was published, so the
+  // committed file must now pass the same strict gate the release workflow uses.
+  it('is finalised: no placeholders survive and the strict gate passes', () => {
     const { placeholders, issues } = checkReleaseNotes(currentNotes, { requireFilled: true });
+    expect(placeholders).toEqual([]);
+    expect(issues).toEqual([]);
+    // Every installer line carries a real byte size and a 64-character SHA-256.
+    for (const name of [
+      'Sauda-Retail-Suite-Setup-1.1.4.exe',
+      'Sauda-License-Generator-1.1.4.exe',
+    ]) {
+      const line = currentNotes
+        .split('\n')
+        .find((text) => text.includes(name) && text.includes('SHA-256'));
+      expect(line, `missing measured line for ${name}`).toBeTruthy();
+      expect(line).toMatch(/— \d{4,} B — SHA-256 `[0-9a-f]{64}`/);
+    }
+  });
+
+  it('still fails closed on a template that was never filled in', () => {
+    const { placeholders, issues } = checkReleaseNotes(templateNotes, { requireFilled: true });
     expect(placeholders.length).toBeGreaterThan(0);
-    // Only the values measured on the Windows build host may remain: sizes and SHA-256.
     expect(placeholders).toContain('<sha256>');
-    expect(placeholders.every((p) => p === '<bytes>' || p === '<sha256>')).toBe(true);
     expect(issues.join(' ')).toMatch(/unfilled placeholders/);
   });
 

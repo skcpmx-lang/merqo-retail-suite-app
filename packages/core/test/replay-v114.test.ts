@@ -23,6 +23,7 @@ import {
 } from '../src/index.js';
 import { SqliteReplayGuard } from '../src/net/replay-store.js';
 import { generateDeviceKeyPair } from '../src/net/device-auth.js';
+import { closeTrackedDatabases, openTrackedDatabase, removeTempDirs } from '../../../test-setup/temp-resources.js';
 
 vi.setConfig({ testTimeout: 30_000 });
 
@@ -36,7 +37,7 @@ function tempDir(): string {
 }
 
 function freshDb(dir: string) {
-  const db = openDatabase({ file: path.join(dir, 'shop.db'), appVersion: '1.1.4' });
+  const db = openTrackedDatabase({ file: path.join(dir, 'shop.db'), appVersion: '1.1.4' });
   initializeApp(db, {
     businessName: 'রিপ্লে স্টোর',
     businessAddress: 'ঢাকা',
@@ -126,7 +127,8 @@ function signedCall(
 
 afterAll(async () => {
   for (const api of apis) await api.stop().catch(() => undefined);
-  for (const dir of dirs) fs.rmSync(dir, { recursive: true, force: true });
+  closeTrackedDatabases();
+  removeTempDirs(dirs);
 });
 
 describe('durable replay protection', () => {
@@ -221,7 +223,7 @@ describe('durable replay protection', () => {
 describe('SqliteReplayGuard unit behaviour', () => {
   it('remembers a nonce across guard instances and prunes expired rows', () => {
     const dir = tempDir();
-    const db = openDatabase({ file: path.join(dir, 'guard.db'), appVersion: '1.1.4' });
+    const db = openTrackedDatabase({ file: path.join(dir, 'guard.db'), appVersion: '1.1.4' });
     let now = Date.now();
     const guard = new SqliteReplayGuard(db, { now: () => now, pruneEveryMs: 0 });
     expect(guard.claim('DEV-X', 'nonce-1', now)).toBe(true);
@@ -241,7 +243,7 @@ describe('SqliteReplayGuard unit behaviour', () => {
 
   it('stores only a fingerprint of the request, never the body', () => {
     const dir = tempDir();
-    const db = openDatabase({ file: path.join(dir, 'guard2.db'), appVersion: '1.1.4' });
+    const db = openTrackedDatabase({ file: path.join(dir, 'guard2.db'), appVersion: '1.1.4' });
     const guard = new SqliteReplayGuard(db);
     guard.claim('DEV-Y', 'abc1234567890abc');
     const row = db.prepare('SELECT * FROM device_nonces WHERE device_id = ?').get('DEV-Y') as Record<string, unknown>;

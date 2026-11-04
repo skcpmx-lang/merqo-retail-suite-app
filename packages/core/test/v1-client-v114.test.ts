@@ -18,6 +18,7 @@ import {
   startLanApi,
   type LanApi,
 } from '../src/index.js';
+import { closeTrackedDatabases, openTrackedDatabase, removeTempDirs } from '../../../test-setup/temp-resources.js';
 
 vi.setConfig({ testTimeout: 30_000 });
 
@@ -33,7 +34,7 @@ function tempDir(): string {
 type Bot = ReturnType<typeof openDatabase>;
 
 function freshDb(dir: string): Bot {
-  const db = openDatabase({ file: path.join(dir, 'shop.db'), appVersion: '1.1.4' });
+  const db = openTrackedDatabase({ file: path.join(dir, 'shop.db'), appVersion: '1.1.4' });
   initializeApp(db, {
     businessName: 'ক্লায়েন্ট স্টোর',
     businessAddress: 'ঢাকা',
@@ -91,7 +92,8 @@ async function setup(counters: { invoked: number } = { invoked: 0 }) {
 
 afterAll(async () => {
   for (const api of apis) await api.stop().catch(() => undefined);
-  for (const dir of dirs) fs.rmSync(dir, { recursive: true, force: true });
+  closeTrackedDatabases();
+  removeTempDirs(dirs);
 });
 
 describe('/api/v1 client', () => {

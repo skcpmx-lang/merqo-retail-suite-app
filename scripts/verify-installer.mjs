@@ -23,7 +23,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
+  I386_MACHINE,
+  X64_MACHINE,
   evaluateInstaller,
+  evaluatePayload,
+  findForbiddenMarkers,
   machineLabel,
   missingArtifacts,
   parseSignatureReport,
@@ -46,12 +50,7 @@ const version = argValue('--version') ?? defaultVersion;
 const minBytes = 20 * 1024 * 1024; // an Electron installer is never smaller than this
 
 /** Byte patterns that must never appear in something we ship. */
-const FORBIDDEN = [
-  { label: 'PEM header', needle: Buffer.from('-----BEGIN') },
-  { label: 'PEM private key block', needle: Buffer.from('PRIVATE KEY-----') },
-  { label: 'Ed25519 PKCS#8 header (base64)', needle: Buffer.from('MC4CAQAwBQYDK2Vw') },
-  { label: 'Sauda DEVICE private marker', needle: Buffer.from('sauda-private') },
-];
+
 
 const problems = [];
 const notes = [];
@@ -73,9 +72,7 @@ function scanForSecrets(file) {
       const buf = Buffer.alloc(Math.min(chunk, size - position));
       fs.readSync(fd, buf, 0, buf.length, position);
       const hay = carry.length ? Buffer.concat([carry, buf]) : buf;
-      for (const pattern of FORBIDDEN) {
-        if (hay.includes(pattern.needle)) hits.push(pattern.label);
-      }
+      for (const label of findForbiddenMarkers(hay)) hits.push(label);
       carry = hay.subarray(Math.max(0, hay.length - overlap));
       position += buf.length;
     }
@@ -156,6 +153,43 @@ const missing = missingArtifacts(present, version);
 if (missing.length) fail(`missing expected artefact(s): ${missing.join(', ')}`);
 if (!present.length) fail(`no .exe files in ${targetDir}`);
 
+/** The unpacked application directory that produced the installer with this name. */
+function unpackedFor(installerName) {
+  const releaseRoot = installerName.includes('License-Generator')
+    ? path.join(root, 'packages', 'license-generator', 'release')
+    : path.join(root, 'packages', 'app', 'release');
+  const unpacked = path.join(releaseRoot, 'win-unpacked');
+  return fs.existsSync(unpacked) ? unpacked : null;
+}
+
+/** The x64 binaries a Windows user actually runs: the app executable and the native SQLite module. */
+function packagedBinaries(unpacked) {
+  const found = [];
+  for (const entry of fs.readdirSync(unpacked)) {
+    const full = path.join(unpacked, entry);
+    if (entry.toLowerCase().endsWith('.exe') && fs.statSync(full).isFile()) found.push(full);
+  }
+  const resources = path.join(unpacked, 'resources');
+  if (fs.existsSync(resources)) {
+    for (const entry of fs.readdirSync(resources)) {
+      const full = path.join(resources, entry);
+      if (entry.toLowerCase().endsWith('.node') && fs.statSync(full).isFile()) found.push(full);
+    }
+    const unpackedResources = path.join(resources, 'app.asar.unpacked');
+    if (fs.existsSync(unpackedResources)) {
+      const walk = (dir) => {
+        for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+          const full = path.join(dir, entry.name);
+          if (entry.isDirectory()) walk(full);
+          else if (entry.name.toLowerCase().endsWith('.node')) found.push(full);
+        }
+      };
+      walk(unpackedResources);
+    }
+  }
+  return found.sort();
+}
+
 const sums = [];
 for (const name of present) {
   const file = path.join(targetDir, name);
@@ -192,8 +226,29 @@ for (const name of present) {
   const status = failures.length ? '✖' : '✔';
   const signatureLabel = signatureResult.value?.status ?? (canReadSignature ? 'unreadable' : 'not read');
   console.log(
-    `${status} ${name} — ${mb} MB — ${machineLabel(machine)} — ${signatureLabel} — sha256 ${digest}`,
+    `${status} ${name} — ${mb} MB — bootstrap ${machineLabel(machine)}${
+      machine === I386_MACHINE ? ' (32-bit NSIS stub, payload verified x64)' : ''
+    } — ${signatureLabel} — sha256 ${digest}`,
   );
+  if (versionResult.value) {
+    console.log(
+      `   ${name}: ProductVersion "${versionResult.value.productVersion}" FileVersion "${versionResult.value.fileVersion}" ProductName "${versionResult.value.productName}"`,
+    );
+  }
+  const unpacked = unpackedFor(name);
+  const payloadBinaries = unpacked
+    ? packagedBinaries(unpacked).map((binary) => ({
+        path: path.relative(root, binary),
+        machine: peMachine(readHead(binary)),
+      }))
+    : [];
+  for (const binary of payloadBinaries) {
+    console.log(`   ${name}: payload ${binary.path} — machine ${machineLabel(binary.machine)}`);
+  }
+  // The architecture that matters: what Windows will actually run after installation.
+  const payloadVerdict = evaluatePayload({ name, binaries: payloadBinaries });
+  for (const warning of payloadVerdict.warnings) notes.push(warning);
+  for (const message of payloadVerdict.failures) fail(message);
   sums.push(`${digest}  ${name}`);
 }
 
@@ -242,7 +297,33 @@ if (problems.length) {
   console.error('\n[verify-installer] RELEASE BLOCKED:');
   for (const problem of problems) console.error(`  ✖ ${problem}`);
   console.error('\n[verify-installer] SHA256SUMS.txt was not written. Do not upload these files.');
+  // The runner log is not always reachable, so every blocking problem is also published as a
+  // check annotation and in the job summary. `::error` is plain text outside GitHub Actions.
+  for (const problem of problems) {
+    console.log(`::error title=verify-installer::${problem.replace(/%/g, '%25').replace(/\r?\n/g, ' ')}`);
+  }
+  if (process.env.GITHUB_STEP_SUMMARY) {
+    try {
+      fs.appendFileSync(
+        process.env.GITHUB_STEP_SUMMARY,
+        `## Installer verification failed\n\n${problems.map((p) => `- ${p}`).join('\n')}\n`,
+      );
+    } catch {
+      /* never mask the real failure */
+    }
+  }
   process.exit(1);
+}
+
+if (process.env.GITHUB_STEP_SUMMARY) {
+  try {
+    fs.appendFileSync(
+      process.env.GITHUB_STEP_SUMMARY,
+      `## Installer verification\n\n${sums.map((line) => `- \`${line.trim()}\``).join('\n')}\n`,
+    );
+  } catch {
+    /* optional reporting */
+  }
 }
 
 const sumsPath = path.join(targetDir, 'SHA256SUMS.txt');

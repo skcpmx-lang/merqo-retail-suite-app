@@ -31,6 +31,7 @@ import {
   rotationStatus,
   type Sealer,
 } from '../src/index.js';
+import { closeTrackedDatabases, openTrackedDatabase, removeTempDirs } from '../../../test-setup/temp-resources.js';
 
 const dirs: string[] = [];
 function tempDir(): string {
@@ -60,7 +61,7 @@ function testSealer(kind = 'test-aes-gcm', key = crypto.randomBytes(32)): Sealer
 }
 
 function freshDb(dir: string) {
-  const db = openDatabase({ file: path.join(dir, 'shop.db'), appVersion: '1.1.4' });
+  const db = openTrackedDatabase({ file: path.join(dir, 'shop.db'), appVersion: '1.1.4' });
   initializeApp(db, {
     businessName: 'নিরাপত্তা স্টোর',
     businessAddress: 'ঢাকা',
@@ -73,7 +74,8 @@ function freshDb(dir: string) {
 }
 
 afterAll(() => {
-  for (const dir of dirs) fs.rmSync(dir, { recursive: true, force: true });
+  closeTrackedDatabases();
+  removeTempDirs(dirs);
 });
 
 describe('device credential storage', () => {

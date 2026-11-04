@@ -24,6 +24,7 @@ import {
   type LanApi,
 } from '@sauda/core';
 import { OfflineError, V1Terminal, isWriteMethod } from '../electron/v1-transport.js';
+import { closeTrackedDatabases, openTrackedDatabase, removeTempDirs } from '../../../test-setup/temp-resources.js';
 
 vi.setConfig({ testTimeout: 40_000 });
 
@@ -57,7 +58,7 @@ interface Host {
 
 async function startHost(opts: { dir?: string; port?: number } = {}): Promise<Host> {
   const dir = opts.dir ?? tempDir();
-  const db = openDatabase({ file: path.join(dir, 'shop.db'), appVersion: '1.1.4' });
+  const db = openTrackedDatabase({ file: path.join(dir, 'shop.db'), appVersion: '1.1.4' });
   initializeApp(db, {
     businessName: 'ট্রান্সপোর্ট স্টোর',
     businessAddress: 'ঢাকা',
@@ -198,7 +199,8 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 afterAll(async () => {
   for (const api of apis) await api.stop().catch(() => undefined);
-  for (const dir of dirs) fs.rmSync(dir, { recursive: true, force: true });
+  closeTrackedDatabases();
+  removeTempDirs(dirs);
 });
 
 describe('device enrolment over /api/v1', () => {

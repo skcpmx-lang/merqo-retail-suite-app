@@ -31,6 +31,7 @@ import {
   type Sealer,
 } from '@sauda/core';
 import { V1Terminal } from '../electron/v1-transport.js';
+import { closeTrackedDatabases, openTrackedDatabase, removeTempDirs } from '../../../test-setup/temp-resources.js';
 
 vi.setConfig({ testTimeout: 40_000 });
 
@@ -55,14 +56,15 @@ function countSales(db: Db): number {
 
 afterAll(async () => {
   for (const api of apis) await api.stop().catch(() => undefined);
-  for (const dir of dirs) fs.rmSync(dir, { recursive: true, force: true });
+  closeTrackedDatabases();
+  removeTempDirs(dirs);
 });
 
 describe('client mode end to end', () => {
   it('commits a sale on the Main PC and never on the client', async () => {
     /* ---------------- Main PC ---------------- */
     const hostDir = tempDir();
-    const db = openDatabase({ file: path.join(hostDir, 'shop.db'), appVersion: '1.1.4' });
+    const db = openTrackedDatabase({ file: path.join(hostDir, 'shop.db'), appVersion: '1.1.4' });
     initializeApp(db, {
       businessName: 'ই২ই স্টোর',
       businessAddress: 'ঢাকা',
@@ -176,7 +178,7 @@ describe('client mode end to end', () => {
     // The shop has the sale …
     expect(countSales(db)).toBe(1);
     // … and the client's own database has nothing, and cannot answer shop queries.
-    const rawClient = openDatabase({ file: path.join(clientDir, 'sauda.db'), readonly: true });
+    const rawClient = openTrackedDatabase({ file: path.join(clientDir, 'sauda.db'), readonly: true });
     try {
       expect(countSales(rawClient)).toBe(0);
     } finally {

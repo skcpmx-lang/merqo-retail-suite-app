@@ -27,6 +27,7 @@ import {
 } from '@sauda/core';
 import { V1Terminal } from '../electron/v1-transport.js';
 import { DeviceKeyStore } from '@sauda/core';
+import { closeTrackedDatabases, openTrackedDatabase, removeTempDirs } from '../../../test-setup/temp-resources.js';
 
 vi.setConfig({ testTimeout: 30_000 });
 
@@ -35,7 +36,8 @@ const apis: LanApi[] = [];
 
 afterAll(async () => {
   for (const api of apis) await api.stop().catch(() => undefined);
-  for (const dir of dirs) fs.rmSync(dir, { recursive: true, force: true });
+  closeTrackedDatabases();
+  removeTempDirs(dirs);
 });
 
 const sealer: Sealer = {
@@ -52,7 +54,7 @@ function tempDir(): string {
 
 async function shop() {
   const dir = tempDir();
-  const db: Db = openDatabase({ file: path.join(dir, 'shop.db'), appVersion: '1.1.4' });
+  const db: Db = openTrackedDatabase({ file: path.join(dir, 'shop.db'), appVersion: '1.1.4' });
   initializeApp(db, {
     businessName: 'সেশন স্টোর',
     businessAddress: 'ঢাকা',

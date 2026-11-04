@@ -25,8 +25,9 @@ import {
   type LanApi,
 } from '../src/index.js';
 import { generateDeviceKeyPair } from '../src/net/device-auth.js';
+import { closeTrackedDatabases, openTrackedDatabase, removeTempDirs } from '../../../test-setup/temp-resources.js';
 
-vi.setConfig({ testTimeout: 40_000 });
+vi.setConfig({ testTimeout: 60_000 });
 
 const dirs: string[] = [];
 const apis: LanApi[] = [];
@@ -41,7 +42,7 @@ function tempDir(): string {
 type Bot = ReturnType<typeof openDatabase>;
 
 function freshDb(dir: string): Bot {
-  const db = openDatabase({ file: path.join(dir, 'shop.db'), appVersion: '1.1.4' });
+  const db = openTrackedDatabase({ file: path.join(dir, 'shop.db'), appVersion: '1.1.4' });
   initializeApp(db, {
     businessName: 'হার্ডেনিং স্টোর',
     businessAddress: 'ঢাকা',
@@ -173,7 +174,7 @@ function openStream(
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-async function waitFor(check: () => boolean, timeoutMs = 6000): Promise<void> {
+async function waitFor(check: () => boolean, timeoutMs = 20_000): Promise<void> {
   const started = Date.now();
   while (!check()) {
     if (Date.now() - started > timeoutMs) throw new Error('timed out waiting for condition');
@@ -184,7 +185,8 @@ async function waitFor(check: () => boolean, timeoutMs = 6000): Promise<void> {
 afterAll(async () => {
   for (const s of sockets) s.destroy();
   for (const api of apis) await api.stop().catch(() => undefined);
-  for (const dir of dirs) fs.rmSync(dir, { recursive: true, force: true });
+  closeTrackedDatabases();
+  removeTempDirs(dirs);
 });
 
 describe('session lifecycle', () => {

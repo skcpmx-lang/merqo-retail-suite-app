@@ -15,6 +15,7 @@ import {
   updateSettings,
   type Db,
 } from '../src/index.js';
+import { removeTempDirs } from '../../../test-setup/temp-resources.js';
 
 export interface TestContext {
   db: Db;
@@ -61,7 +62,7 @@ export function makeTestDb(options: { file?: boolean } = {}): TestContext {
       } catch {
         /* ignore */
       }
-      fs.rmSync(dir, { recursive: true, force: true });
+      removeTempDirs([dir]);
     },
   };
 }
