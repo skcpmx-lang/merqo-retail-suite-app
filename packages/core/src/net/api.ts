@@ -15,6 +15,8 @@ import {
 import { withIdempotencyAsync, IdempotencyError } from '../services/idempotency.js';
 import { verifyRequest, type NonceGuard } from './device-auth.js';
 import { SqliteReplayGuard } from './replay-store.js';
+import { openEventStream, type SseStream } from './sse.js';
+import { latestSeq } from '../services/events.js';
 
 /**
  * `/api/v1` — device-authenticated LAN API (Phase 3, Milestone B).
@@ -47,12 +49,24 @@ export interface LanApiOptions {
   invoke: (method: string, args: unknown[], user: ApiUser | null) => Promise<{ ok: boolean; data?: unknown; error?: string; code?: string }>;
   authenticate: (username: string, password: string) => Promise<ApiUser>;
   allowRemote?: (address: string) => boolean;
+  /** How often an event stream polls the outbox (tests shorten it). */
+  ssePollMs?: number;
+  /** Event-stream keep-alive / re-authorisation interval. */
+  sseHeartbeatMs?: number;
   log?: (level: 'info' | 'warn' | 'error', message: string, detail?: unknown) => void;
 }
 
 export interface LanApi {
   port: number;
   fingerprint: string;
+  /**
+   * Terminates live event streams — all of them, or the ones belonging to one
+   * device. Called when a device is revoked/rejected so a client cannot keep
+   * receiving events through an already-open connection.
+   */
+  closeStreams: (deviceId?: string, reason?: string) => void;
+  /** Number of open event streams (diagnostics and tests). */
+  streamCount: () => number;
   stop: () => Promise<void>;
 }
 
@@ -70,6 +84,7 @@ export async function startLanApi(opts: LanApiOptions): Promise<LanApi> {
   // Durable, restart-safe replay protection: a captured request stays dead after a
   // crash or an operator restart, not just for the lifetime of this process.
   const guard: NonceGuard = new SqliteReplayGuard(opts.db);
+  const streams = new Map<string, SseStream>();
   const server = https.createServer(
     { cert: opts.tls.certPem, key: opts.tls.keyPem, minVersion: 'TLSv1.2' },
     (req, res) => {
@@ -157,6 +172,48 @@ export async function startLanApi(opts: LanApiOptions): Promise<LanApi> {
 
     if (req.method === 'GET' && url.pathname === '/api/v1/devices/self') {
       send(res, 200, { ok: true, data: publicDevice(device) });
+      return;
+    }
+
+    if (req.method === 'GET' && url.pathname === '/api/v1/events') {
+      // A browser EventSource cannot carry signature headers, and the stream is not
+      // open to browsers: only a device that can sign (the Electron main process)
+      // can subscribe.
+      const token = String(req.headers['x-sauda-session'] ?? url.searchParams.get('session') ?? '');
+      let session;
+      try {
+        session = validateDeviceSession(opts.db, token);
+      } catch (err) {
+        send(res, 401, { ok: false, code: 'AUTH_REQUIRED', message: (err as Error).message });
+        return;
+      }
+      if (session.device_id !== device.device_id) {
+        send(res, 403, { ok: false, code: 'SESSION_DEVICE_MISMATCH', message: 'সেশন এই ডিভাইসের নয়।' });
+        return;
+      }
+      const lastHeader = String(req.headers['last-event-id'] ?? url.searchParams.get('last_event_id') ?? '');
+      const resumeFrom = lastHeader ? Math.max(0, Math.floor(Number(lastHeader) || 0)) : latestSeq(opts.db);
+      const stream = openEventStream({
+        res,
+        db: opts.db,
+        storeId: device.store_id,
+        lastEventId: resumeFrom,
+        pollMs: opts.ssePollMs,
+        heartbeatMs: opts.sseHeartbeatMs,
+        isAuthorized: () => {
+          try {
+            const current = getDevice(opts.db, device.device_id);
+            if (!current || current.status !== 'approved' || current.store_id !== device.store_id) return false;
+            const check = validateDeviceSession(opts.db, token);
+            return check.device_id === device.device_id;
+          } catch {
+            return false;
+          }
+        },
+        onClose: () => streams.delete(device.device_id),
+        log: opts.log,
+      });
+      streams.set(device.device_id, stream);
       return;
     }
 
@@ -286,8 +343,16 @@ export async function startLanApi(opts: LanApiOptions): Promise<LanApi> {
   return {
     port: (server.address() as AddressInfo).port,
     fingerprint: opts.tls.fingerprint,
+    closeStreams: (deviceId?: string, reason = 'revoked') => {
+      for (const [id, stream] of streams) {
+        if (!deviceId || id === deviceId) stream.close(reason);
+      }
+    },
+    streamCount: () => streams.size,
     stop: () =>
       new Promise<void>((resolve) => {
+        for (const stream of streams.values()) stream.close('server-stop');
+        streams.clear();
         server.closeAllConnections?.();
         server.close(() => resolve());
       }),

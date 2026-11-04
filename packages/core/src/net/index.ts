@@ -5,4 +5,6 @@ export * from './device-auth.js';
 export * from './device-keys.js';
 export * from './replay-store.js';
 export * from './rotation.js';
+export * from './sse.js';
+export * from './sse-client.js';
 export * from './api.js';
