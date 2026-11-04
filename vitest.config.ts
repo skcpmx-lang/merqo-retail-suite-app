@@ -13,6 +13,7 @@ export default defineConfig({
       'packages/core/test/**/*.test.ts',
       'packages/license-generator/test/**/*.test.{ts,tsx}',
       'packages/app/test/**/*.test.{ts,tsx}',
+      'scripts/tests/**/*.test.mjs',
     ],
     testTimeout: 60_000,
     hookTimeout: 60_000,
