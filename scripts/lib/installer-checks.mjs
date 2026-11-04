@@ -10,6 +10,9 @@
 /** x64 machine type in a PE header. arm64 is 0xAA64, i386 is 0x014C. */
 export const X64_MACHINE = 0x8664;
 
+/** i386 machine type — the normal architecture of an NSIS installer stub. */
+export const I386_MACHINE = 0x014c;
+
 /** Reads the PE `Machine` field; returns null when the bytes are not a PE image. */
 export function peMachine(bytes) {
   if (!bytes || bytes.length < 0x40) return null;
@@ -170,14 +173,94 @@ export function evaluateInstaller(input) {
     }
   }
 
-  // Architecture.
-  if (machine !== X64_MACHINE) {
+  // Architecture of the *installer image*.
+  //
+  // An NSIS installer is a 32-bit bootstrap executable even when it carries a 64-bit application:
+  // it must be able to start on any Windows. Demanding 0x8664 here rejected two perfectly good
+  // installers in the v1.1.4 release run (both reported `014C`), so the bootstrap is now allowed to
+  // be i386 while an arm64 or unrecognised image is still refused, and the architecture that really
+  // matters — the executables and native modules the user ends up running — is verified separately
+  // by `evaluatePayload()`.
+  if (machine === 0xaa64) {
+    failures.push(`${name}: installer is built for arm64 (AA64) — this release is x64 only`);
+  } else if (machine === undefined || machine === null) {
+    failures.push(`${name}: installer architecture could not be read (not a PE image)`);
+  } else if (machine !== X64_MACHINE && machine !== I386_MACHINE) {
     failures.push(
-      `${name}: architecture is ${machineLabel(machine)} (expected 8664 = x64)${
-        machine === 0xaa64 ? ' — this is an arm64 build' : ''
-      }`,
+      `${name}: installer bootstrap architecture is ${machineLabel(machine)} (expected 8664 or 014C)`,
+    );
+  } else if (machine === I386_MACHINE) {
+    warnings.push(
+      `${name}: installer bootstrap is 014C (32-bit NSIS stub, expected); the packaged application is verified as x64`,
     );
   }
 
   return { failures, warnings };
+}
+
+/**
+ * Verifies the payload a Windows user actually runs: the application executables and the native
+ * SQLite module inside `win-unpacked`. These must be x64 (`8664`) — a 32-bit application or an
+ * arm64 native module would install fine and then fail to start.
+ *
+ * @param {object} input
+ * @param {string} input.name             installer file name (for messages)
+ * @param {Array<{path: string, machine: number|null, kind?: string}>} input.binaries
+ * @returns {{failures: string[], warnings: string[]}}
+ */
+export function evaluatePayload(input) {
+  const failures = [];
+  const warnings = [];
+  const { name = '(unnamed)', binaries = [] } = input ?? {};
+
+  if (!binaries.length) {
+    failures.push(
+      `${name}: the packaged payload could not be inspected — no win-unpacked executables or native modules were found`,
+    );
+    return { failures, warnings };
+  }
+
+  for (const binary of binaries) {
+    if (binary.machine !== X64_MACHINE) {
+      failures.push(
+        `${name}: packaged binary ${binary.path} is ${machineLabel(binary.machine)} (expected 8664 = x64)`,
+      );
+    }
+  }
+
+  if (!binaries.some((binary) => String(binary.path).toLowerCase().endsWith('.node'))) {
+    failures.push(`${name}: no native module (.node) found in the packaged payload — SQLite would be missing`);
+  } else if (!binaries.some((binary) => String(binary.path).toLowerCase().endsWith('better_sqlite3.node'))) {
+    warnings.push(`${name}: expected native module better_sqlite3.node was not found in the payload`);
+  }
+
+  return { failures, warnings };
+}
+
+/**
+ * Byte patterns that must never appear in something we ship.
+ *
+ * `-----BEGIN` on its own is **not** in this list: legitimate, key-free code needs that literal —
+ * the Main App generates its own TLS certificate PEM, the Settings screen offers a certificate paste
+ * field, and the License Generator strips PEM armour from a key the owner supplies at runtime. A bare
+ * header match rejected both v1.1.4 installers for shipping that code. What actually indicates leaked
+ * key material is a *private key block* (`PRIVATE KEY-----`), the Ed25519 PKCS#8 DER prefix, or the
+ * generator's own private marker, and those remain hard failures.
+ */
+export const FORBIDDEN_MARKERS = [
+  { label: 'PEM private key block', needle: 'PRIVATE KEY-----' },
+  { label: 'OpenSSH private key block', needle: 'BEGIN OPENSSH PRIVATE KEY' },
+  { label: 'Ed25519 PKCS#8 private key header (base64)', needle: 'MC4CAQAwBQYDK2Vw' },
+  { label: 'Sauda DEVICE private marker', needle: 'sauda-private' },
+];
+
+/** Returns the labels of every forbidden marker present in `bytes`. */
+export function findForbiddenMarkers(bytes) {
+  if (!bytes || !bytes.length) return [];
+  const hay = Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes);
+  const hits = [];
+  for (const marker of FORBIDDEN_MARKERS) {
+    if (hay.includes(Buffer.from(marker.needle))) hits.push(marker.label);
+  }
+  return hits;
 }
