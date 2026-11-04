@@ -9,7 +9,19 @@ export interface ReportMeta {
   id: ReportId;
   title: string;
   description: string;
-  group: 'sales' | 'profit' | 'purchase' | 'expense' | 'party' | 'stock' | 'cash' | 'return' | 'accounting' | 'crm' | 'ops';
+  group:
+    | 'sales'
+    | 'profit'
+    | 'purchase'
+    | 'expense'
+    | 'party'
+    | 'stock'
+    | 'cash'
+    | 'return'
+    | 'accounting'
+    | 'crm'
+    | 'ops'
+    | 'promo';
   needsRange: boolean;
 }
 
@@ -61,6 +73,15 @@ export const REPORT_CATALOG: ReportMeta[] = [
   { id: 'hourly_sales', title: 'ঘণ্টাভিত্তিক বিক্রয়', description: 'কোন সময়ে বেশি বিক্রি হয়', group: 'sales', needsRange: true },
   { id: 'discount_report', title: 'ডিসকাউন্ট রিপোর্ট', description: 'লাইন ও ইনভয়েস ডিসকাউন্টের হিসাব', group: 'sales', needsRange: true },
   { id: 'tax_summary', title: 'ভ্যাট / ট্যাক্স সারাংশ', description: 'কনফিগার করা হারে ধরা ভ্যাট (কোনো আইনি দাবি নয়)', group: 'sales', needsRange: true },
+  /* ---- v1.1 ---- */
+  { id: 'po_open', title: 'খোলা পারচেজ অর্ডার', description: 'যেসব অর্ডারের পণ্য এখনো পাওয়া যায়নি', group: 'purchase', needsRange: false },
+  { id: 'po_delivery', title: 'অর্ডার ডেলিভারি হিস্ট্রি', description: 'প্রতিবার আংশিক/পূর্ণ গ্রহণের রেকর্ড', group: 'purchase', needsRange: true },
+  { id: 'coupon_usage', title: 'কুপন ব্যবহার রিপোর্ট', description: 'কোন কুপন কতবার, কত টাকা ছাড় দিয়েছে', group: 'promo', needsRange: true },
+  { id: 'gift_card_register', title: 'গিফট কার্ড ও ভাউচার রেজিস্টার', description: 'ইস্যু, ব্যবহার ও অবশিষ্ট ব্যালেন্স', group: 'promo', needsRange: false },
+  { id: 'gift_card_liability', title: 'গিফট কার্ড দায় (হিসাব মিল)', description: 'কার্ডের অবশিষ্ট ব্যালেন্স বনাম ২১৫০ খাত', group: 'promo', needsRange: false },
+  { id: 'exchange_report', title: 'এক্সচেঞ্জ রিপোর্ট', description: 'ফেরত + নতুন বিক্রয় একসাথে', group: 'return', needsRange: true },
+  { id: 'bank_book', title: 'ব্যাংক বই', description: 'ব্যাংক ও মোবাইল ব্যাংকিং খাতের লেনদেন', group: 'accounting', needsRange: true },
+  { id: 'attendance_report', title: 'হাজিরা রিপোর্ট', description: 'কর্মচারীর ক্লক-ইন ও ক্লক-আউট', group: 'crm', needsRange: true },
 ];
 
 function resolveRange(f: ReportFilter): { from: string; to: string } {
@@ -1166,6 +1187,203 @@ export function runReport(db: Db, id: ReportId, filter: ReportFilter = {}): Repo
         )
         .all(from, to) as Record<string, any>[];
       base.columns = [COLS.date, { key: 'invoice_count', label: 'ইনভয়েস', format: 'int', align: 'right' }, COLS.money('subtotal_paisa', 'নিট বিক্রয়'), COLS.money('tax_paisa', 'ধরা ভ্যাট'), COLS.money('total_paisa', 'সর্বমোট')];
+      base.rows = rows;
+      base.totals = numericTotals(base.columns, rows);
+      break;
+    }
+    /* ---------------- v1.1 ---------------- */
+    case 'po_open': {
+      const rows = db
+        .prepare(
+          `SELECT o.po_no, COALESCE(s.name,'—') AS supplier_name, o.order_date, o.expected_date, o.status,
+                  o.total_paisa, o.received_percent
+             FROM (SELECT o.*,
+                     CASE WHEN SUM(i.qty_base_milli) > 0
+                          THEN ROUND(SUM(i.received_base_milli) * 100.0 / SUM(i.qty_base_milli), 0) ELSE 0 END AS received_percent
+                     FROM purchase_orders o JOIN purchase_order_items i ON i.po_id = o.id
+                    GROUP BY o.id) o
+             LEFT JOIN suppliers s ON s.id = o.supplier_id
+            WHERE o.status IN ('open','partial')
+            ORDER BY o.order_date, o.id`,
+        )
+        .all() as Record<string, any>[];
+      base.columns = [
+        { key: 'po_no', label: 'অর্ডার নং', format: 'text' },
+        { key: 'supplier_name', label: 'সাপ্লায়ার', format: 'text' },
+        { key: 'order_date', label: 'অর্ডার', format: 'date', width: 100 },
+        { key: 'expected_date', label: 'প্রত্যাশিত', format: 'date', width: 100 },
+        { key: 'status', label: 'অবস্থা', format: 'text', width: 90 },
+        COLS.money('total_paisa', 'মূল্য'),
+        COLS.int('received_percent', 'গৃহীত %'),
+      ];
+      base.rows = rows;
+      base.totals = numericTotals(base.columns, rows);
+      break;
+    }
+    case 'po_delivery': {
+      const rows = db
+        .prepare(
+          `SELECT date(r.received_at) AS date, r.receipt_no, o.po_no, pu.purchase_no,
+                  COALESCE(s.name,'—') AS supplier_name, r.total_paisa, COALESCE(u.full_name, u.username) AS user_name
+             FROM purchase_order_receipts r
+             JOIN purchase_orders o ON o.id = r.po_id
+             LEFT JOIN purchases pu ON pu.id = r.purchase_id
+             LEFT JOIN suppliers s ON s.id = o.supplier_id
+             LEFT JOIN users u ON u.id = r.user_id
+            WHERE date(r.received_at) BETWEEN date(?) AND date(?)
+            ORDER BY r.id DESC`,
+        )
+        .all(from, to) as Record<string, any>[];
+      base.columns = [
+        COLS.date,
+        { key: 'receipt_no', label: 'রিসিট', format: 'text' },
+        { key: 'po_no', label: 'অর্ডার নং', format: 'text' },
+        { key: 'purchase_no', label: 'ক্রয় নং', format: 'text' },
+        { key: 'supplier_name', label: 'সাপ্লায়ার', format: 'text' },
+        COLS.money('total_paisa', 'মূল্য'),
+        { key: 'user_name', label: 'গ্রহণকারী', format: 'text' },
+      ];
+      base.rows = rows;
+      base.totals = numericTotals(base.columns, rows);
+      break;
+    }
+    case 'coupon_usage': {
+      const rows = db
+        .prepare(
+          `SELECT c.code, COALESCE(c.label,'—') AS label, c.kind, c.value,
+                  c.used_count, c.usage_limit,
+                  COALESCE((SELECT COUNT(*) FROM coupon_redemptions r JOIN sales s ON s.id = r.sale_id
+                             WHERE r.coupon_id = c.id AND date(s.sale_date) BETWEEN date(?) AND date(?)),0) AS redemptions,
+                  COALESCE((SELECT SUM(r.discount_paisa) FROM coupon_redemptions r JOIN sales s ON s.id = r.sale_id
+                             WHERE r.coupon_id = c.id AND date(s.sale_date) BETWEEN date(?) AND date(?)),0) AS discount_paisa
+             FROM coupons c ORDER BY discount_paisa DESC, c.code`,
+        )
+        .all(from, to, from, to) as Record<string, any>[];
+      base.columns = [
+        { key: 'code', label: 'কোড', format: 'text' },
+        { key: 'label', label: 'বর্ণনা', format: 'text' },
+        COLS.text('kind', 'ধরন'),
+        COLS.money('value', 'মান'),
+        COLS.int('redemptions', 'ব্যবহার'),
+        COLS.money('discount_paisa', 'মোট ছাড়'),
+        COLS.int('used_count', 'সর্বমোট ব্যবহার'),
+      ];
+      base.rows = rows;
+      base.totals = numericTotals(base.columns, rows);
+      break;
+    }
+    case 'gift_card_register': {
+      const rows = db
+        .prepare(
+          `SELECT g.code, g.kind, g.initial_paisa, g.balance_paisa, g.status, date(g.issued_at) AS issued,
+                  g.expires_at, COALESCE(c.name,'—') AS customer_name
+             FROM gift_cards g LEFT JOIN customers c ON c.id = g.customer_id
+            ORDER BY g.id DESC`,
+        )
+        .all() as Record<string, any>[];
+      base.columns = [
+        { key: 'code', label: 'কোড', format: 'text' },
+        COLS.text('kind', 'ধরন'),
+        COLS.money('initial_paisa', 'ইস্যু'),
+        COLS.money('balance_paisa', 'অবশিষ্ট'),
+        { key: 'status', label: 'অবস্থা', format: 'text', width: 90 },
+        { key: 'issued', label: 'ইস্যু তারিখ', format: 'date', width: 105 },
+        { key: 'expires_at', label: 'মেয়াদ', format: 'text', width: 105 },
+        { key: 'customer_name', label: 'কাস্টমার', format: 'text' },
+      ];
+      base.rows = rows;
+      base.totals = numericTotals(base.columns, rows);
+      break;
+    }
+    case 'gift_card_liability': {
+      const cards = db
+        .prepare(`SELECT COALESCE(SUM(balance_paisa),0) AS v FROM gift_cards WHERE status = 'active'`)
+        .get() as { v: number };
+      const ledger = db
+        .prepare(
+          `SELECT COALESCE(SUM(l.credit_paisa - l.debit_paisa),0) AS v
+             FROM journal_lines l JOIN accounts a ON a.id = l.account_id WHERE a.code = '2150'`,
+        )
+        .get() as { v: number };
+      const expired = db
+        .prepare(`SELECT COALESCE(SUM(balance_paisa),0) AS v FROM gift_cards WHERE status = 'expired'`)
+        .get() as { v: number };
+      const rows = [
+        { item: 'সক্রিয় কার্ডের অবশিষ্ট ব্যালেন্স (বাস্তব)', amount_paisa: cards.v },
+        { item: 'হিসাব খাত ২১৫০-এর ব্যালেন্স (লেজার)', amount_paisa: ledger.v },
+        { item: 'পার্থক্য', amount_paisa: cards.v - ledger.v },
+        { item: 'মেয়াদোত্তীর্ণ কার্ডের ব্যালেন্স', amount_paisa: expired.v },
+      ];
+      base.columns = [
+        { key: 'item', label: 'বিবরণ', format: 'text' },
+        COLS.money('amount_paisa', 'টাকা'),
+      ];
+      base.rows = rows;
+      base.totals = {};
+      break;
+    }
+    case 'exchange_report': {
+      const rows = db
+        .prepare(
+          `SELECT date(s.sale_date) AS date, s.invoice_no,
+                  COALESCE(c.name,'ওয়াক-ইন') AS customer_name,
+                  COALESCE(s.note,'') AS note, s.total_paisa, s.paid_paisa, s.due_paisa
+             FROM sales s LEFT JOIN customers c ON c.id = s.customer_id
+            WHERE s.note LIKE '%এক্সচেঞ্জ%' AND date(s.sale_date) BETWEEN date(?) AND date(?)
+            ORDER BY s.id DESC`,
+        )
+        .all(from, to) as Record<string, any>[];
+      base.columns = [COLS.date, COLS.invoice, COLS.customer, COLS.text('note', 'বিবরণ'), COLS.money('total_paisa', 'নতুন বিল'), COLS.money('paid_paisa', 'পরিশোধ'), COLS.money('due_paisa', 'বাকি')];
+      base.rows = rows;
+      base.totals = numericTotals(base.columns, rows);
+      break;
+    }
+    case 'bank_book': {
+      const rows = db
+        .prepare(
+          `SELECT date(e.entry_date) AS date, e.entry_no, a.code AS account_code, a.name AS account_name,
+                  e.memo, l.debit_paisa, l.credit_paisa
+             FROM journal_lines l
+             JOIN journal_entries e ON e.id = l.entry_id
+             JOIN accounts a ON a.id = l.account_id
+            WHERE a.type = 'asset' AND a.code <> '1000' AND a.code <> '1100' AND a.code <> '1200' AND a.code <> '1300'
+              AND date(e.entry_date) BETWEEN date(?) AND date(?)
+            ORDER BY e.entry_date, e.id`,
+        )
+        .all(from, to) as Record<string, any>[];
+      base.columns = [
+        COLS.date,
+        { key: 'entry_no', label: 'এন্ট্রি', format: 'text' },
+        { key: 'account_name', label: 'খাত', format: 'text' },
+        COLS.text('memo', 'বিবরণ'),
+        COLS.money('debit_paisa', 'জমা (ডেবিট)'),
+        COLS.money('credit_paisa', 'খরচ (ক্রেডিট)'),
+      ];
+      base.rows = rows;
+      base.totals = numericTotals(base.columns, rows);
+      break;
+    }
+    case 'attendance_report': {
+      const rows = db
+        .prepare(
+          `SELECT date(a.clock_in) AS date, COALESCE(u.full_name, u.username) AS user_name,
+                  time(a.clock_in) AS clock_in, COALESCE(time(a.clock_out),'—') AS clock_out,
+                  CASE WHEN a.clock_out IS NULL THEN NULL
+                       ELSE ROUND((julianday(a.clock_out) - julianday(a.clock_in)) * 24 * 60) END AS minutes,
+                  COALESCE(a.note,'') AS note
+             FROM attendance a JOIN users u ON u.id = a.user_id
+            WHERE date(a.clock_in) BETWEEN date(?) AND date(?)
+            ORDER BY a.clock_in DESC`,
+        )
+        .all(from, to) as Record<string, any>[];
+      base.columns = [
+        COLS.date,
+        { key: 'user_name', label: 'কর্মচারী', format: 'text' },
+        COLS.text('clock_in', 'ক্লক-ইন'),
+        COLS.text('clock_out', 'ক্লক-আউট'),
+        COLS.int('minutes', 'মিনিট'),
+        COLS.text('note', 'নোট'),
+      ];
       base.rows = rows;
       base.totals = numericTotals(base.columns, rows);
       break;

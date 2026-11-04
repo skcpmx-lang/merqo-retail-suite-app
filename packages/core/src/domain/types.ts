@@ -517,6 +517,15 @@ export type ReportId =
   | 'credit_limit_report'
   | 'customer_aging'
   | 'supplier_aging'
+  /* v1.1 purchase orders & promotions */
+  | 'po_open'
+  | 'po_delivery'
+  | 'coupon_usage'
+  | 'gift_card_register'
+  | 'gift_card_liability'
+  | 'exchange_report'
+  | 'bank_book'
+  | 'attendance_report'
   /* v1.0.1 stock ops */
   | 'stock_transfers'
   | 'stock_count_variance'
