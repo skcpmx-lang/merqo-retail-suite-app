@@ -1,114 +1,43 @@
-import {
-  createRpcClient,
-  generateLanToken,
-  lanUrls,
-  startRpcHost,
-  type Db,
-  type RpcHost,
-  type RpcUser,
-  type RpcClient,
-} from '@sauda/core';
-import type { AppSettings } from '@sauda/core';
-import { writeLog } from './paths.js';
+import { generateLanToken, lanUrls } from '@sauda/core';
 
 /**
- * Thin Electron glue around the transport in `@sauda/core/net`.
+ * Terminal transport — **removed** (v1.1.4 Phase 3, Milestone D).
  *
- * The host owns the only writable database. A terminal keeps no business data:
- * it forwards every route to the host, and the host re-checks the user's
- * permissions from its own user table.
+ * v1.1.3 let a Client PC forward routes to the Main PC with a shop-wide shared token
+ * over plain HTTP `/rpc`. That transport is gone: it sent every shop's authority over
+ * the LAN in cleartext and gave any PC that copied the token full access.
+ *
+ * A Client now uses `V1Terminal` (`v1-transport.ts`): pinned TLS, a per-device Ed25519
+ * key, a session bound to that device, and `/api/v1/rpc`. Nothing below may
+ * accidentally resurrect the old path — these functions exist only so a stale call
+ * fails loudly instead of silently downgrading.
  */
 
-let host: RpcHost | null = null;
-let client: RpcClient | null = null;
-let clientKey = '';
-
-export interface StartHostOptions {
-  getDb: () => Db;
-  port: number;
-  token: string;
-  authenticate: (username: string, password: string) => Promise<RpcUser>;
-  invoke: (method: string, args: unknown[], user: RpcUser | null) => Promise<any>;
-  version: string;
-  businessName: () => string;
-}
-
-export async function startLanHost(opts: StartHostOptions): Promise<RpcHost> {
-  if (host) return host;
-  host = await startRpcHost({
-    port: opts.port,
-    token: opts.token,
-    version: opts.version,
-    businessName: opts.businessName,
-    authenticate: opts.authenticate,
-    invoke: opts.invoke,
-    onLog: (level, message, detail) => writeLog(level, message, detail),
-  });
-  writeLog('info', 'lan host started', { port: host.port, urls: host.addresses });
-  return host;
-}
-
-export async function stopLanHost(): Promise<void> {
-  if (!host) return;
-  await host.stop();
-  host = null;
-  writeLog('info', 'lan host stopped');
-}
-
-export function lanHostRunning(): boolean {
-  return host !== null;
-}
-
-/** Terminal-side client, memoised per host+token pair. */
-export function lanClient(hostUrl: string, token: string): RpcClient {
-  const key = `${hostUrl}|${token}`;
-  if (!client || clientKey !== key) {
-    client = createRpcClient({ baseUrl: hostUrl, token });
-    clientKey = key;
+export class LegacyTransportRemoved extends Error {
+  code = 'LEGACY_TRANSPORT_REMOVED';
+  constructor() {
+    super('পুরোনো টোকেন-ভিত্তিক টার্মিনাল পরিবহন বন্ধ করা হয়েছে — /api/v1 দিয়ে পেয়ারিং করুন।');
+    this.name = 'LegacyTransportRemoved';
   }
-  return client;
 }
 
+/** @deprecated Always throws. Use `V1Terminal` from `v1-transport.ts`. */
+export function lanClient(_hostUrl: string, _token: string): never {
+  throw new LegacyTransportRemoved();
+}
+
+/** @deprecated Always throws. Use `terminal.status` (`TerminalManager`). */
 export function resetLanClient(): void {
-  client?.clearSession();
-  client = null;
-  clientKey = '';
+  // Nothing to reset: no shared-token client exists any more. Kept as a no-op so old
+  // shutdown paths stay honest and harmless.
 }
 
-export function lanStatus(settings: AppSettings): {
-  mode: AppSettings['lan_mode'];
-  host_running: boolean;
-  port: number | null;
-  urls: string[];
-  host_url: string;
-  token: string;
-  has_token: boolean;
-} {
-  return {
-    mode: settings.lan_mode,
-    host_running: hostRunning(),
-    port: host?.port ?? null,
-    urls: host ? host.addresses : [],
-    host_url: settings.lan_host_url || '',
-    token: settings.lan_token || '',
-    has_token: Boolean(settings.lan_token),
-  };
-}
-
-function hostRunning(): boolean {
-  return host !== null;
-}
-
+/** @deprecated Always rejects. Use `terminal.status`. */
 export async function testLanConnection(
-  hostUrl: string,
-  token: string,
+  _hostUrl: string,
+  _token: string,
 ): Promise<{ ok: boolean; error?: string; version?: string; business?: string; latency_ms?: number }> {
-  const started = Date.now();
-  const probe = createRpcClient({ baseUrl: hostUrl, token, timeoutMs: 6000 });
-  const res = await probe.health();
-  if (!res.ok) return { ok: false, error: res.error ?? 'সংযোগ ব্যর্থ' };
-  const data = res.data as { version?: string; business?: string } | undefined;
-  return { ok: true, version: data?.version, business: data?.business, latency_ms: Date.now() - started };
+  throw new LegacyTransportRemoved();
 }
 
 export { generateLanToken, lanUrls };

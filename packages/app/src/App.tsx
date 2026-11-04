@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { call, onEvent } from './api.js';
+import { call, onEvent, onV1Event } from './api.js';
+import { shopQueries } from './lib/shop-events.js';
 import { Icon, SaudaLogo, type IconName } from './icons.js';
 import { setFormatPrefs, initials, money, today } from './format.js';
 import { UIProvider, useUI, EmptyState, Spinner, Button, Loading } from './ui.js';
@@ -176,6 +177,21 @@ function MainApp() {
     });
   }, []);
 
+  /**
+   * Client mode: shop events from the Main PC. They are forwarded as a window event so
+   * a page can refetch its own data (no page holds business logic of its own), and a
+   * truncation/resync re-runs the boot check so licence/session state is revalidated.
+   */
+  useEffect(() => {
+    return onV1Event((evt) => {
+      // The registry decides which mounted screens reload; event payloads are never
+      // rendered, every screen refetches through its own route.
+      shopQueries.handle(evt);
+      window.dispatchEvent(new CustomEvent('sauda:shop-event', { detail: evt }));
+      if (evt.kind === 'resync' || (evt.kind === 'state' && evt.state === 'error')) void refreshBoot();
+    });
+  }, [refreshBoot]);
+
   const navigate = useCallback((next: PageId) => {
     setPage(next);
     if (next === 'pos') setPosNavKey((k) => k + 1);
@@ -290,7 +306,7 @@ function AppShell({
   const [alerts, setAlerts] = useState<any[]>([]);
   const [alertsOpen, setAlertsOpen] = useState(false);
   const [logoUrl, setLogoUrl] = useState<string | null>(null);
-  const [appVersion, setAppVersion] = useState('1.1.3');
+  const [appVersion, setAppVersion] = useState('1.1.4');
   const [navOpen, setNavOpen] = useState(false);
   const searchRef = useRef<HTMLInputElement | null>(null);
 
@@ -342,7 +358,7 @@ function AppShell({
 
   useEffect(() => {
     void call<{ version: string }>('app.info')
-      .then((info) => setAppVersion(info?.version ?? '1.1.3'))
+      .then((info) => setAppVersion(info?.version ?? '1.1.4'))
       .catch(() => undefined);
   }, []);
 

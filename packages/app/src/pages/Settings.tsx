@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { call } from '../api.js';
+import { useShopRefresh } from '../lib/use-shop-refresh.js';
 import { money, dateTime } from '../format.js';
 import { Icon } from '../icons.js';
 import {
@@ -999,6 +1000,369 @@ function AppearanceForm({
   );
 }
 
+
+interface DeviceRow {
+  device_id: string;
+  device_name: string;
+  role: string;
+  status: 'pending' | 'approved' | 'rejected' | 'revoked';
+  last_seen: string | null;
+  requested_at: string;
+  license_id: string | null;
+}
+
+const DEVICE_STATUS_LABEL: Record<DeviceRow['status'], string> = {
+  pending: 'অনুমোদনের অপেক্ষায়',
+  approved: 'অনুমোদিত',
+  rejected: 'প্রত্যাখ্যাত',
+  revoked: 'বাতিল',
+};
+
+/**
+ * Device administration (Phase 3, Milestone E).
+ *
+ * Approving a PC is an explicit administrator decision — nothing here is automatic,
+ * and the capacity guard comes from the licence, not from this screen. The pairing
+ * code is single-use and expires; the QR payload carries only the address, the code
+ * and the certificate pin (never a shop token or a password).
+ */
+/**
+ * Client-mode connection (v1.1.4 Phase 3, Milestone D).
+ *
+ * A Client PC reaches the shop only through a pinned TLS connection with its own device
+ * key. There is no token field here on purpose: the shared-token transport was removed,
+ * and this panel cannot be pointed at plaintext HTTP.
+ */
+function TerminalConnectionPanel({
+  settings,
+  patch,
+}: {
+  settings: AppSettings;
+  patch: (p: Partial<AppSettings>) => void;
+}) {
+  const ui = useUI();
+  const [config, setConfig] = useState<any>(null);
+  const [status, setStatus] = useState<any>(null);
+  const [busy, setBusy] = useState(false);
+  const [form, setForm] = useState({ baseUrl: '', fingerprint: '', certPem: '', storeName: '' });
+  const [pair, setPair] = useState({ code: '', licenseId: '', capacity: '1' });
+
+  const refresh = async () => {
+    try {
+      setConfig(await call('terminal.servers'));
+      setStatus(await call('terminal.status'));
+    } catch (err) {
+      ui.error('ক্লায়েন্ট অবস্থা পড়া যায়নি', (err as Error).message);
+    }
+  };
+
+  useEffect(() => {
+    void refresh();
+    const timer = setInterval(() => void refresh(), 20_000);
+    return () => clearInterval(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const run = async (fn: () => Promise<unknown>, message: string) => {
+    setBusy(true);
+    try {
+      await fn();
+      ui.success(message);
+      await refresh();
+    } catch (err) {
+      ui.error('কাজটি ব্যর্থ হয়েছে', (err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const active = config?.servers?.find((s: any) => s.id === config.active_server_id) ?? null;
+  const stateLabel: Record<string, string> = {
+    unpaired: 'পেয়ারিং হয়নি',
+    pending: 'অনুমোদনের অপেক্ষায়',
+    approved: 'অনুমোদিত',
+    rejected: 'প্রত্যাখ্যাত',
+    revoked: 'বাতিল হয়েছে',
+    offline: 'সংযোগ নেই',
+    error: 'সমস্যা',
+  };
+
+  return (
+    <>
+      <div className="section-title" style={{ marginTop: 20 }}>
+        ক্লায়েন্ট কম্পিউটার সংযোগ
+      </div>
+      <div className="small muted" style={{ marginBottom: 8 }}>
+        এই পিসি যদি মূল কম্পিউটার না হয়, তবে সার্ভারের ঠিকানা, ফিঙ্গারপ্রিন্ট ও সার্টিফিকেট দিয়ে যুক্ত করুন — এরপর
+        মালিক অনুমোদন দিলে লগইন করা যাবে।
+      </div>
+
+      <Field label="সার্ভারের ঠিকানা" hint="যেমন https://192.168.0.10:4747">
+        <TextInput value={form.baseUrl} onChange={(v) => setForm({ ...form, baseUrl: v })} />
+      </Field>
+      <Field label="সার্টিফিকেট ফিঙ্গারপ্রিন্ট" hint="SHA-256 (৬৪ হেক্স অক্ষর)">
+        <TextInput value={form.fingerprint} onChange={(v) => setForm({ ...form, fingerprint: v })} />
+      </Field>
+      <Field label="সার্ভার সার্টিফিকেট (PEM)" span={2}>
+        <TextInput
+          value={form.certPem}
+          onChange={(v) => setForm({ ...form, certPem: v })}
+          placeholder="-----BEGIN CERTIFICATE-----"
+        />
+      </Field>
+      <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
+        <Button
+          variant="primary"
+          disabled={busy}
+          onClick={() =>
+            run(() => call('terminal.configure', form), 'সার্ভার সংরক্ষণ হয়েছে')
+          }
+        >
+          সার্ভার সংরক্ষণ করুন
+        </Button>
+      </div>
+
+      {config?.servers?.length ? (
+        <div className="small" style={{ marginBottom: 12 }}>
+          {config.servers.map((server: any) => (
+            <div
+              key={server.id}
+              style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 6 }}
+            >
+              <Badge tone={server.id === config.active_server_id ? 'green' : 'plain'}>
+                {server.id === config.active_server_id ? 'সক্রিয়' : 'সংরক্ষিত'}
+              </Badge>
+              <span className="muted">{server.base_url}</span>
+              {server.id === config.active_server_id ? null : (
+                <Button size="sm" disabled={busy} onClick={() => run(() => call('terminal.use', server.id), 'সার্ভার নির্বাচন হয়েছে')}>
+                  ব্যবহার করুন
+                </Button>
+              )}
+              <IconButton
+                icon="trash"
+                title="সার্ভার মুছুন"
+                onClick={() => run(() => call('terminal.remove', server.id), 'সার্ভার মুছে ফেলা হয়েছে')}
+              />
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div className="small muted" style={{ marginBottom: 12 }}>
+          এখনো কোনো সার্ভার সংরক্ষিত নেই।
+        </div>
+      )}
+
+      {active ? (
+        <>
+          <Field label="পেয়ারিং কোড" hint="মূল কম্পিউটারের ডিভাইস প্যানেল থেকে">
+            <TextInput value={pair.code} onChange={(v) => setPair({ ...pair, code: v })} />
+          </Field>
+          <Field label="লাইসেন্স আইডি">
+            <TextInput value={pair.licenseId} onChange={(v) => setPair({ ...pair, licenseId: v })} />
+          </Field>
+          <Field label="লাইসেন্স ক্যাপাসিটি">
+            <TextInput value={pair.capacity} onChange={(v) => setPair({ ...pair, capacity: v.replace(/[^\d]/g, '') })} />
+          </Field>
+          <div style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap' }}>
+            <Button
+              variant="primary"
+              disabled={busy}
+              onClick={() =>
+                run(
+                  () =>
+                    call('terminal.pair', {
+                      code: pair.code.trim(),
+                      licenseId: pair.licenseId.trim(),
+                      capacity: Math.max(1, Number(pair.capacity) || 1),
+                    }),
+                  'পেয়ারিং অনুরোধ পাঠানো হয়েছে — মালিকের অনুমোদনের অপেক্ষা করুন',
+                )
+              }
+            >
+              পেয়ারিং করুন
+            </Button>
+            <Button disabled={busy} onClick={() => void refresh()}>
+              অবস্থা দেখুন
+            </Button>
+            <Button
+              variant="danger"
+              disabled={busy}
+              onClick={() => run(() => call('terminal.forget'), 'এই পিসির ডিভাইস কী মুছে ফেলা হয়েছে')}
+            >
+              ডিভাইস বিচ্ছিন্ন করুন
+            </Button>
+          </div>
+          <div className="small" style={{ marginBottom: 8 }}>
+            অবস্থা:{' '}
+            <strong>
+              {stateLabel[status?.status ?? 'unpaired'] ?? status?.status ?? '—'}
+            </strong>
+            {status?.paired ? ' • ডিভাইস কী সংরক্ষিত (DPAPI)' : ' • ডিভাইস কী নেই'}
+            {status?.server ? ` • ${status.server.base_url}` : ''}
+          </div>
+        </>
+      ) : null}
+
+      <Field label="এই কম্পিউটারের ভূমিকা" span={2} hint="মূল কম্পিউটার = ডেটা রাখে; ক্লায়েন্ট = শুধু সংযোগ করে">
+        <Switch
+          checked={settings.lan_mode === 'terminal'}
+          onChange={(v) => patch({ lan_mode: v ? 'terminal' : 'off' })}
+          label="ক্লায়েন্ট মোড"
+        />
+      </Field>
+    </>
+  );
+}
+
+function DeviceAdminPanel() {
+  const ui = useUI();
+  const [devices, setDevices] = useState<DeviceRow[]>([]);
+  const [capacity, setCapacity] = useState<{ licensed: number; approved: number; available: number } | null>(null);
+  const [identity, setIdentity] = useState<{ store_id: string; server_id: string; short_fingerprint: string | null } | null>(null);
+  const [pairing, setPairing] = useState<{ code: string; expires_at: string } | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  // Device and licence events (approved, revoked, capacity) refresh the panel without
+  // waiting for the 20 s poll.
+  useShopRefresh(['devices', 'license'], () => void load());
+
+  const load = async () => {
+    try {
+      const [list, cap, id] = await Promise.all([
+        call('devices.list'),
+        call('devices.capacity'),
+        call('devices.identity'),
+      ]);
+      setDevices(Array.isArray(list) ? (list as DeviceRow[]) : []);
+      setCapacity(cap as typeof capacity);
+      setIdentity(id as typeof identity);
+    } catch {
+      // Not signed in as an administrator, or this build has no device layer yet.
+    }
+  };
+
+  useEffect(() => {
+    void load();
+  }, []);
+
+  const act = async (fn: () => Promise<unknown>, message: string) => {
+    setBusy(true);
+    try {
+      await fn();
+      ui.success(message);
+      await load();
+    } catch (err) {
+      ui.error('ব্যর্থ', (err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const pending = devices.filter((d) => d.status === 'pending');
+
+  return (
+    <div style={{ marginTop: 20 }}>
+      <div className="section-title">ডিভাইস ব্যবস্থাপনা</div>
+      {capacity ? (
+        <div className="small muted">
+          লাইসেন্সে {capacity.licensed}টি ডিভাইস · অনুমোদিত {capacity.approved}টি · খালি {capacity.available}টি
+          {identity?.short_fingerprint ? ` · সার্টিফিকেট পিন ${identity.short_fingerprint}` : ''}
+        </div>
+      ) : null}
+
+      <div className="row" style={{ gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
+        <Button
+          size="sm"
+          variant="ghost"
+          icon="plus"
+          loading={busy}
+          onClick={() =>
+            void act(async () => {
+              const result = (await call('devices.pairingCode', { ttlMs: 10 * 60 * 1000 })) as {
+                code: string;
+                expires_at: string;
+              };
+              setPairing({ code: result.code, expires_at: result.expires_at });
+            }, 'পেয়ারিং কোড তৈরি হয়েছে (১০ মিনিট)')
+          }
+        >
+          পেয়ারিং কোড
+        </Button>
+        <Button size="sm" variant="ghost" icon="refresh" onClick={() => void load()}>
+          রিফ্রেশ
+        </Button>
+      </div>
+
+      {pairing ? (
+        <div className="card" style={{ marginTop: 10, padding: 12 }}>
+          <div className="small muted">একবার ব্যবহারযোগ্য কোড — {dateTime(pairing.expires_at)} পর্যন্ত</div>
+          <code style={{ fontSize: 16, wordBreak: 'break-all' }}>{pairing.code}</code>
+        </div>
+      ) : null}
+
+      {pending.length ? (
+        <div style={{ marginTop: 12 }}>
+          <strong className="small">অনুমোদনের অপেক্ষায় ({pending.length})</strong>
+          {pending.map((device) => (
+            <div key={device.device_id} className="row" style={{ gap: 8, marginTop: 6, flexWrap: 'wrap' }}>
+              <span>{device.device_name}</span>
+              <span className="small muted">{device.device_id}</span>
+              <Button
+                size="sm"
+                icon="check"
+                disabled={busy}
+                onClick={() => void act(() => call('devices.approve', device.device_id), 'ডিভাইস অনুমোদিত হয়েছে')}
+              >
+                অনুমোদন
+              </Button>
+              <Button
+                size="sm"
+                variant="ghost"
+                icon="close"
+                disabled={busy}
+                onClick={() => void act(() => call('devices.reject', device.device_id, 'প্রশাসক প্রত্যাখ্যান করেছেন'), 'ডিভাইস প্রত্যাখ্যাত')}
+              >
+                প্রত্যাখ্যান
+              </Button>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div className="small muted" style={{ marginTop: 10 }}>
+          অনুমোদনের অপেক্ষায় কোনো ডিভাইস নেই।
+        </div>
+      )}
+
+      <div style={{ marginTop: 12 }}>
+        {devices.map((device) => (
+          <div key={device.device_id} className="row" style={{ justifyContent: 'space-between', gap: 8, flexWrap: 'wrap', padding: '4px 0' }}>
+            <span>
+              {device.device_name} <span className="small muted">{device.device_id}</span>
+            </span>
+            <span className="row" style={{ gap: 8 }}>
+              <span className="badge" data-tone={device.status === 'approved' ? 'success' : device.status === 'revoked' ? 'danger' : 'warning'}>
+                {DEVICE_STATUS_LABEL[device.status]}
+              </span>
+              <span className="small muted">{device.last_seen ? dateTime(device.last_seen) : 'কখনো সংযুক্ত হয়নি'}</span>
+              {device.status === 'approved' || device.status === 'pending' ? (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  icon="close"
+                  disabled={busy}
+                  onClick={() => void act(() => call('devices.revoke', device.device_id, 'প্রশাসক বাতিল করেছেন'), 'ডিভাইস বাতিল হয়েছে')}
+                >
+                  বাতিল
+                </Button>
+              ) : null}
+            </span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function NetworkForm({
   settings,
   patch,
@@ -1016,7 +1380,7 @@ function NetworkForm({
 
   const refresh = async () => {
     try {
-      setStatus(await call<any>('lan.status'));
+      setStatus(await call<any>('server.status'));
     } catch {
       setStatus(null);
     }
@@ -1024,6 +1388,9 @@ function NetworkForm({
 
   useEffect(() => {
     void refresh();
+    // Live-ish status without hammering the server: two polls a minute.
+    const timer = setInterval(() => void refresh(), 30_000);
+    return () => clearInterval(timer);
   }, []);
 
   const run = async (fn: () => Promise<unknown>, message: string) => {
@@ -1072,11 +1439,14 @@ function NetworkForm({
         <Button size="sm" loading={busy} icon="check" onClick={() => void save(settings)}>
           সেটিংস সংরক্ষণ
         </Button>
-        <Button size="sm" variant="ghost" icon="shield" onClick={() => void run(() => call('lan.startHost'), 'হোস্ট চালু হয়েছে')}>
-          হোস্ট চালু
+        <Button size="sm" variant="ghost" icon="shield" onClick={() => void run(() => call('lan.startHost'), 'সার্ভার চালু হয়েছে')}>
+          সার্ভার চালু
         </Button>
-        <Button size="sm" variant="ghost" icon="close" onClick={() => void run(() => call('lan.stopHost'), 'হোস্ট বন্ধ হয়েছে')}>
-          হোস্ট বন্ধ
+        <Button size="sm" variant="ghost" icon="refresh" onClick={() => void run(() => call('server.restart'), 'সার্ভার রিস্টার্ট হয়েছে')}>
+          রিস্টার্ট
+        </Button>
+        <Button size="sm" variant="ghost" icon="close" onClick={() => void run(() => call('server.stop'), 'সার্ভার বন্ধ হয়েছে')}>
+          সার্ভার বন্ধ
         </Button>
         <Button
           size="sm"
@@ -1087,13 +1457,68 @@ function NetworkForm({
           টোকেন নবায়ন
         </Button>
       </div>
-      {status ? (
-        <div className="small muted" style={{ marginTop: 10 }}>
-          মোড: {status.mode ?? '—'} • হোস্ট: {status.running ? 'চালু' : 'বন্ধ'}
-          {status.host_url ? ` • ${status.host_url}` : ''}
-          {typeof status.clients === 'number' ? ` • সংযুক্ত: ${status.clients}` : ''}
+
+      <div className="form-grid" style={{ marginTop: 12 }}>
+        <Field label="উইন্ডো বন্ধ করলেও সার্ভার চালু থাকবে" hint="ট্রে থেকে নিয়ন্ত্রণ করা যায়">
+          <Switch
+            checked={settings.server_keep_running === 1}
+            onChange={(v) => void run(() => call('server.setKeepRunning', v), v ? 'সার্ভার চালু থাকবে' : 'উইন্ডো বন্ধে সার্ভারও বন্ধ হবে')}
+            label={settings.server_keep_running === 1 ? 'চালু' : 'বন্ধ'}
+          />
+        </Field>
+        <Field label="উইন্ডোজ চালু হলে সার্ভার নিজেই শুরু হবে" hint="শুধু হোস্ট মোডে">
+          <Switch
+            checked={settings.server_autostart === 1}
+            onChange={(v) => void run(() => call('server.setAutostart', v), v ? 'অটো-স্টার্ট চালু' : 'অটো-স্টার্ট বন্ধ')}
+            label={settings.server_autostart === 1 ? 'চালু' : 'বন্ধ'}
+          />
+        </Field>
+      </div>
+
+      {status?.health ? (
+        <div className="card" style={{ marginTop: 12, padding: 12 }}>
+          <div className="row" style={{ justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
+            <strong>সার্ভার অবস্থা</strong>
+            <span
+              className="badge"
+              data-tone={status.health.state === 'running' ? 'success' : status.health.state === 'error' ? 'danger' : 'warning'}
+            >
+              {status.health.state === 'running'
+                ? 'চালু'
+                : status.health.state === 'starting'
+                  ? 'চালু হচ্ছে'
+                  : status.health.state === 'stopping'
+                    ? 'বন্ধ হচ্ছে'
+                    : status.health.state === 'error'
+                      ? 'ত্রুটি'
+                      : 'বন্ধ'}
+            </span>
+          </div>
+          <div className="small muted" style={{ marginTop: 6 }}>
+            পোর্ট: {status.health.port ?? '—'} • ক্লায়েন্ট: {status.health.clients ?? 0} • রিস্টার্ট:{' '}
+            {status.health.restarts ?? 0} • ডেটাবেজ: {status.health.db_ok ? 'ঠিক আছে' : 'সমস্যা'} • শেষ ব্যাকআপ:{' '}
+            {status.health.last_backup_at || '—'}
+          </div>
+          {status.health.last_error ? (
+            <div className="small" style={{ marginTop: 6, color: 'var(--danger, #b3261e)' }}>
+              {status.health.last_error}
+            </div>
+          ) : null}
+          {status.health.addresses?.length ? (
+            <div className="small muted" style={{ marginTop: 6 }}>
+              ঠিকানা: {status.health.addresses.join(' · ')}
+            </div>
+          ) : null}
         </div>
-      ) : null}
+      ) : (
+        <div className="small muted" style={{ marginTop: 10 }}>
+          সার্ভার তথ্য পাওয়া যায়নি — অ্যাপ রিস্টার্ট করুন।
+        </div>
+      )}
+
+      <DeviceAdminPanel />
+
+      <TerminalConnectionPanel settings={settings} patch={patch} />
 
       <div className="section-title" style={{ marginTop: 20 }}>
         কাস্টমার ডিসপ্লে

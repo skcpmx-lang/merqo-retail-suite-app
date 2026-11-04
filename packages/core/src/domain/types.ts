@@ -625,6 +625,10 @@ export interface AppSettings {
   lan_port: number;
   lan_token: string;
   lan_host_url: string;
+  /** v1.1.4: start the Main Server automatically when the app launches. */
+  server_autostart: 0 | 1;
+  /** v1.1.4: keep the server (and tray) alive when the POS window is closed. */
+  server_keep_running: 0 | 1;
   receipt_show_qr: 0 | 1;
 }
 
@@ -651,9 +655,29 @@ export interface AppInfo {
 /* Licensing                                                          */
 /* ------------------------------------------------------------------ */
 
+/**
+ * Licence payload.
+ *
+ * v1 (v1.0–v1.1.3) binds a licence to one machine fingerprint and carries an
+ * advisory `max_devices`.
+ *
+ * v1.1.4 adds the *multi-PC* fields below. They are optional so that every
+ * licence already in the field keeps working unchanged — a v1 licence simply
+ * describes a standalone POS. When `device_id`/`store_id` are present the server
+ * treats the licence as a per-device enrolment credential and enforces the
+ * capacity on `SERVER_POS`.
+ */
 export interface LicensePayload {
   v: 1;
   license_id: string;
+  /** Multi-PC: store this licence belongs to (all devices of a shop share it). */
+  store_id?: string;
+  /** Multi-PC: the specific PC this licence was issued for. */
+  device_id?: string;
+  /** Multi-PC: SERVER_POS (Main PC) / CLIENT_POS / CLIENT_MANAGEMENT. */
+  device_role?: 'SERVER_POS' | 'CLIENT_POS' | 'CLIENT_MANAGEMENT';
+  /** Multi-PC: licensed device capacity, enforced by the Main PC. */
+  device_capacity?: number;
   org: string;
   owner?: string;
   phone?: string;

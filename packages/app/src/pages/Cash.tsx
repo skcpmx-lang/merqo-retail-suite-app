@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { call } from '../api.js';
+import { useShopRefresh } from '../lib/use-shop-refresh.js';
 import { money, dateTime, dateShort } from '../format.js';
 import { Icon } from '../icons.js';
 import {
@@ -39,6 +40,9 @@ export function CashPage({ can }: { can: (perm?: string) => boolean }) {
   const [amount, setAmount] = useState(0);
   const [note, setNote] = useState('');
   const [busy, setBusy] = useState(false);
+
+  // Shop events from the Main PC invalidate this screen.
+  useShopRefresh('cash', () => void load());
 
   const load = async () => {
     setLoading(true);

@@ -27,6 +27,7 @@ import {
   restoreGiftCardsForSale,
 } from './promotions.js';
 import { productPriceBreakdown, type PriceLevel } from './products.js';
+import { assertSaleExpectations } from './sale-conflicts.js';
 
 export interface SaleLineInput {
   productId: number;
@@ -50,6 +51,12 @@ export interface SalePaymentInput {
 }
 
 export interface SaleInput {
+  /**
+   * What the cashier showed the customer. When present, the commit is refused with a
+   * structured conflict if a price, product status or the total has moved (see
+   * `sale-conflicts.ts`). Omitted by imports/tests that do not render a cart.
+   */
+  expected?: import('./sale-conflicts.js').SaleExpectation;
   customerId?: number | null;
   lines: SaleLineInput[];
   orderDiscountType?: 'none' | 'percent' | 'fixed';
@@ -284,6 +291,8 @@ export interface CreateSaleResult {
 export function createSale(db: Db, input: SaleInput): CreateSaleResult {
   const settings = getSettings(db);
   const computation = computeSale(db, input, settings);
+  // Stale-cart protection: refuse what the cashier did not confirm.
+  if (input.expected) assertSaleExpectations(db, input, computation, settings);
 
   if (computation.due > 0) {
     if (!settings.allow_due_sale) throw new Error('বাকিতে বিক্রয় এই মুহূর্তে বন্ধ আছে (সেটিংস দেখুন)।');

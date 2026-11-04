@@ -46,6 +46,41 @@ function sha256File(file: string): string {
  * a manifest so a restore can verify integrity + compatibility before touching
  * live data.
  */
+/**
+ * A Client PC's local file is not the shop, so it must never be backed up or restored as
+ * if it were (D-11). `openClientDatabase` stamps `meta.db_role = 'client'`; every backup
+ * and restore entry point checks it before touching anything.
+ */
+export function assertNotClientDatabase(db: Db): void {
+  const role = getMeta(db, 'db_role');
+  if (role === 'client') {
+    const err = new Error(
+      'এই ডেটাবেজ ক্লায়েন্ট পিসির — ব্যাকআপ/রিস্টোর মূল কম্পিউটার থেকে করতে হবে।',
+    ) as Error & { code?: string };
+    err.code = 'DB_ROLE_CLIENT';
+    throw err;
+  }
+}
+
+/** Reads the role marker without writing (used before a restore swaps files). */
+export function fileDatabaseRole(filePath: string): 'client' | 'server' | 'missing' {
+  if (!fs.existsSync(filePath)) return 'missing';
+  let db: Db | null = null;
+  try {
+    db = openDatabase({ file: filePath, readonly: true });
+    const row = db.prepare("SELECT value FROM meta WHERE key = 'db_role'").get() as { value: string } | undefined;
+    return row?.value === 'client' ? 'client' : 'server';
+  } catch {
+    return 'server';
+  } finally {
+    try {
+      db?.close();
+    } catch {
+      /* already closed */
+    }
+  }
+}
+
 export function createBackup(
   db: Db,
   opts: {
@@ -57,6 +92,7 @@ export function createBackup(
     actor?: { id: number; username: string } | null;
   },
 ): BackupResult {
+  assertNotClientDatabase(db);
   const settings = getSettings(db);
   const dir = opts.targetPath ? path.dirname(opts.targetPath) : defaultBackupDir(opts.dataDir);
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
@@ -224,6 +260,13 @@ export function restoreBackup(
     actor?: { id: number; username: string } | null;
   },
 ): { safetyBackup: string; restored: ValidationResult } {
+  // Never restore over a client database, and never restore a client's file into a shop.
+  assertNotClientDatabase(db);
+  if (fileDatabaseRole(opts.livePath) === 'client') {
+    const err = new Error('লক্ষ্য ডেটাবেজ ক্লায়েন্ট পিসির — এখানে রিস্টোর করা যাবে না।') as Error & { code?: string };
+    err.code = 'DB_ROLE_CLIENT';
+    throw err;
+  }
   const validation = validateBackup(opts.backupPath);
   if (!validation.ok) throw new Error(validation.message);
 

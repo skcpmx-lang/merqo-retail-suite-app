@@ -7,6 +7,8 @@ import { seedReferenceData } from './seed.js';
 import { migrateToV2 } from './migration-v2.js';
 import { migrateToV3 } from './migration-v3.js';
 import { migrateToV4 } from './migration-v4.js';
+import { migrateToV5 } from './migration-v5.js';
+import { migrateToV6 } from './migration-v6.js';
 
 export type Db = SqliteDb;
 
@@ -19,6 +21,11 @@ export interface OpenOptions {
   readonly?: boolean;
   /** Skip migrations (caller will run them). */
   skipMigrate?: boolean;
+  /**
+   * Seed reference data (categories, units, default settings). Disabled for a Client PC,
+   * which must never grow authoritative-looking local data (D-11).
+   */
+  seed?: boolean;
   /** Optional logger for migration diagnostics. */
   log?: (msg: string) => void;
 }
@@ -142,6 +149,20 @@ export const MIGRATIONS: Migration[] = [
       migrateToV4(db);
     },
   },
+  {
+    version: 5,
+    name: 'multi_pc_devices_sessions_events',
+    up: (db) => {
+      migrateToV5(db);
+    },
+  },
+  {
+    version: 6,
+    name: 'replay_protection_and_rotation_journal',
+    up: (db) => {
+      migrateToV6(db);
+    },
+  },
 ];
 
 export function currentSchemaVersion(db: Db): number {
@@ -161,7 +182,7 @@ export function migrate(db: Db, opts: OpenOptions): MigrationResult {
   }
   if (from === SCHEMA_VERSION) {
     // Still make sure reference tables exist on databases created by a crash.
-    seedReferenceData(db);
+    if (opts.seed !== false) seedReferenceData(db);
     return { from, to: from, applied, backedUp };
   }
 
@@ -194,7 +215,7 @@ export function migrate(db: Db, opts: OpenOptions): MigrationResult {
     }
   }
 
-  seedReferenceData(db);
+  if (opts.seed !== false) seedReferenceData(db);
   const to = currentSchemaVersion(db);
   const now = new Date().toISOString();
   setMeta(db, 'schema_version', String(to));

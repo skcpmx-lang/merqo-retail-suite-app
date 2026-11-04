@@ -119,7 +119,25 @@ describe('v1.0.0 → v2.0.0 migration', () => {
 
     const db: Db = openDatabase({ file: dbPath, appVersion: '1.0.1' });
     expect(currentSchemaVersion(db)).toBe(SCHEMA_VERSION);
-    expect(SCHEMA_VERSION).toBe(4);
+    expect(SCHEMA_VERSION).toBe(6);
+    // v1.1.4 adds the multi-PC tables additively, so a v1 trading database gains
+    // device identity without a single row moving.
+    for (const table of [
+      'store_servers',
+      'terminals',
+      'terminal_credentials',
+      'terminal_sessions',
+      'device_licenses',
+      'pairing_tokens',
+      'idempotency_keys',
+      'event_outbox',
+    ]) {
+      const row = db
+        .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?")
+        .get(table) as { name: string } | undefined;
+      expect(row?.name, `${table} must exist after migration`).toBe(table);
+    }
+    expect(db.prepare('SELECT COUNT(*) AS n FROM store_servers').get()).toEqual({ n: 1 });
 
     // 1. operational data untouched
     const products = db.prepare('SELECT COUNT(*) AS c FROM products').get() as { c: number };

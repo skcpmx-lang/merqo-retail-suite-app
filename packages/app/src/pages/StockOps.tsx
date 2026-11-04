@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { call } from '../api.js';
+import { useShopRefresh } from '../lib/use-shop-refresh.js';
 import { money, qty as fmtQty, dateTime, today } from '../format.js';
 import { Icon } from '../icons.js';
 import {
@@ -135,6 +136,9 @@ export function StockOpsPage({ can }: { can: (perm?: string) => boolean }) {
     void loadLocations();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Stock, transfer or count changes from any PC reload the open tab.
+  useShopRefresh('stock', () => void loadTab());
 
   const loadTab = async () => {
     setLoading(true);

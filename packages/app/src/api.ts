@@ -3,11 +3,14 @@ export interface BridgeResponse<T = unknown> {
   data?: T;
   error?: string;
   code?: string;
+  /** Structured failure payload (e.g. stale-cart conflicts). */
+  details?: unknown;
 }
 
 interface SaudaBridge {
   invoke: (method: string, args?: unknown[]) => Promise<BridgeResponse>;
   onEvent: (cb: (payload: { type: string; message?: string }) => void) => () => void;
+  onV1Event?: (cb: (payload: ShopEvent) => void) => () => void;
   platform: string;
   versions: { electron: string; chrome: string; node: string };
 }
@@ -18,11 +21,32 @@ declare global {
   }
 }
 
+/**
+ * An event from the Main PC's authenticated stream (client mode). It is a *hint*:
+ * the renderer refetches through the normal routes and never renders payload data as
+ * if it were the source of truth.
+ */
+export interface ShopEvent {
+  kind: 'event' | 'state' | 'resync';
+  id?: number;
+  type?: string;
+  data?: unknown;
+  state?: string;
+  detail?: string;
+  from?: number;
+}
+
 export class ApiError extends Error {
   code: string;
-  constructor(message: string, code = 'ERROR') {
+  /**
+   * Structured failure payload from the backend. For a stale cart this is
+   * `{ conflicts: [...] }`, which is what lets the POS mark the exact lines that moved.
+   */
+  details?: unknown;
+  constructor(message: string, code = 'ERROR', details?: unknown) {
     super(message);
     this.code = code;
+    if (details !== undefined) this.details = details;
   }
 }
 
@@ -34,9 +58,14 @@ export async function call<T = any>(method: string, ...args: unknown[]): Promise
     // The licence gate lives in the main process; when it fires the shell must
     // fall back to the activation screen instead of leaving dead buttons.
     if (res.code === 'LICENSE_REQUIRED') window.dispatchEvent(new Event('sauda:license-required'));
-    throw new ApiError(res.error || 'অজানা ত্রুটি', res.code);
+    throw new ApiError(res.error || 'অজানা ত্রুটি', res.code, res.details);
   }
   return res.data as T;
+}
+
+export function onV1Event(cb: (payload: ShopEvent) => void): () => void {
+  if (!window.sauda?.onV1Event) return () => undefined;
+  return window.sauda.onV1Event(cb);
 }
 
 export function onEvent(cb: (payload: { type: string; message?: string }) => void): () => void {

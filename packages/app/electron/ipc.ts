@@ -177,6 +177,7 @@ import {
   validateBackup,
   voidExpense,
   voidPurchase,
+  validateCart,
   voidSale,
   writeOffStock,
   fingerprintForDisplay,
@@ -240,15 +241,33 @@ import {
   type RpcHost,
   type BrandInfo,
   type DocFormat,
+  type DeviceStatus,
 } from '@sauda/core';
 import { appPaths, assertInside, readRecentLogs, writeLog } from './paths.js';
 import { receiptWidth } from '@sauda/core';
+import {
+  approveDeviceFor,
+  capacityFor,
+  identityFor,
+  listDevicesFor,
+  pairingCodeFor,
+  rejectDeviceFor,
+  renameDeviceFor,
+  revokeDeviceFor,
+} from './device-admin.js';
 import { printHtml, listPrinters, htmlToPdf } from './printing.js';
-import { lanStatus, startLanHost, stopLanHost, testLanConnection } from './lan.js';
+import { getTerminalManager } from './terminal.js';
+import { decideModeChange } from './mode-policy.js';
+import { getServerRuntime, serverHealth } from './server.js';
 import { code128Svg, qrSvg } from './barcode.js';
 
 export interface AppContext {
   db: Db;
+  /**
+   * Which database this process owns. `client` means the guarded local database: only
+   * settings and meta are reachable, business data comes from the Main PC (D-11).
+   */
+  mode?: 'server' | 'client';
   user: User | null;
   openDb: () => Db;
   reopenDb: () => Db;
@@ -730,6 +749,20 @@ on(
     });
     return { ...result, sale: getSale(ctx.db, result.saleId) };
   },
+  'pos.sell',
+);
+/**
+ * Read-only cart revalidation. The POS calls this when an event says prices or stock
+ * moved, and before committing a recovered draft; it returns the authoritative lines and
+ * any conflict, and never writes.
+ */
+on(
+  'sales.validateCart',
+  (ctx, input) =>
+    validateCart(ctx.db, {
+      ...input,
+      actor: { id: ctx.user!.id, username: ctx.user!.username },
+    } as never),
   'pos.sell',
 );
 on('sales.list', (ctx, filter) => listSales(ctx.db, filter), 'report.view');
@@ -2007,82 +2040,192 @@ on(
 /* v1.1 — LAN multi-terminal                                          */
 /* ------------------------------------------------------------------ */
 
-on('lan.status', (ctx) => lanStatus(getSettings(ctx.db)), 'settings.manage');
+/** LAN + Main Server status (v1.1.4: the runtime is the single source of truth). */
+on(
+  'lan.status',
+  (ctx) => {
+    const settings = getSettings(ctx.db);
+    const health = serverHealth();
+    return {
+      mode: settings.lan_mode,
+      host_running: Boolean(health && health.state === 'running'),
+      port: health?.port ?? (settings.lan_port || null),
+      urls: health?.addresses ?? [],
+      host_url: settings.lan_host_url || '',
+      token: settings.lan_token || '',
+      has_token: Boolean(settings.lan_token),
+      server: health,
+    };
+  },
+  'settings.manage',
+);
+
+on(
+  'server.status',
+  (ctx) => {
+    const settings = getSettings(ctx.db);
+    return {
+      health: serverHealth(),
+      mode: settings.lan_mode,
+      autostart: settings.server_autostart,
+      keep_running: settings.server_keep_running,
+    };
+  },
+  'settings.manage',
+);
+
+on(
+  'server.start',
+  async (ctx, port?: number) => {
+    const runtime = getServerRuntime();
+    if (!runtime) throw new Error('সার্ভার রানটাইম তৈরি হয়নি — অ্যাপ আবার চালু করুন।');
+    const settings = getSettings(ctx.db);
+    if (!settings.lan_token) {
+      const token = generateLanToken();
+      updateSettings(ctx.db, { lan_token: token }, null);
+    }
+    const targetPort = port ?? settings.lan_port ?? 4747;
+    updateSettings(ctx.db, { lan_mode: 'host', lan_port: targetPort }, ctx.user ?? null);
+    const health = await runtime.start(targetPort);
+    return { ...health, token: getSettings(ctx.db).lan_token };
+  },
+  'settings.manage',
+);
+
+on(
+  'server.stop',
+  async () => {
+    const runtime = getServerRuntime();
+    if (!runtime) return { stopped: true, clients: 0 };
+    const clients = runtime.health().clients;
+    const health = await runtime.stop();
+    return { ...health, clients };
+  },
+  'settings.manage',
+);
+
+on(
+  'server.restart',
+  async () => {
+    const runtime = getServerRuntime();
+    if (!runtime) throw new Error('সার্ভার রানটাইম তৈরি হয়নি — অ্যাপ আবার চালু করুন।');
+    return runtime.restart();
+  },
+  'settings.manage',
+);
+
+on(
+  'server.setAutostart',
+  (ctx, enabled: boolean) => {
+    const settings = updateSettings(ctx.db, { server_autostart: enabled ? 1 : 0 }, ctx.user ?? null);
+    return { autostart: settings.server_autostart };
+  },
+  'settings.manage',
+);
+
+on(
+  'server.setKeepRunning',
+  (ctx, enabled: boolean) => {
+    const settings = updateSettings(ctx.db, { server_keep_running: enabled ? 1 : 0 }, ctx.user ?? null);
+    return { keep_running: settings.server_keep_running };
+  },
+  'settings.manage',
+);
+
+
+/* ------------------------------------------------------------------ */
+/* Device administration (Phase 3, Milestone E)                        */
+/* ------------------------------------------------------------------ */
+/* The logic lives in `device-admin.ts` (electron-free, unit tested); the registry
+   only adds the permission gate and the argument plumbing. */
+
+on('devices.list', (ctx, status?: DeviceStatus) => listDevicesFor(ctx, status), 'settings.manage');
+on('devices.pending', (ctx) => listDevicesFor(ctx, 'pending'), 'settings.manage');
+on('devices.capacity', (ctx) => capacityFor(ctx), 'settings.manage');
+on('devices.identity', (ctx) => identityFor(ctx), 'settings.manage');
+on('devices.approve', (ctx, deviceId: string, note?: string) => approveDeviceFor(ctx, deviceId, note), 'settings.manage');
+on('devices.reject', (ctx, deviceId: string, note?: string) => rejectDeviceFor(ctx, deviceId, note), 'settings.manage');
+on('devices.revoke', (ctx, deviceId: string, reason: string) => revokeDeviceFor(ctx, deviceId, reason), 'settings.manage');
+on('devices.rename', (ctx, deviceId: string, name: string) => renameDeviceFor(ctx, deviceId, name), 'settings.manage');
+on(
+  'devices.pairingCode',
+  (ctx, opts: { ttlMs?: number } = {}) => {
+    const settings = getSettings(ctx.db);
+    return pairingCodeFor(ctx, {
+      ttlMs: opts.ttlMs,
+      hostUrl: settings.lan_host_url,
+      port: settings.lan_port ?? 4747,
+    });
+  },
+  'settings.manage',
+);
+
 on(
   'lan.startHost',
   async (ctx, opts: { port?: number } = {}) => {
+    // A paired client must never start serving its own (stale) copy as the shop.
+    const manager = getTerminalManager();
+    const decision = decideModeChange({
+      from: getSettings(ctx.db).lan_mode,
+      to: 'host',
+      paired: Boolean(manager?.paired),
+      hasActiveServer: Boolean(manager?.activeServer),
+    });
+    if (!decision.allowed) {
+      const err = new Error(decision.message ?? 'এই পিসিতে সার্ভার চালু করা যাবে না।') as Error & { code?: string };
+      err.code = decision.code;
+      throw err;
+    }
+    const runtime = getServerRuntime();
+    if (!runtime) throw new Error('সার্ভার রানটাইম তৈরি হয়নি — অ্যাপ আবার চালু করুন।');
     const settings = getSettings(ctx.db);
     const token = settings.lan_token || generateLanToken();
     if (!settings.lan_token) updateSettings(ctx.db, { lan_token: token }, null);
-    const host = await startLanHost({
-      getDb: () => ctx.openDb(),
-      port: opts.port ?? settings.lan_port ?? 4747,
-      token,
-      authenticate: async (username, password) => {
-        const result = login(ctx.openDb(), username, password);
-        return {
-          id: result.user.id,
-          username: result.user.username,
-          full_name: result.user.full_name,
-          role: result.user.role,
-          permissions: result.user.permissions ?? [],
-        };
-      },
-      invoke: async (method, args, user) => {
-        // A LAN request runs against a *fresh* context so it can never disturb
-        // the operator sitting at the host machine.
-        const lanCtx: AppContext = {
-          ...ctx,
-          user: user
-            ? ({
-                id: user.id,
-                username: user.username,
-                full_name: user.full_name,
-                role: user.role,
-                permissions: user.permissions,
-              } as unknown as User)
-            : null,
-        };
-        return invokeRoute(lanCtx, method, args);
-      },
-      version: PRODUCT_VERSION,
-      businessName: () => getSettings(ctx.openDb()).business_name || PRODUCT_NAME,
-    });
-    updateSettings(ctx.db, { lan_mode: 'host', lan_port: host.port }, null);
-    return { port: host.port, urls: lanUrls(host.port), token };
+    const targetPort = opts.port ?? settings.lan_port ?? 4747;
+    updateSettings(ctx.db, { lan_mode: 'host', lan_port: targetPort }, null);
+    const health = await runtime.start(targetPort);
+    return { port: health.port, urls: health.addresses, token };
   },
   'settings.manage',
 );
 on('lan.stopHost', async () => {
-  await stopLanHost();
+  await getServerRuntime()?.stop();
   return true;
 }, 'settings.manage');
 on(
   'lan.configureTerminal',
-  async (ctx, input: { hostUrl: string; token: string }) => {
-    const url = String(input.hostUrl ?? '').trim();
-    if (!/^https?:\/\/[^\s]+$/.test(url)) throw new Error('সার্ভারের ঠিকানা সঠিক নয় (যেমন http://192.168.0.10:4747)।');
-    if (String(input.token ?? '').length < 32) throw new Error('LAN টোকেন সঠিক নয়।');
-    updateSettings(ctx.db, { lan_mode: 'terminal', lan_host_url: url, lan_token: input.token }, null);
-    return { ok: true };
+  () => {
+    // v1.1.4 Milestone D removed the shared-token transport. Configuration now goes
+    // through `terminal.configure` (pinned certificate + device key); there is no
+    // path that stores a shop-wide token for a client again.
+    const err = new Error(
+      'পুরোনো টোকেন-ভিত্তিক টার্মিনাল পরিবহন বন্ধ করা হয়েছে — এখন `terminal.configure` দিয়ে পেয়ারিং করুন।',
+    ) as Error & { code?: string };
+    err.code = 'LEGACY_TRANSPORT_REMOVED';
+    throw err;
   },
   'settings.manage',
 );
 on(
   'lan.test',
-  async (ctx, input?: { hostUrl?: string; token?: string }) => {
-    const settings = getSettings(ctx.db);
-    const url = input?.hostUrl || settings.lan_host_url;
-    const token = input?.token || settings.lan_token;
-    if (!url || !token) return { ok: false, error: 'ঠিকানা বা টোকেন দেওয়া নেই।' };
-    return testLanConnection(url, token);
+  async () => {
+    const manager = getTerminalManager();
+    if (!manager) return { ok: false, error: 'ক্লায়েন্ট মোড চালু হয়নি।', code: 'NOT_CONFIGURED' };
+    const result = await manager.status();
+    return {
+      ok: result.status === 'approved',
+      status: result.status,
+      error: result.status === 'approved' ? undefined : `সংযোগ অবস্থা: ${result.status}`,
+      business: result.server?.store_name ?? undefined,
+      fingerprint: result.server?.fingerprint ?? undefined,
+    };
   },
   'settings.manage',
 );
 on(
   'lan.modeOff',
   async (ctx) => {
-    await stopLanHost();
+    await getServerRuntime()?.stop();
     updateSettings(ctx.db, { lan_mode: 'off' }, null);
     return true;
   },
@@ -2096,6 +2239,82 @@ on(
     return token;
   },
   'settings.manage',
+);
+
+/* ------------------------------------------------------------------ */
+/* v1.1.4 Phase 3 — Client terminal (Milestone D)                     */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Client-mode connection routes. They act on the saved trusted servers and the
+ * sealed device credential — never on a shared token, and never with a local
+ * fallback: a route that cannot reach the Main PC fails instead of guessing.
+ *
+ * Public (pre-login) on purpose: a brand-new client must pair before anyone can log
+ * in. The bridge is only reachable from the bundled renderer (trust boundary in
+ * `main.ts`), and pairing still needs a one-time code plus administrator approval.
+ */
+function terminalManager() {
+  const manager = getTerminalManager();
+  if (!manager) throw new Error('ক্লায়েন্ট মোড চালু হয়নি — অ্যাপ আবার চালু করুন।');
+  return manager;
+}
+
+function terminalError<T>(fn: () => T): T {
+  try {
+    return fn();
+  } catch (err) {
+    const e = err as Error & { code?: string };
+    const error = new Error(e.message) as Error & { code?: string };
+    error.code = e.code ?? 'TERMINAL_ERROR';
+    throw error;
+  }
+}
+
+on('terminal.servers', () => terminalManager().configSnapshot, 'any', true);
+on(
+  'terminal.configure',
+  (_ctx, input: { baseUrl: string; fingerprint: string; certPem: string; storeName?: string; storeId?: string }) =>
+    terminalError(() => terminalManager().configure(input)),
+  'any',
+  true,
+);
+on('terminal.use', (_ctx, id: string) => terminalError(() => terminalManager().useServer(id)), 'any', true);
+on(
+  'terminal.remove',
+  (_ctx, id: string) => {
+    terminalError(() => terminalManager().removeServer(id));
+    return true;
+  },
+  'any',
+  true,
+);
+on('terminal.status', () => terminalManager().status(), 'any', true);
+on(
+  'terminal.pair',
+  (_ctx, input: { code: string; licenseId: string; capacity?: number; storeId?: string; deviceName?: string }) =>
+    terminalManager().pair(input),
+  'any',
+  true,
+);
+on('terminal.login', (_ctx, username: string, password: string) => terminalManager().login(username, password), 'any', true);
+on(
+  'terminal.logout',
+  () => {
+    terminalManager().logout();
+    return true;
+  },
+  'any',
+  true,
+);
+on(
+  'terminal.forget',
+  () => {
+    terminalManager().forget();
+    return true;
+  },
+  'any',
+  true,
 );
 
 /* ------------------------------------------------------------------ */
@@ -2146,6 +2365,11 @@ export interface InvokeResult {
   data?: unknown;
   error?: string;
   code?: string;
+  /**
+   * Structured error payload (e.g. the affected cart lines of a `SALE_CONFLICT`).
+   * Must be JSON-serialisable: it crosses IPC and, for a Client, HTTPS.
+   */
+  details?: unknown;
 }
 
 /**
@@ -2162,6 +2386,9 @@ export function invalidateLicenseCache(db: object | null | undefined): void {
 }
 
 function licenseGate(ctx: AppContext, method: string): void {
+  // A Client PC holds no authoritative licence: the Main PC checks the licence on every
+  // request it serves, and a client-local activation would be a stale copy of a fact.
+  if (ctx.mode === 'client') return;
   if (!app.isPackaged && process.env.SAUDA_SKIP_LICENSE === '1') return;
   if (LICENSE_EXEMPT_PREFIXES.some((prefix) => method.startsWith(prefix))) return;
   if (!ctx.db) return;
@@ -2192,9 +2419,14 @@ export async function invokeRoute(ctx: AppContext, method: string, args: any[]):
     const data = await route.fn(ctx, ...args);
     return { ok: true, data };
   } catch (err) {
-    const e = err as Error & { code?: string };
+    const e = err as Error & { code?: string; details?: unknown };
     writeLog('error', `ipc ${method} failed: ${e.message}`, e);
-    return { ok: false, error: e.message || 'অজানা ত্রুটি', code: e.code ?? 'ERROR' };
+    return {
+      ok: false,
+      error: e.message || 'অজানা ত্রুটি',
+      code: e.code ?? 'ERROR',
+      ...(e.details === undefined ? {} : { details: e.details }),
+    };
   }
 }
 

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { call } from '../api.js';
+import { useShopRefresh } from '../lib/use-shop-refresh.js';
 import { money, dateShort, dateTime, today, addDays } from '../format.js';
 import { Icon } from '../icons.js';
 import {
@@ -52,6 +53,8 @@ export function CustomersPage({ can, settings }: { can: (perm?: string) => boole
   const [groupInput, setGroupInput] = useState('');
   const [levelInput, setLevelInput] = useState<'retail' | 'wholesale' | 'special'>('retail');
   const [importing, setImporting] = useState(false);
+
+  useShopRefresh(['customers', 'suppliers'], () => void load());
 
   const load = async () => {
     setLoading(true);

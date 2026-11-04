@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { call } from '../api.js';
+import { ApiError, call } from '../api.js';
+import { useShopRefresh } from '../lib/use-shop-refresh.js';
 import { money, qty as fmtQty, dateTime } from '../format.js';
 import { Icon } from '../icons.js';
 import {
@@ -117,8 +118,31 @@ export function POSPage({
 
   const [receiptHtml, setReceiptHtml] = useState<string | null>(null);
   const [lastSale, setLastSale] = useState<Sale | null>(null);
+  /**
+   * Lines the Main Server refused to sell as-is (price/stock/product moved). The cart is
+   * never rewritten automatically: the cashier must review and confirm.
+   */
+  const [cartConflicts, setCartConflicts] = useState<
+    Array<{ kind: string; lineIndex: number; productName: string; message: string; currentPaisa?: number; availableBaseMilli?: number }>
+  >([]);
+  const [staleLineKeys, setStaleLineKeys] = useState<Set<string>>(new Set());
   const [printers, setPrinters] = useState<{ name: string; displayName: string; isDefault: boolean }[]>([]);
   const [session, setSession] = useState<{ session: any; in_hand: number } | null>(null);
+
+  /* ---------------- live catalogue (client mode) ---------------- */
+  // A stock or price change on any PC re-reads the catalogue instead of showing a stale
+  // price. The cart itself is untouched: it stays an uncommitted draft.
+  const [catalogNonce, setCatalogNonce] = useState(0);
+  useShopRefresh('pos-catalog', () => {
+    setCatalogNonce((n) => n + 1);
+    // A price/stock event while a cart is open: ask the Main Server what changed and
+    // mark the lines. Nothing is applied without the cashier's confirmation.
+    if (linesRef.current.length) void reviewCartRef.current?.();
+  });
+
+  const linesRef = useRef<CartLine[]>([]);
+  linesRef.current = lines;
+  const reviewCartRef = useRef<null | (() => Promise<void>)>(null);
 
   const searchRef = useRef<HTMLInputElement | null>(null);
   const barcodeRef = useRef<HTMLInputElement | null>(null);
@@ -180,7 +204,7 @@ export function POSPage({
       window.clearTimeout(timer);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [search, categoryId, page]);
+  }, [search, categoryId, page, catalogNonce]);
 
   useEffect(() => setPage(1), [search, categoryId]);
 
@@ -532,6 +556,78 @@ export function POSPage({
   const changePaisa = Math.max(0, paidPaisa - payablePaisa);
   const duePaisa = Math.max(0, payablePaisa - paidPaisa);
 
+  /** Cart lines exactly as the cashier sees them. */
+  const cartLinesPayload = () =>
+    lines.map((l) => ({
+      productId: l.productId,
+      unitId: l.unitId,
+      qtyMilli: l.qtyMilli,
+      unitPricePaisa: l.priceEdited ? l.unitPricePaisa : null,
+      discountPaisa: l.discountPaisa || null,
+      serials: l.serials.length ? l.serials : undefined,
+    }));
+
+  /** What the cashier showed the customer — the Main Server refuses anything different. */
+  const cartExpectation = () => ({
+    lines: lines.map((l) => ({
+      productId: l.productId,
+      unitPricePaisa: l.unitPricePaisa,
+      qtyBaseMilli: Math.round((l.qtyMilli * l.factorMilli) / 1000),
+    })),
+    totalPaisa: computation?.total,
+  });
+
+  const markConflicts = (conflicts: typeof cartConflicts) => {
+    setCartConflicts(conflicts);
+    const keys = new Set<string>();
+    for (const conflict of conflicts) {
+      const line = conflict.lineIndex >= 0 ? lines[conflict.lineIndex] : undefined;
+      if (line) keys.add(line.key);
+    }
+    setStaleLineKeys(keys);
+  };
+
+  /** Read-only revalidation against the Main Server (never commits, never rewrites). */
+  const reviewCart = async () => {
+    if (!lines.length) return;
+    try {
+      const res = await call<{ ok: boolean; conflicts: typeof cartConflicts }>('sales.validateCart', {
+        customerId: customerId || null,
+        lines: cartLinesPayload(),
+        expected: cartExpectation(),
+        orderDiscountType: discountType,
+        orderDiscountValue: discountValue,
+        taxPercentX100,
+        couponCode: couponCode || null,
+        paidPaisa: 0,
+      });
+      markConflicts(res.conflicts ?? []);
+    } catch {
+      /* revalidation is best-effort; the commit re-checks authoritatively */
+    }
+  };
+  reviewCartRef.current = reviewCart;
+
+  /** Applies the *server's* current values after the cashier explicitly accepts them. */
+  const acceptCartChanges = () => {
+    for (const conflict of cartConflicts) {
+      const line = conflict.lineIndex >= 0 ? lines[conflict.lineIndex] : undefined;
+      if (!line) continue;
+      if (conflict.kind === 'PRICE_CHANGED' && conflict.currentPaisa != null) {
+        patchLine(line.key, {
+          basePricePaisa: conflict.currentPaisa,
+          unitPricePaisa: conflict.currentPaisa,
+          priceEdited: false,
+        });
+      }
+      if (conflict.kind === 'STOCK_CHANGED' && conflict.availableBaseMilli != null) {
+        patchLine(line.key, { stockBaseMilli: conflict.availableBaseMilli });
+      }
+    }
+    setCartConflicts([]);
+    setStaleLineKeys(new Set());
+  };
+
   const submitSale = async () => {
     if (!computation) return;
     setSaving(true);
@@ -543,14 +639,8 @@ export function POSPage({
       }
       const result = await call<{ saleId: number; invoiceNo: string; sale: Sale }>('pos.createSale', {
         customerId: customerId || null,
-        lines: lines.map((l) => ({
-          productId: l.productId,
-          unitId: l.unitId,
-          qtyMilli: l.qtyMilli,
-          unitPricePaisa: l.priceEdited ? l.unitPricePaisa : null,
-          discountPaisa: l.discountPaisa || null,
-          serials: l.serials.length ? l.serials : undefined,
-        })),
+        lines: cartLinesPayload(),
+        expected: cartExpectation(),
         orderDiscountType: redeemValuePaisa > 0 && discountType === 'none' ? 'fixed' : discountType,
         orderDiscountValue: redeemValuePaisa > 0 && discountType === 'none' ? redeemValuePaisa : discountValue,
         taxPercentX100,
@@ -599,7 +689,22 @@ export function POSPage({
       const sess = await call<any>('cash.current').catch(() => null);
       setSession(sess);
     } catch (err) {
-      ui.error('বিক্রয় সম্পন্ন হয়নি', (err as Error).message);
+      const apiErr = err as ApiError;
+      const conflicts =
+        apiErr.code === 'SALE_CONFLICT'
+          ? ((apiErr.details as { conflicts?: typeof cartConflicts } | undefined)?.conflicts ?? [])
+          : [];
+      if (conflicts.length) {
+        // Nothing was sold. Mark the affected lines and keep the cart exactly as it is.
+        markConflicts(conflicts);
+        setPayOpen(false);
+        ui.error(
+          'কার্টে পরিবর্তন হয়েছে',
+          'দাম বা স্টক বদলেছে — কার্ট যাচাই করে আবার নিশ্চিত করুন। কিছুই বিক্রি হয়নি।',
+        );
+      } else {
+        ui.error('বিক্রয় সম্পন্ন হয়নি', (err as Error).message);
+      }
     } finally {
       setSaving(false);
     }
@@ -821,6 +926,27 @@ export function POSPage({
               ) : null}
             </div>
 
+            {cartConflicts.length ? (
+              <div className="card" style={{ margin: '6px 0', borderColor: 'var(--danger, #b3261e)' }}>
+                <div className="small" style={{ fontWeight: 600 }}>
+                  কার্টে পরিবর্তন — কিছুই বিক্রি হয়নি
+                </div>
+                {cartConflicts.map((conflict, index) => (
+                  <div key={`${conflict.kind}-${index}`} className="tiny muted">
+                    {conflict.message}
+                  </div>
+                ))}
+                <div className="row" style={{ gap: 8, marginTop: 6 }}>
+                  <Button size="sm" onClick={acceptCartChanges}>
+                    সার্ভারের বর্তমান দাম/স্টক নিন
+                  </Button>
+                  <Button size="sm" onClick={() => void reviewCart()}>
+                    আবার যাচাই করুন
+                  </Button>
+                </div>
+              </div>
+            ) : null}
+
             <div className="cart-lines">
               {lines.length === 0 ? (
                 <div className="cart-empty">
@@ -844,6 +970,9 @@ export function POSPage({
                       <div className="cl-main">
                         <div className="cl-name" title={line.name}>
                           {line.name}
+                          {staleLineKeys.has(line.key) ? (
+                            <span className="warn-text"> • যাচাই করুন</span>
+                          ) : null}
                         </div>
                         <div className="cl-sub">
                           {line.factorMilli !== 1000 ? `১ ${line.unitLabel} = ${line.factorMilli / 1000} বেস` : line.unitLabel}

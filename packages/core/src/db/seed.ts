@@ -68,6 +68,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   lan_port: 4747,
   lan_token: '',
   lan_host_url: '',
+  server_autostart: 0,
+  server_keep_running: 1,
   receipt_show_qr: 1,
 };
 
