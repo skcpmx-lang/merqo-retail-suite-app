@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { call } from '../api.js';
 import { BarList, CHART_COLORS, LineChart } from '../charts.js';
-import { dateTime, greeting, money, qty, relative } from '../format.js';
+import { dateTime, greeting, money, qty, relative, today } from '../format.js';
 import { Icon } from '../icons.js';
 import {
   Button,
@@ -48,6 +48,33 @@ export function DashboardPage({
   const [out, setOut] = useState<any[]>([]);
   const [trends, setTrends] = useState<any | null>(null);
   const [loading, setLoading] = useState(true);
+  const [brand, setBrand] = useState<{ name: string; type: string; address: string; phone: string; website: string; logo: string | null }>({
+    name: '',
+    type: '',
+    address: '',
+    phone: '',
+    website: '',
+    logo: null,
+  });
+
+  useEffect(() => {
+    void (async () => {
+      try {
+        const settings = await call<any>('settings.get');
+        const logo = await call<string | null>('settings.logoDataUrl').catch(() => null);
+        setBrand({
+          name: settings.business_name ?? '',
+          type: settings.business_type ?? '',
+          address: settings.business_address ?? '',
+          phone: settings.business_phone ?? '',
+          website: settings.business_website ?? '',
+          logo,
+        });
+      } catch {
+        /* the dashboard works without branding */
+      }
+    })();
+  }, []);
 
   const load = async () => {
     try {
@@ -134,6 +161,20 @@ export function DashboardPage({
             </Button>
           ) : null}
         </div>
+      </div>
+
+      <div className="brand-hero">
+        <div className="brand-hero-logo">
+          {brand.logo ? <img src={brand.logo} alt="" /> : <Icon name="dashboard" size={26} />}
+        </div>
+        <div style={{ minWidth: 0 }}>
+          <div className="brand-hero-name">{brand.name || 'আপনার প্রতিষ্ঠানের নাম'}</div>
+          <div className="brand-hero-meta">
+            {[brand.type, brand.address, brand.phone, brand.website].filter(Boolean).join(' • ') || 'সেটিংস → ব্যবসা ও রিসিট থেকে তথ্য দিন'}
+          </div>
+        </div>
+        <div className="grow" />
+        <div className="brand-hero-date">{today()}</div>
       </div>
 
       <div className="stat-grid">

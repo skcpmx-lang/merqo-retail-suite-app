@@ -46,6 +46,9 @@ interface Computation {
   paid: number;
   due: number;
   change: number;
+  couponCode?: string | null;
+  couponDiscount?: number;
+  giftCardApplied?: number;
   lines: { productId: number; unitPrice: number; lineTotal: number; qtyMilli: number; qtyBaseMilli: number }[];
 }
 
@@ -80,6 +83,13 @@ export function POSPage({
   const [discountValue, setDiscountValue] = useState(0);
   const [taxPercentX100, setTaxPercentX100] = useState(settings?.vat_percent_x100 ?? 0);
   const [note, setNote] = useState('');
+  // v1.1 promotions: coupon (percentage/fixed) and stored-value tender.
+  const [couponCode, setCouponCode] = useState('');
+  const [couponModal, setCouponModal] = useState(false);
+  const [giftCode, setGiftCode] = useState('');
+  const [giftCard, setGiftCard] = useState<any | null>(null);
+  const [giftModal, setGiftModal] = useState(false);
+  const [displayOpen, setDisplayOpen] = useState(false);
   const [computation, setComputation] = useState<Computation | null>(null);
   const [computing, setComputing] = useState(false);
   const [computeError, setComputeError] = useState<string | null>(null);
@@ -260,6 +270,7 @@ export function POSPage({
           orderDiscountValue:
             redeemValuePaisa > 0 && discountType === 'none' ? redeemValuePaisa : discountValue,
           taxPercentX100,
+          couponCode: couponCode || null,
           paidPaisa: 0,
           actor: { id: 0, username: 'ui' },
         });
@@ -280,7 +291,7 @@ export function POSPage({
       alive = false;
       window.clearTimeout(timer);
     };
-  }, [lines, customerId, discountType, discountValue, taxPercentX100, redeemValuePaisa]);
+  }, [lines, customerId, discountType, discountValue, taxPercentX100, redeemValuePaisa, couponCode]);
 
   useEffect(() => {
     let alive = true;
@@ -454,7 +465,8 @@ export function POSPage({
       ui.error('বিক্রয় সম্পন্ন করা যাবে না', computeError);
       return;
     }
-    setPayments([{ methodId: methodId || (methods.find((m) => m.is_cash === 1)?.id ?? ''), amount: computation.total, reference: '' }]);
+    const payable = Math.max(0, computation.total - (giftCard ? Math.min(giftCard.balance_paisa, computation.total) : 0));
+    setPayments([{ methodId: methodId || (methods.find((m) => m.is_cash === 1)?.id ?? ''), amount: payable, reference: '' }]);
     setPayOpen(true);
     setReference('');
   };
@@ -469,8 +481,12 @@ export function POSPage({
     });
   };
   const selectedCustomer = customers.find((c) => c.id === customerId) ?? null;
-  const changePaisa = Math.max(0, paidPaisa - (computation?.total ?? 0));
-  const duePaisa = Math.max(0, (computation?.total ?? 0) - paidPaisa);
+  const totalPaisa = computation?.total ?? 0;
+  // The card can only take up to what is left after the coupon + manual discount.
+  const giftAppliedPaisa = giftCard ? Math.min(giftCard.balance_paisa, totalPaisa) : 0;
+  const payablePaisa = Math.max(0, totalPaisa - giftAppliedPaisa);
+  const changePaisa = Math.max(0, paidPaisa - payablePaisa);
+  const duePaisa = Math.max(0, payablePaisa - paidPaisa);
 
   const submitSale = async () => {
     if (!computation) return;
@@ -493,6 +509,9 @@ export function POSPage({
         orderDiscountType: redeemValuePaisa > 0 && discountType === 'none' ? 'fixed' : discountType,
         orderDiscountValue: redeemValuePaisa > 0 && discountType === 'none' ? redeemValuePaisa : discountValue,
         taxPercentX100,
+        couponCode: couponCode || null,
+        giftCardCode: giftCode || null,
+        giftCardAmountPaisa: giftCard ? Math.min(giftCard.balance_paisa, totalPaisa) : null,
         paidPaisa,
         defaultMethodId: methodId || null,
         payments: payments
@@ -506,8 +525,20 @@ export function POSPage({
       });
       setPayOpen(false);
       setRedeemPoints(0);
+      setCouponCode('');
+      setGiftCode('');
+      setGiftCard(null);
       setLastSale(result.sale);
       clearCart();
+      if (settings?.customer_display_enabled === 1) {
+        void call('display.push', {
+          phase: 'done',
+          invoiceNo: result.invoiceNo,
+          totalPaisa: result.sale.total_paisa,
+          changePaisa: Math.max(0, paidPaisa - Math.max(0, result.sale.total_paisa)),
+          items: [],
+        }).catch(() => undefined);
+      }
       const html = await call<string>('print.receiptHtml', result.saleId);
       setReceiptHtml(html);
       if (settings?.print_after_sale === 1) {
@@ -895,6 +926,80 @@ export function POSPage({
                   <span className="num">−{money(totals.discount)}</span>
                 </div>
               ) : null}
+              {couponCode || giftCard ? (
+                <>
+                  {couponCode ? (
+                    <div className="row" style={{ justifyContent: 'space-between' }}>
+                      <span className="muted small">
+                        কুপন <span className="mono">{couponCode}</span>
+                      </span>
+                      <span className="row" style={{ gap: 6 }}>
+                        <span className="num">−{money(totals?.couponDiscount ?? 0)}</span>
+                        <button
+                          className="link-btn tiny"
+                          onClick={() => {
+                            setCouponCode('');
+                            setGiftCard(null);
+                            setGiftCode('');
+                          }}
+                        >
+                          সরান
+                        </button>
+                      </span>
+                    </div>
+                  ) : null}
+                  {giftCard ? (
+                    <div className="row" style={{ justifyContent: 'space-between' }}>
+                      <span className="muted small">
+                        গিফট কার্ড <span className="mono">{giftCard.code}</span>
+                      </span>
+                      <span className="row" style={{ gap: 6 }}>
+                        <span className="num">−{money(giftAppliedPaisa)}</span>
+                        <button
+                          className="link-btn tiny"
+                          onClick={() => {
+                            setGiftCard(null);
+                            setGiftCode('');
+                          }}
+                        >
+                          সরান
+                        </button>
+                      </span>
+                    </div>
+                  ) : null}
+                </>
+              ) : null}
+              {!couponCode || !giftCard ? (
+                <div className="row" style={{ gap: 10, marginTop: 2 }}>
+                  {!couponCode ? (
+                    <button className="link-btn tiny" onClick={() => setCouponModal(true)}>
+                      + কুপন
+                    </button>
+                  ) : null}
+                  {!giftCard ? (
+                    <button className="link-btn tiny" onClick={() => setGiftModal(true)}>
+                      + গিফট কার্ড
+                    </button>
+                  ) : null}
+                  {settings?.customer_display_enabled === 1 ? (
+                    <button
+                      className="link-btn tiny"
+                      style={{ marginLeft: 'auto' }}
+                      onClick={async () => {
+                        try {
+                          const open = await call<boolean>('display.open');
+                          setDisplayOpen(Boolean(open));
+                          ui.success('কাস্টমার ডিসপ্লে');
+                        } catch (err) {
+                          ui.error('ডিসপ্লে খোলা যায়নি', (err as Error).message);
+                        }
+                      }}
+                    >
+                      কাস্টমার ডিসপ্লে
+                    </button>
+                  ) : null}
+                </div>
+              ) : null}
               {totals && totals.tax > 0 ? (
                 <div className="row" style={{ justifyContent: 'space-between' }}>
                   <span className="muted small">ভ্যাট</span>
@@ -903,7 +1008,7 @@ export function POSPage({
               ) : null}
               <div className="cart-total-row">
                 <span>সর্বমোট</span>
-                <span className="num">{money(totals?.total ?? 0)}</span>
+                <span className="num">{money(payablePaisa)}</span>
               </div>
               {computeError ? <div className="error-text">{computeError}</div> : null}
               {computing ? <div className="tiny muted">হিসাব হচ্ছে…</div> : null}
@@ -919,7 +1024,7 @@ export function POSPage({
               onClick={openPayment}
               icon="wallet"
             >
-              পেমেন্ট ({money(totals?.total ?? 0)}) — F8
+              পেমেন্ট ({money(payablePaisa)}) — F8
             </Button>
             {!session?.session ? (
               <button className="link-btn" onClick={openCash}>
@@ -937,7 +1042,7 @@ export function POSPage({
       {payOpen && computation ? (
         <Modal
           title="পেমেন্ট নিন"
-          sub={`মোট বিল ${money(computation.total)} • ${lineCount} টি আইটেম`}
+          sub={`মোট বিল ${money(computation.total)} • ${lineCount} টি আইটেম${giftAppliedPaisa ? ` • কার্ড ${money(giftAppliedPaisa)}` : ''}`}
           size="md"
           onClose={() => setPayOpen(false)}
           footer={
@@ -1002,7 +1107,7 @@ export function POSPage({
             ) : null}
             <div className="span-2">
               <div className="row" style={{ gap: 7, flexWrap: 'wrap' }}>
-                {[computation.total, Math.ceil(computation.total / 10000) * 10000, Math.ceil(computation.total / 50000) * 50000].map(
+                {[payablePaisa, Math.ceil(payablePaisa / 10000) * 10000, Math.ceil(payablePaisa / 50000) * 50000].map(
                   (amount, i) => (
                     <Button key={i} size="sm" onClick={() => setPaidPaisa(amount)}>
                       {money(amount)}
@@ -1155,7 +1260,133 @@ export function POSPage({
           </div>
         </Modal>
       ) : null}
+
+      {/* v1.1 — coupon / gift card entry is deliberately tiny: cashiers type
+          the code, we validate against the same service the sale uses. */}
+      {couponModal ? (
+        <PromoCodeModal
+          kind="coupon"
+          subtotalPaisa={computation?.subtotal ?? 0}
+          customerId={customerId === '' ? null : Number(customerId)}
+          onClose={() => setCouponModal(false)}
+          onApplied={(code) => {
+            setCouponCode(code);
+            setCouponModal(false);
+          }}
+        />
+      ) : null}
+      {giftModal ? (
+        <PromoCodeModal
+          kind="gift"
+          subtotalPaisa={computation?.total ?? 0}
+          customerId={null}
+          onClose={() => setGiftModal(false)}
+          onApplied={(code, card) => {
+            setGiftCode(code);
+            setGiftCard(card ?? null);
+            setGiftModal(false);
+            setPayments((prev) =>
+              prev.map((p) => ({
+                ...p,
+                amount: Math.max(0, payableAfter(Math.max(0, computation?.total ?? 0) - Math.min(card?.balance_paisa ?? 0, computation?.total ?? 0))),
+              })),
+            );
+          }}
+        />
+      ) : null}
     </>
+  );
+
+  function payableAfter(amount: number) {
+    return amount;
+  }
+}
+
+/**
+ * Shared code entry for coupons and stored-value cards. Validation is done by
+ * the promotions service so the till and the promotion screen can never drift.
+ */
+function PromoCodeModal({
+  kind,
+  subtotalPaisa,
+  customerId,
+  onClose,
+  onApplied,
+}: {
+  kind: 'coupon' | 'gift';
+  subtotalPaisa: number;
+  customerId: number | null;
+  onClose: () => void;
+  onApplied: (code: string, card?: any) => void;
+}) {
+  const ui = useUI();
+  const [code, setCode] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [hint, setHint] = useState<string | null>(null);
+
+  const apply = async () => {
+    const value = code.trim().toUpperCase();
+    if (!value) return;
+    setBusy(true);
+    setHint(null);
+    try {
+      if (kind === 'coupon') {
+        const res = await call<{ ok: boolean; discountPaisa: number; reason: string | null }>('promotions.couponCheck', {
+          code: value,
+          subtotalPaisa,
+          customerId,
+        });
+        if (!res.ok) {
+          setHint(res.reason ?? 'কুপনটি ব্যবহার করা যাবে না।');
+          return;
+        }
+        ui.success('কুপন যোগ হয়েছে', `ছাড় ${money(res.discountPaisa)}`);
+        onApplied(value);
+      } else {
+        const res = await call<{ ok: boolean; card: any; usablePaisa: number; reason: string | null }>('promotions.giftCardCheck', {
+          code: value,
+          amountPaisa: subtotalPaisa,
+        });
+        if (!res.ok) {
+          setHint(res.reason ?? 'কার্ডটি ব্যবহার করা যাবে না।');
+          return;
+        }
+        ui.success('কার্ড যোগ হয়েছে', `ব্যবহার হবে ${money(res.usablePaisa)}`);
+        onApplied(value, res.card);
+      }
+    } catch (err) {
+      setHint((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Modal
+      title={kind === 'coupon' ? 'কুপন প্রয়োগ' : 'গিফট কার্ড / ভাউচার'}
+      onClose={onClose}
+      size="sm"
+      footer={
+        <>
+          <Button onClick={onClose}>বাতিল</Button>
+          <Button variant="primary" loading={busy} icon="check" onClick={() => void apply()}>
+            প্রয়োগ করুন
+          </Button>
+        </>
+      }
+    >
+      <Field label="কোড" error={hint ?? undefined} hint="কোড বড়/ছোট হাতের হলেও চলবে">
+        <TextInput
+          value={code}
+          onChange={(v) => setCode(v.toUpperCase())}
+          autoFocus
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') void apply();
+          }}
+          placeholder={kind === 'coupon' ? 'EID10' : 'GC-XXXX-XXXX'}
+        />
+      </Field>
+    </Modal>
   );
 }
 

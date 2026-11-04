@@ -3,6 +3,8 @@ import { call, onEvent } from './api.js';
 import { Icon, SaudaLogo, type IconName } from './icons.js';
 import { setFormatPrefs, initials, money, today } from './format.js';
 import { UIProvider, useUI, EmptyState, Spinner, Button, Loading } from './ui.js';
+import { useT, useLang, setLang, type Lang } from './i18n.js';
+import { applyTheme, type ThemePref } from './theme.js';
 import type { ActivationState, AppSettings, User } from './types.js';
 import { ActivationPage } from './pages/Activation.js';
 import { SetupPage } from './pages/Setup.js';
@@ -13,16 +15,20 @@ import { ProductsPage } from './pages/Products.js';
 import { InventoryPage } from './pages/Inventory.js';
 import { StockOpsPage } from './pages/StockOps.js';
 import { AccountingPage } from './pages/Accounting.js';
+import { PurchaseOrdersPage } from './pages/PurchaseOrders.js';
 import { PurchasesPage } from './pages/Purchases.js';
 import { SalesPage } from './pages/Sales.js';
 import { ReturnsPage } from './pages/Returns.js';
 import { CustomersPage, SuppliersPage } from './pages/Parties.js';
+import { PromotionsPage } from './pages/Promotions.js';
 import { ExpensesPage } from './pages/Expenses.js';
 import { CashPage } from './pages/Cash.js';
 import { ReportsPage } from './pages/Reports.js';
+import { TeamPage } from './pages/Team.js';
 import { SettingsPage } from './pages/Settings.js';
 import { BackupPage } from './pages/Backup.js';
 import { AboutPage } from './pages/About.js';
+import { CustomerDisplayPage } from './pages/CustomerDisplay.js';
 
 export type PageId =
   | 'dashboard'
@@ -30,66 +36,75 @@ export type PageId =
   | 'products'
   | 'inventory'
   | 'stockops'
-  | 'accounting'
+  | 'purchaseorders'
   | 'purchases'
   | 'sales'
   | 'returns'
   | 'customers'
   | 'suppliers'
+  | 'promotions'
   | 'expenses'
   | 'cash'
+  | 'accounting'
   | 'reports'
+  | 'team'
   | 'settings'
   | 'backup'
   | 'about';
 
 interface NavEntry {
   id: PageId;
-  label: string;
+  labelKey: string;
   icon: IconName;
-  group: string;
+  groupKey: string;
   perm?: string;
   shortcut?: string;
 }
 
 const NAV: NavEntry[] = [
-  { id: 'dashboard', label: 'ড্যাশবোর্ড', icon: 'dashboard', group: 'প্রধান', shortcut: 'Ctrl+1' },
-  { id: 'pos', label: 'বিক্রয় (POS)', icon: 'pos', group: 'প্রধান', perm: 'pos.sell', shortcut: 'F2' },
-  { id: 'sales', label: 'সেলস ও ইনভয়েস', icon: 'cart', group: 'প্রধান', perm: 'report.view', shortcut: 'Ctrl+2' },
-  { id: 'products', label: 'প্রোডাক্ট', icon: 'product', group: 'ইনভেন্টরি', perm: 'product.view', shortcut: 'F3' },
-  { id: 'inventory', label: 'স্টক ও সমন্বয়', icon: 'stock', group: 'ইনভেন্টরি', perm: 'product.view' },
-  { id: 'stockops', label: 'স্টক অপারেশন', icon: 'box', group: 'ইনভেন্টরি', perm: 'product.view' },
-  { id: 'purchases', label: 'পারচেজ', icon: 'purchase', group: 'ইনভেন্টরি', perm: 'purchase.manage', shortcut: 'F4' },
-  { id: 'returns', label: 'রিটার্ন ও রিফান্ড', icon: 'return', group: 'ইনভেন্টরি', perm: 'return.manage' },
-  { id: 'customers', label: 'কাস্টমার ও বাকি', icon: 'users', group: 'পক্ষ', perm: 'customer.manage', shortcut: 'F5' },
-  { id: 'suppliers', label: 'সাপ্লায়ার', icon: 'supplier', group: 'পক্ষ', perm: 'supplier.manage' },
-  { id: 'expenses', label: 'এক্সপেন্স', icon: 'expense', group: 'হিসাব', perm: 'expense.manage' },
-  { id: 'cash', label: 'ক্যাশ রেজিস্টার', icon: 'cash', group: 'হিসাব', perm: 'cash.manage' },
-  { id: 'accounting', label: 'হিসাব (ডাবল-এন্ট্রি)', icon: 'shield', group: 'হিসাব', perm: 'accounting.view' },
-  { id: 'reports', label: 'রিপোর্ট', icon: 'report', group: 'হিসাব', perm: 'report.view', shortcut: 'F9' },
-  { id: 'settings', label: 'সেটিংস', icon: 'settings', group: 'সিস্টেম', perm: 'settings.manage' },
-  { id: 'backup', label: 'ব্যাকআপ ও রিস্টোর', icon: 'backup', group: 'সিস্টেম', perm: 'backup.manage' },
-  { id: 'about', label: 'সম্পর্কে', icon: 'info', group: 'সিস্টেম' },
+  { id: 'dashboard', labelKey: 'nav.dashboard', icon: 'dashboard', groupKey: 'nav.group.main', shortcut: 'Ctrl+1' },
+  { id: 'pos', labelKey: 'nav.pos', icon: 'pos', groupKey: 'nav.group.main', perm: 'pos.sell', shortcut: 'F2' },
+  { id: 'sales', labelKey: 'nav.sales', icon: 'cart', groupKey: 'nav.group.main', perm: 'report.view', shortcut: 'Ctrl+2' },
+  { id: 'products', labelKey: 'nav.products', icon: 'product', groupKey: 'nav.group.inventory', perm: 'product.view', shortcut: 'F3' },
+  { id: 'inventory', labelKey: 'nav.inventory', icon: 'stock', groupKey: 'nav.group.inventory', perm: 'product.view' },
+  { id: 'stockops', labelKey: 'nav.stockops', icon: 'box', groupKey: 'nav.group.inventory', perm: 'product.view' },
+  { id: 'purchaseorders', labelKey: 'nav.purchaseorders', icon: 'file', groupKey: 'nav.group.inventory', perm: 'purchase.manage' },
+  { id: 'purchases', labelKey: 'nav.purchases', icon: 'purchase', groupKey: 'nav.group.inventory', perm: 'purchase.manage', shortcut: 'F4' },
+  { id: 'returns', labelKey: 'nav.returns', icon: 'return', groupKey: 'nav.group.inventory', perm: 'return.manage' },
+  { id: 'customers', labelKey: 'nav.customers', icon: 'users', groupKey: 'nav.group.party', perm: 'customer.manage', shortcut: 'F5' },
+  { id: 'suppliers', labelKey: 'nav.suppliers', icon: 'supplier', groupKey: 'nav.group.party', perm: 'supplier.manage' },
+  { id: 'promotions', labelKey: 'nav.promotions', icon: 'tag', groupKey: 'nav.group.party', perm: 'pos.discount' },
+  { id: 'expenses', labelKey: 'nav.expenses', icon: 'expense', groupKey: 'nav.group.account', perm: 'expense.manage' },
+  { id: 'cash', labelKey: 'nav.cash', icon: 'cash', groupKey: 'nav.group.account', perm: 'cash.manage' },
+  { id: 'accounting', labelKey: 'nav.accounting', icon: 'shield', groupKey: 'nav.group.account', perm: 'accounting.view' },
+  { id: 'reports', labelKey: 'nav.reports', icon: 'report', groupKey: 'nav.group.account', perm: 'report.view', shortcut: 'F9' },
+  { id: 'team', labelKey: 'nav.team', icon: 'clock', groupKey: 'nav.group.system', perm: 'report.view' },
+  { id: 'settings', labelKey: 'nav.settings', icon: 'settings', groupKey: 'nav.group.system', perm: 'settings.manage' },
+  { id: 'backup', labelKey: 'nav.backup', icon: 'backup', groupKey: 'nav.group.system', perm: 'backup.manage' },
+  { id: 'about', labelKey: 'nav.about', icon: 'info', groupKey: 'nav.group.system' },
 ];
 
-const PAGE_TITLES: Record<PageId, string> = {
-  dashboard: 'ড্যাশবোর্ড',
-  pos: 'বিক্রয় কাউন্টার (POS)',
-  products: 'প্রোডাক্ট ব্যবস্থাপনা',
-  stockops: 'স্টক অপারেশন',
-  accounting: 'হিসাব (ডাবল-এন্ট্রি)',
-  inventory: 'স্টক ও ইনভেন্টরি',
-  purchases: 'পারচেজ ব্যবস্থাপনা',
-  sales: 'সেলস ও ইনভয়েস',
-  returns: 'রিটার্ন ও রিফান্ড',
-  customers: 'কাস্টমার ও বাকি',
-  suppliers: 'সাপ্লায়ার',
-  expenses: 'এক্সপেন্স',
-  cash: 'ক্যাশ রেজিস্টার',
-  reports: 'রিপোর্ট ও অ্যানালিটিক্স',
-  settings: 'সেটিংস',
-  backup: 'ব্যাকআপ ও রিস্টোর',
-  about: 'সফটওয়্যার সম্পর্কে',
+const PAGE_TITLE_KEYS: Record<PageId, string> = {
+  dashboard: 'nav.dashboard',
+  pos: 'pos.title',
+  products: 'nav.products',
+  stockops: 'nav.stockops',
+  purchaseorders: 'po.title',
+  accounting: 'nav.accounting',
+  inventory: 'nav.inventory',
+  purchases: 'nav.purchases',
+  sales: 'nav.sales',
+  returns: 'nav.returns',
+  customers: 'nav.customers',
+  suppliers: 'nav.suppliers',
+  promotions: 'promo.title',
+  expenses: 'nav.expenses',
+  cash: 'nav.cash',
+  reports: 'nav.reports',
+  team: 'team.title',
+  settings: 'nav.settings',
+  backup: 'nav.backup',
+  about: 'nav.about',
 };
 
 interface BootState {
@@ -100,24 +115,46 @@ interface BootState {
   error: string | null;
 }
 
+const isDisplayWindow = typeof window !== 'undefined' && window.location.hash.replace('#', '') === 'display';
+
 export default function App() {
+  // The customer-facing second screen is a separate BrowserWindow that loads
+  // this same bundle with #display — it must not hit the licence/login gate.
+  if (isDisplayWindow) return <CustomerDisplayPage />;
+  return <MainApp />;
+}
+
+function MainApp() {
   const [boot, setBoot] = useState<BootState>({ license: null, needsSetup: true, user: null, settings: null, error: null });
   const [page, setPage] = useState<PageId>('dashboard');
   const [posNavKey, setPosNavKey] = useState(0);
   const [reloadKey, setReloadKey] = useState(0);
+  const t = useT();
+  const lang = useLang();
 
   const refreshBoot = useCallback(async () => {
     try {
       const license = await call<ActivationState>('license.state');
       let needsSetup = true;
       let settings: AppSettings | null = null;
+      let user: User | null = null;
       if (license.activated) {
         const status = await call<{ needs_setup: boolean }>('setup.status');
         needsSetup = status.needs_setup;
-        if (!needsSetup) settings = await call<AppSettings>('settings.get');
+        if (!needsSetup) {
+          settings = await call<AppSettings>('settings.get');
+          // The software lock can be switched off by the owner: in that case
+          // the shell signs in the primary admin directly (permissions and the
+          // licence gate still apply exactly as before).
+          user = await call<User | null>('auth.bootstrap');
+        }
       }
-      setBoot((prev) => ({ ...prev, license, needsSetup, settings, error: null }));
-      if (settings) setFormatPrefs({ symbol: settings.currency_symbol, bengaliDigits: settings.bengali_digits === 1 });
+      setBoot((prev) => ({ ...prev, license, needsSetup, settings, user: user ?? prev.user, error: null }));
+      if (settings) {
+        setFormatPrefs({ symbol: settings.currency_symbol, bengaliDigits: settings.bengali_digits === 1 });
+        applyTheme((settings.theme as ThemePref) ?? 'light');
+        setLang((settings.language as Lang) ?? 'bn');
+      }
     } catch (err) {
       setBoot((prev) => ({ ...prev, error: (err as Error).message }));
     }
@@ -151,10 +188,10 @@ export default function App() {
           <div className="brand-mark">
             <SaudaLogo size={44} />
           </div>
-          <h1 style={{ marginBottom: 6 }}>সাউদা চালু করা যাচ্ছে না</h1>
+          <h1 style={{ marginBottom: 6 }}>{t('common.error')}</h1>
           <p className="muted small">{boot.error}</p>
           <Button variant="primary" block onClick={() => setReloadKey((k) => k + 1)} icon="refresh">
-            আবার চেষ্টা করুন
+            {t('common.retry')}
           </Button>
         </div>
       </div>
@@ -167,7 +204,7 @@ export default function App() {
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12 }}>
           <SaudaLogo size={54} />
           <Spinner size={22} />
-          <span className="muted small">সাউদা চালু হচ্ছে…</span>
+          <span className="muted small">{t('common.loading')}</span>
         </div>
       </div>
     );
@@ -184,7 +221,7 @@ export default function App() {
   if (!boot.user) {
     return (
       <LoginPage
-        businessName={boot.settings?.business_name ?? 'সাউদা'}
+        businessName={boot.settings?.business_name ?? t('app.name')}
         licenseOrg={boot.license.license?.org ?? ''}
         onLogin={(user) => setBoot((prev) => ({ ...prev, user }))}
       />
@@ -198,6 +235,7 @@ export default function App() {
         settings={boot.settings}
         page={page}
         posNavKey={posNavKey}
+        lang={lang}
         navigate={navigate}
         onLogout={async () => {
           await call('auth.logout');
@@ -206,6 +244,8 @@ export default function App() {
         onSettingsChanged={async () => {
           const s = await call<AppSettings>('settings.get');
           setBoot((prev) => ({ ...prev, settings: s }));
+          applyTheme((s.theme as ThemePref) ?? 'light');
+          setLang((s.language as Lang) ?? 'bn');
         }}
         onLicenseChanged={refreshBoot}
       />
@@ -218,6 +258,7 @@ function AppShell({
   settings,
   page,
   posNavKey,
+  lang,
   navigate,
   onLogout,
   onSettingsChanged,
@@ -227,26 +268,27 @@ function AppShell({
   settings: AppSettings | null;
   page: PageId;
   posNavKey: number;
+  lang: Lang;
   navigate: (p: PageId) => void;
   onLogout: () => Promise<void>;
   onSettingsChanged: () => Promise<void>;
   onLicenseChanged: () => Promise<void>;
 }) {
   const ui = useUI();
+  const t = useT();
   const [lowCount, setLowCount] = useState(0);
   const [search, setSearch] = useState('');
   const [results, setResults] = useState<any[] | null>(null);
   const [searching, setSearching] = useState(false);
+  const [alerts, setAlerts] = useState<any[]>([]);
+  const [alertsOpen, setAlertsOpen] = useState(false);
+  const [logoUrl, setLogoUrl] = useState<string | null>(null);
+  const [appVersion, setAppVersion] = useState('1.1.0');
+  const [navOpen, setNavOpen] = useState(false);
   const searchRef = useRef<HTMLInputElement | null>(null);
 
-  const permissions = useMemo(
-    () => new Set(user.role === 'admin' ? ['*'] : user.permissions ?? []),
-    [user],
-  );
-  const can = useCallback(
-    (perm?: string) => !perm || permissions.has('*') || permissions.has(perm),
-    [permissions],
-  );
+  const permissions = useMemo(() => new Set(user.role === 'admin' ? ['*'] : user.permissions ?? []), [user]);
+  const can = useCallback((perm?: string) => !perm || permissions.has('*') || permissions.has(perm), [permissions]);
 
   const visibleNav = useMemo(() => NAV.filter((n) => can(n.perm)), [can]);
   useEffect(() => {
@@ -270,6 +312,44 @@ function AppShell({
       window.clearInterval(timer);
     };
   }, [page]);
+
+  // Business alerts (data-derived, never a remote push).
+  useEffect(() => {
+    let alive = true;
+    const load = async () => {
+      if (!can('report.view')) return;
+      try {
+        const list = await call<any[]>('notifications.alerts');
+        if (alive) setAlerts(list ?? []);
+      } catch {
+        /* ignore */
+      }
+    };
+    void load();
+    const timer = window.setInterval(load, 180_000);
+    return () => {
+      alive = false;
+      window.clearInterval(timer);
+    };
+  }, [can, page]);
+
+  useEffect(() => {
+    void call<{ version: string }>('app.info')
+      .then((info) => setAppVersion(info?.version ?? '1.1.0'))
+      .catch(() => undefined);
+  }, []);
+
+  useEffect(() => {
+    let alive = true;
+    void call<string | null>('settings.logoDataUrl')
+      .then((url) => {
+        if (alive) setLogoUrl(url);
+      })
+      .catch(() => undefined);
+    return () => {
+      alive = false;
+    };
+  }, [settings?.business_logo]);
 
   // Global keyboard shortcuts
   useEffect(() => {
@@ -313,7 +393,10 @@ function AppShell({
         e.preventDefault();
         navigate('sales');
       }
-      if (e.key === 'Escape' && !inField) setResults(null);
+      if (e.key === 'Escape' && !inField) {
+        setResults(null);
+        setAlertsOpen(false);
+      }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
@@ -326,7 +409,7 @@ function AppShell({
     }
     let alive = true;
     setSearching(true);
-    const t = window.setTimeout(async () => {
+    const timer = window.setTimeout(async () => {
       try {
         const hits = await call<any[]>('search.everything', search.trim());
         if (alive) setResults(hits);
@@ -338,15 +421,15 @@ function AppShell({
     }, 260);
     return () => {
       alive = false;
-      window.clearTimeout(t);
+      window.clearTimeout(timer);
     };
   }, [search]);
 
   const groups = useMemo(() => {
     const map = new Map<string, NavEntry[]>();
     for (const item of visibleNav) {
-      if (!map.has(item.group)) map.set(item.group, []);
-      map.get(item.group)!.push(item);
+      if (!map.has(item.groupKey)) map.set(item.groupKey, []);
+      map.get(item.groupKey)!.push(item);
     }
     return [...map.entries()];
   }, [visibleNav]);
@@ -374,6 +457,8 @@ function AppShell({
         return <InventoryPage can={can} />;
       case 'stockops':
         return <StockOpsPage can={can} />;
+      case 'purchaseorders':
+        return <PurchaseOrdersPage can={can} />;
       case 'accounting':
         return <AccountingPage can={can} />;
       case 'purchases':
@@ -386,50 +471,64 @@ function AppShell({
         return <CustomersPage can={can} settings={settings} />;
       case 'suppliers':
         return <SuppliersPage can={can} />;
+      case 'promotions':
+        return <PromotionsPage can={can} />;
       case 'expenses':
         return <ExpensesPage can={can} />;
       case 'cash':
         return <CashPage can={can} />;
       case 'reports':
         return <ReportsPage can={can} />;
+      case 'team':
+        return <TeamPage can={can} user={user} />;
       case 'settings':
-        return <SettingsPage user={user} onChanged={onSettingsChanged} onLicenseChanged={onLicenseChanged} />;
+        return (
+          <SettingsPage user={user} onChanged={onSettingsChanged} onLicenseChanged={onLicenseChanged} />
+        );
       case 'backup':
         return <BackupPage can={can} />;
       case 'about':
         return <AboutPage user={user} />;
       default:
-        return <EmptyState title="পাতা পাওয়া যায়নি" />;
+        return <EmptyState title={t('common.none')} />;
     }
   })();
 
   const pageMeta = NAV.find((n) => n.id === page);
+  const alertCount = alerts.filter((a) => a.severity !== 'info').length;
+  const businessName = settings?.business_name || t('app.tagline');
 
   return (
     <div className="shell">
-      <aside className="sidebar">
+      <aside className={`sidebar ${navOpen ? 'open' : ''}`}>
         <div className="sidebar-brand">
           <div className="sidebar-logo">
-            <SaudaLogo size={26} />
+            {logoUrl ? <img src={logoUrl} alt="" className="brand-img" /> : <SaudaLogo size={26} />}
           </div>
           <div className="sidebar-brand-text">
-            <span className="sidebar-brand-name">Sauda</span>
-            <span className="sidebar-brand-sub">রিটেইল স্যুট</span>
+            <span className="sidebar-brand-name" title={businessName}>
+              {businessName}
+            </span>
+            <span className="sidebar-brand-sub">{t('app.tagline')}</span>
           </div>
         </div>
         <div className="sidebar-scroll">
-          {groups.map(([group, items]) => (
-            <div key={group}>
-              <div className="nav-group-label">{group}</div>
+          {groups.map(([groupKey, items]) => (
+            <div key={groupKey}>
+              <div className="nav-group-label">{t(groupKey)}</div>
               {items.map((item) => (
                 <button
                   key={item.id}
                   className={`nav-item ${page === item.id ? 'active' : ''}`}
-                  onClick={() => navigate(item.id)}
-                  title={item.shortcut ? `${item.label} (${item.shortcut})` : item.label}
+                  onClick={() => {
+                    navigate(item.id);
+                    setNavOpen(false);
+                  }}
+                  title={item.shortcut ? `${t(item.labelKey)} (${item.shortcut})` : t(item.labelKey)}
+                  aria-current={page === item.id ? 'page' : undefined}
                 >
                   <Icon name={item.icon} size={17} />
-                  <span>{item.label}</span>
+                  <span>{t(item.labelKey)}</span>
                   {item.id === 'inventory' && lowCount > 0 ? <span className="nav-badge">{lowCount}</span> : null}
                 </button>
               ))}
@@ -437,18 +536,23 @@ function AppShell({
           ))}
         </div>
         <div className="sidebar-footer">
-          <div>{settings?.business_name || 'সাউদা রিটেইল স্যুট'}</div>
-          <div style={{ marginTop: 2, opacity: 0.75 }}>MERQO • v1.0.0</div>
+          <div className="small bold">{businessName}</div>
+          <div className="tiny" style={{ marginTop: 2, opacity: 0.75 }}>
+            MERQO • v{appVersion}
+          </div>
         </div>
       </aside>
 
       <div className="main">
         <header className="topbar">
+          <button className="icon-btn nav-toggle" title="Menu" onClick={() => setNavOpen((v) => !v)}>
+            <Icon name="list" size={17} />
+          </button>
           <div className="topbar-title">
-            <strong>{PAGE_TITLES[page]}</strong>
+            <strong>{t(PAGE_TITLE_KEYS[page])}</strong>
             <span>
               {pageMeta?.shortcut ? `${pageMeta.shortcut} • ` : ''}
-              আজ {today()}
+              {t('shell.today')} {today()}
             </span>
           </div>
           <div className="global-search">
@@ -459,7 +563,8 @@ function AppShell({
               ref={searchRef}
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder="প্রোডাক্ট, কাস্টমার, ইনভয়েস খুঁজুন… (Ctrl+K)"
+              placeholder={`${t('shell.search')} (Ctrl+K)`}
+              aria-label={t('common.search')}
             />
             {results && search.trim().length >= 2 ? (
               <div className="search-results">
@@ -469,7 +574,7 @@ function AppShell({
                   </div>
                 ) : results.length === 0 ? (
                   <div style={{ padding: 14, textAlign: 'center' }} className="muted small">
-                    কিছু পাওয়া যায়নি
+                    {t('shell.searchEmpty')}
                   </div>
                 ) : (
                   results.map((hit) => (
@@ -505,23 +610,95 @@ function AppShell({
           <div className="grow" />
           {can('pos.sell') ? (
             <Button variant="primary" icon="pos" onClick={() => navigate('pos')}>
-              নতুন বিক্রয়
+              {t('shell.newSale')}
             </Button>
           ) : null}
+
+          {can('report.view') ? (
+            <div style={{ position: 'relative' }}>
+              <button
+                className={`icon-btn ${alertsOpen ? 'active' : ''}`}
+                title={t('shell.notifications')}
+                aria-label={t('shell.notifications')}
+                onClick={() => setAlertsOpen((v) => !v)}
+              >
+                <Icon name="warning" size={17} />
+                {alerts.length > 0 ? <span className="dot">{alerts.length}</span> : null}
+              </button>
+              {alertsOpen ? (
+                <div className="popover" role="dialog" aria-label={t('dash.alerts')}>
+                  <div className="popover-head">
+                    <strong className="small">{t('dash.alerts')}</strong>
+                    <span className="tiny muted">{alerts.length}</span>
+                  </div>
+                  {alerts.length === 0 ? (
+                    <div className="empty-state" style={{ padding: '24px 8px' }}>
+                      <div className="es-title small">{t('dash.noAlerts')}</div>
+                    </div>
+                  ) : (
+                    alerts.map((a) => (
+                      <div
+                        key={a.key}
+                        className={`alert-item ${a.severity}`}
+                        onClick={() => {
+                          navigate(a.page as PageId);
+                          setAlertsOpen(false);
+                        }}
+                      >
+                        <span className="bar" />
+                        <div style={{ minWidth: 0 }}>
+                          <div className="t">{a.title}</div>
+                          <div className="b">{a.body}</div>
+                        </div>
+                      </div>
+                    ))
+                  )}
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+
+          <div className="seg-toggle" title={t('shell.language')}>
+            <button className={lang === 'bn' ? 'on' : ''} onClick={() => void switchLang('bn')}>
+              বাং
+            </button>
+            <button className={lang === 'en' ? 'on' : ''} onClick={() => void switchLang('en')}>
+              EN
+            </button>
+          </div>
+
+          <button
+            className="icon-btn"
+            title={`${t('shell.theme')}: ${settings?.theme === 'dark' ? t('shell.theme.dark') : t('shell.theme.light')}`}
+            onClick={async () => {
+              const next = settings?.theme === 'dark' ? 'light' : 'dark';
+              applyTheme(next as ThemePref);
+              try {
+                await call('settings.update', { theme: next });
+                await onSettingsChanged();
+              } catch {
+                applyTheme((settings?.theme as ThemePref) ?? 'light');
+              }
+            }}
+          >
+            <Icon name={settings?.theme === 'dark' ? 'eye' : 'lock'} size={16} />
+          </button>
+
           <div className="user-chip" title={`${user.full_name} (${user.username})`}>
             <span className="avatar">{initials(user.full_name || user.username)}</span>
             <div style={{ lineHeight: 1.15, textAlign: 'left' }}>
               <div className="small bold">{user.full_name || user.username}</div>
               <div className="tiny muted">
-                {user.role === 'admin' ? 'অ্যাডমিন' : user.role === 'manager' ? 'ম্যানেজার' : 'ক্যাশিয়ার'}
+                {user.role === 'admin' ? t('shell.admin') : user.role === 'manager' ? t('shell.manager') : t('shell.cashier')}
               </div>
             </div>
           </div>
           <button
-            className="btn ghost icon"
-            title="লগআউট"
+            className="icon-btn"
+            title={t('shell.logout')}
+            aria-label={t('shell.logout')}
             onClick={async () => {
-              const res = await ui.confirm({ title: 'লগআউট', message: 'আপনি কি লগআউট করতে চান?' });
+              const res = await ui.confirm({ title: t('shell.logout'), message: t('shell.logoutConfirm') });
               if (res.ok) await onLogout();
             }}
           >
@@ -534,6 +711,16 @@ function AppShell({
       </div>
     </div>
   );
+
+  async function switchLang(next: Lang) {
+    setLang(next);
+    try {
+      await call('settings.update', { language: next });
+      await onSettingsChanged();
+    } catch {
+      /* the toggle still works for this session */
+    }
+  }
 }
 
 export { Loading };

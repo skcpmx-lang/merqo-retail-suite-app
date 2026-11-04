@@ -40,7 +40,13 @@ for (const icon of usedIcons) {
 }
 
 /* 2. CSS classes --------------------------------------------------------- */
-const theme = read(path.join(srcDir, 'theme.css'));
+// Every stylesheet shipped to the renderer participates (theme.css is the
+// baseline; design-v110.css layers the v1.1 design system on top of it).
+const styleFiles = fs
+  .readdirSync(srcDir)
+  .filter((f) => f.endsWith('.css'))
+  .sort();
+const theme = styleFiles.map((f) => read(path.join(srcDir, f))).join('\n');
 const themeClasses = new Set([...theme.matchAll(/\.([a-zA-Z][a-zA-Z0-9_-]*)/g)].map((m) => m[1]));
 // classes that are intentionally data-only / provided by inline styles
 const CLASS_ALLOWLIST = new Set(['span-1', 'null', 'undefined', 'low', 'high', 'ok', 'active']);

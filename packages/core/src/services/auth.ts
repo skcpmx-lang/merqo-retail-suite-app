@@ -281,11 +281,73 @@ export interface LoginResult {
   loginAt: string;
 }
 
+/** Failed logins allowed before a cool-down, and how long the cool-down lasts. */
+export const LOGIN_MAX_FAILURES = 5;
+export const LOGIN_LOCKOUT_MINUTES = 5;
+
+interface AttemptRow {
+  username: string;
+  failures: number;
+  first_failure_at: string;
+  locked_until: string | null;
+  updated_at: string;
+}
+
+function attemptRow(db: Db, username: string): AttemptRow | null {
+  return (db.prepare('SELECT * FROM login_attempts WHERE username = ?').get(username) as AttemptRow | undefined) ?? null;
+}
+
+/**
+ * Throws while a username is in cool-down. Deliberately does not reveal whether
+ * the account exists: callers only ever see "try again in N minutes".
+ */
+export function assertNotLocked(db: Db, username: string): void {
+  const key = normalizeText(username).toLowerCase();
+  const row = attemptRow(db, key);
+  if (!row?.locked_until) return;
+  const until = new Date(row.locked_until.replace(' ', 'T')).getTime();
+  if (Number.isNaN(until) || until <= Date.now()) return;
+  const minutes = Math.max(1, Math.ceil((until - Date.now()) / 60_000));
+  throw new Error(`অনেকবার ভুল পাসওয়ার্ড দেওয়া হয়েছে। ${minutes} মিনিট পর আবার চেষ্টা করুন।`);
+}
+
+/** Records a failed attempt; locks the username after LOGIN_MAX_FAILURES. */
+export function registerLoginFailure(db: Db, username: string): void {
+  const key = normalizeText(username).toLowerCase();
+  if (!key) return;
+  const now = nowLocal();
+  const row = attemptRow(db, key);
+  const windowExpired =
+    row?.first_failure_at && Date.now() - new Date(row.first_failure_at.replace(' ', 'T')).getTime() > 15 * 60_000;
+  const failures = row && !windowExpired ? row.failures + 1 : 1;
+  const first = row && !windowExpired ? row.first_failure_at : now;
+  const lockedUntil =
+    failures >= LOGIN_MAX_FAILURES
+      ? new Date(Date.now() + LOGIN_LOCKOUT_MINUTES * 60_000).toISOString().slice(0, 19).replace('T', ' ')
+      : null;
+  db.prepare(
+    `INSERT INTO login_attempts (username, failures, first_failure_at, locked_until, updated_at)
+     VALUES (?,?,?,?,?)
+     ON CONFLICT(username) DO UPDATE SET
+       failures = excluded.failures,
+       first_failure_at = excluded.first_failure_at,
+       locked_until = excluded.locked_until,
+       updated_at = excluded.updated_at`,
+  ).run(key, lockedUntil ? 0 : failures, first, lockedUntil, now);
+}
+
+/** Clears the counter after a successful login. */
+export function clearLoginFailures(db: Db, username: string): void {
+  db.prepare('DELETE FROM login_attempts WHERE username = ?').run(normalizeText(username).toLowerCase());
+}
+
 export function login(db: Db, username: string, password: string): LoginResult {
+  assertNotLocked(db, username);
   const row = getByUsername(db, username);
   if (!row) throw new Error('ইউজারনেম বা পাসওয়ার্ড সঠিক নয়।');
   if (!row.is_active) throw new Error('এই ইউজার অ্যাকাউন্ট নিষ্ক্রিয় করা হয়েছে।');
   if (!verifyPassword(password, row.password_salt, row.password_hash)) {
+    registerLoginFailure(db, row.username);
     audit(db, {
       userId: row.id,
       username: row.username,
@@ -295,6 +357,7 @@ export function login(db: Db, username: string, password: string): LoginResult {
     });
     throw new Error('ইউজারনেম বা পাসওয়ার্ড সঠিক নয়।');
   }
+  clearLoginFailures(db, row.username);
   const at = nowLocal();
   db.prepare('UPDATE users SET last_login_at = ? WHERE id = ?').run(at, row.id);
   db.prepare('INSERT INTO sessions_log (user_id, created_at) VALUES (?,?)').run(row.id, nowUtc());
