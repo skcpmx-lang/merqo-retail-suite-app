@@ -14,9 +14,10 @@
     "node": ">=20.19.0"
   },
   "scripts": {
-    "typecheck": "tsc -b packages/core packages/app packages/license-generator --pretty",
+    "typecheck": "node scripts/typecheck.mjs",
     "test": "vitest run",
     "test:watch": "vitest",
+    "dev:app": "node scripts/dev-app.mjs",
     "build:core": "node scripts/build-core.mjs",
     "build:app": "node scripts/build-app.mjs",
     "build:license-generator": "node scripts/build-license-generator.mjs",

@@ -11,5 +11,47 @@
   "main": "dist/main/main.js",
   "dependencies": {
     "better-sqlite3": "13.0.3"
+  },
+  "scripts": {
+    "build": "node ../../scripts/build-license-generator.mjs",
+    "package": "node ../../scripts/package-license-generator.mjs"
+  },
+  "build": {
+    "appId": "com.merqo.sauda.licensegenerator",
+    "productName": "Sauda License Generator",
+    "copyright": "Copyright © 2026 MERQO",
+    "directories": {
+      "output": "release",
+      "buildResources": "../../build"
+    },
+    "files": [
+      "dist/**/*",
+      "package.json",
+      "!**/*.map"
+    ],
+    "extraMetadata": {
+      "main": "dist/main/main.js"
+    },
+    "asar": true,
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "../../build/icon.ico",
+      "artifactName": "Sauda-License-Generator-${version}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "shortcutName": "সাউদা লাইসেন্স জেনারেটর",
+      "deleteAppDataOnUninstall": false
+    }
   }
 }
