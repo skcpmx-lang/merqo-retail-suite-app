@@ -256,11 +256,17 @@ import {
 } from './device-admin.js';
 import { printHtml, listPrinters, htmlToPdf } from './printing.js';
 import { getTerminalManager } from './terminal.js';
+import { decideModeChange } from './mode-policy.js';
 import { getServerRuntime, serverHealth } from './server.js';
 import { code128Svg, qrSvg } from './barcode.js';
 
 export interface AppContext {
   db: Db;
+  /**
+   * Which database this process owns. `client` means the guarded local database: only
+   * settings and meta are reachable, business data comes from the Main PC (D-11).
+   */
+  mode?: 'server' | 'client';
   user: User | null;
   openDb: () => Db;
   reopenDb: () => Db;
@@ -2142,6 +2148,19 @@ on(
 on(
   'lan.startHost',
   async (ctx, opts: { port?: number } = {}) => {
+    // A paired client must never start serving its own (stale) copy as the shop.
+    const manager = getTerminalManager();
+    const decision = decideModeChange({
+      from: getSettings(ctx.db).lan_mode,
+      to: 'host',
+      paired: Boolean(manager?.paired),
+      hasActiveServer: Boolean(manager?.activeServer),
+    });
+    if (!decision.allowed) {
+      const err = new Error(decision.message ?? 'এই পিসিতে সার্ভার চালু করা যাবে না।') as Error & { code?: string };
+      err.code = decision.code;
+      throw err;
+    }
     const runtime = getServerRuntime();
     if (!runtime) throw new Error('সার্ভার রানটাইম তৈরি হয়নি — অ্যাপ আবার চালু করুন।');
     const settings = getSettings(ctx.db);
@@ -2347,6 +2366,9 @@ export function invalidateLicenseCache(db: object | null | undefined): void {
 }
 
 function licenseGate(ctx: AppContext, method: string): void {
+  // A Client PC holds no authoritative licence: the Main PC checks the licence on every
+  // request it serves, and a client-local activation would be a stale copy of a fact.
+  if (ctx.mode === 'client') return;
   if (!app.isPackaged && process.env.SAUDA_SKIP_LICENSE === '1') return;
   if (LICENSE_EXEMPT_PREFIXES.some((prefix) => method.startsWith(prefix))) return;
   if (!ctx.db) return;

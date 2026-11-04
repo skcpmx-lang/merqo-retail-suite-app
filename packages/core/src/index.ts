@@ -4,6 +4,7 @@ export * from './domain/datetime.js';
 export * from './domain/text.js';
 
 export * from './db/connection.js';
+export * from './db/client-isolation.js';
 export * from './db/schema.js';
 export * from './db/schema-v5.js';
 export * from './db/seed.js';

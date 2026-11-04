@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { call } from '../api.js';
+import { useShopRefresh } from '../lib/use-shop-refresh.js';
 import { money, qty as fmtQty, dateTime } from '../format.js';
 import { Icon } from '../icons.js';
 import {
@@ -120,6 +121,12 @@ export function POSPage({
   const [printers, setPrinters] = useState<{ name: string; displayName: string; isDefault: boolean }[]>([]);
   const [session, setSession] = useState<{ session: any; in_hand: number } | null>(null);
 
+  /* ---------------- live catalogue (client mode) ---------------- */
+  // A stock or price change on any PC re-reads the catalogue instead of showing a stale
+  // price. The cart itself is untouched: it stays an uncommitted draft.
+  const [catalogNonce, setCatalogNonce] = useState(0);
+  useShopRefresh('pos-catalog', () => setCatalogNonce((n) => n + 1));
+
   const searchRef = useRef<HTMLInputElement | null>(null);
   const barcodeRef = useRef<HTMLInputElement | null>(null);
 
@@ -180,7 +187,7 @@ export function POSPage({
       window.clearTimeout(timer);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [search, categoryId, page]);
+  }, [search, categoryId, page, catalogNonce]);
 
   useEffect(() => setPage(1), [search, categoryId]);
 

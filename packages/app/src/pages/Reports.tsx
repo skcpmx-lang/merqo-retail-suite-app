@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { call } from '../api.js';
+import { useShopRefresh } from '../lib/use-shop-refresh.js';
 import { CHART_COLORS, LineChart } from '../charts.js';
 import { money, qty, dateShort, today, monthStart, addDays } from '../format.js';
 import { Icon } from '../icons.js';
@@ -103,6 +104,9 @@ export function ReportsPage({ can }: { can: (perm?: string) => boolean }) {
     }),
     [meta?.needsRange, from, to, categoryId, customerId, supplierId, search],
   );
+
+  // A new sale/payment/stock change makes the open report stale; re-run it.
+  useShopRefresh('reports', () => void run());
 
   const run = async () => {
     if (!active) return;

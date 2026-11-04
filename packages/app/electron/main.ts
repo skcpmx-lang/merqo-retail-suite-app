@@ -4,8 +4,10 @@ import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import {
   closeDatabase,
+  detectDatabaseRole,
   getMeta,
   integrityCheck,
+  openClientDatabase,
   openDatabase,
   PRODUCT_NAME,
   PRODUCT_VERSION,
@@ -25,6 +27,7 @@ import {
 import { initServerRuntime } from './server.js';
 import { invokeRoute, type AppContext } from './ipc.js';
 import { initTerminalManager, TerminalManager } from './terminal.js';
+import { decideRoute } from './mode-policy.js';
 import { dpapiSealer } from './device-key-storage.js';
 import { OfflineError } from './v1-transport.js';
 
@@ -68,12 +71,11 @@ function terminalManagerFor(): TerminalManager {
   return terminalManager;
 }
 
-/** Routes that must always run on the machine the operator is sitting at. */
-const LOCAL_PREFIXES = ['print.', 'app.', 'lan.', 'display.', 'meta.', 'license.fingerprint'];
-
-function isLocalRoute(method: string): boolean {
-  return LOCAL_PREFIXES.some((p) => method.startsWith(p));
-}
+/**
+ * Route selection lives in `mode-policy.ts` (electron-free, tested): business routes go
+ * to the Main PC in client mode, printer/display/LAN/app routes stay here.
+ */
+const isLocalRoute = (method: string) => decideRoute('terminal', method) === 'local';
 
 const ctx: AppContext = {
   db: null as unknown as Db,
@@ -100,10 +102,43 @@ function splashSafe<T>(fn: () => T, label: string, fallback: T): T {
   }
 }
 
+/**
+ * Decides whether this install is a Main Server or a Client **before** the database is
+ * opened (D-11):
+ *
+ *  - a configured trusted server (terminal.json) or a database last used in terminal mode
+ *    means client: the file is opened without migrations or seeding and then guarded, so
+ *    a v1.1.3 install's data stays byte-for-byte as it was and can never be written to;
+ *  - otherwise it is the shop database and opens normally.
+ */
+function isClientInstall(dbPath: string): boolean {
+  try {
+    if (terminalManagerFor().activeServer) return true;
+    if (terminalManagerFor().paired) return true;
+  } catch {
+    /* no terminal config yet */
+  }
+  return detectDatabaseRole(dbPath) === 'client';
+}
+
 function bootstrapDatabase(): void {
   const paths = appPaths();
+  const client = isClientInstall(paths.dbPath);
+  if (client) {
+    db = openClientDatabase({
+      file: paths.dbPath,
+      appVersion: PRODUCT_VERSION,
+      log: (m) => writeLog('info', m),
+      onBlocked: (err) => writeLog('warn', 'client database blocked a local operation', { code: err.code, table: err.table }),
+    });
+    ctx.db = db;
+    ctx.mode = 'client';
+    writeLog('info', 'client database opened (guarded, no migration)', { file: paths.dbPath });
+    return;
+  }
   db = openDatabase({ file: paths.dbPath, appVersion: PRODUCT_VERSION, log: (m) => writeLog('info', m) });
   ctx.db = db;
+  ctx.mode = 'server';
   const check = integrityCheck(db);
   if (!check.ok) {
     const repaired = repairDatabase(db);
@@ -304,6 +339,12 @@ function runAutoBackup(): void {
 let autoBackupTimer: NodeJS.Timeout | null = null;
 
 function scheduleAutoBackup(): void {
+  // Backups belong to the shop database. A client's local file is not the shop, so it is
+  // never backed up here (and the Main PC's backup is the shop's backup).
+  if (ctx.mode === 'client') {
+    writeLog('info', 'auto backup skipped: client mode');
+    return;
+  }
   runAutoBackup();
   // 15 minutes is frequent enough for a daily/weekly policy and cheap (one indexed
   // SELECT when nothing is due).
@@ -593,6 +634,11 @@ function showMainWindow(): void {
  * window instead of silently pretending the shop is online.
  */
 async function bootstrapServerRuntime(): Promise<void> {
+  // A Client PC runs no listener and owns no shop database.
+  if (ctx.mode === 'client') {
+    writeLog('info', 'server runtime not started: client mode');
+    return;
+  }
   if (serverRuntime) return;
   try {
     serverRuntime = initServerRuntime(createServerRuntime());

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { call } from '../api.js';
+import { useShopRefresh } from '../lib/use-shop-refresh.js';
 import { money, qty, dateTime } from '../format.js';
 import { Icon } from '../icons.js';
 import {
@@ -113,6 +114,9 @@ export function ProductsPage({ can }: { can: (perm?: string) => boolean }) {
   const [importOpen, setImportOpen] = useState(false);
 
   const canManage = can('product.manage');
+
+  // Products, prices and stock arriving from another PC/person reload this list.
+  useShopRefresh('products', () => void load());
 
   const load = async () => {
     setLoading(true);

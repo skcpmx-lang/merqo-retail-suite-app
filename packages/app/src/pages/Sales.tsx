@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { call } from '../api.js';
+import { useShopRefresh } from '../lib/use-shop-refresh.js';
 import { money, qty, dateTime, today, addDays } from '../format.js';
 import { Icon } from '../icons.js';
 import {
@@ -50,6 +51,8 @@ export function SalesPage({
   const [returning, setReturning] = useState<Sale | null>(null);
   const [methods, setMethods] = useState<any[]>([]);
   const [collectOpen, setCollectOpen] = useState(false);
+
+  useShopRefresh('sales', () => void load());
 
   const load = async () => {
     setLoading(true);

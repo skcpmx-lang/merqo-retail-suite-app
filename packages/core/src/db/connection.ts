@@ -21,6 +21,11 @@ export interface OpenOptions {
   readonly?: boolean;
   /** Skip migrations (caller will run them). */
   skipMigrate?: boolean;
+  /**
+   * Seed reference data (categories, units, default settings). Disabled for a Client PC,
+   * which must never grow authoritative-looking local data (D-11).
+   */
+  seed?: boolean;
   /** Optional logger for migration diagnostics. */
   log?: (msg: string) => void;
 }
@@ -177,7 +182,7 @@ export function migrate(db: Db, opts: OpenOptions): MigrationResult {
   }
   if (from === SCHEMA_VERSION) {
     // Still make sure reference tables exist on databases created by a crash.
-    seedReferenceData(db);
+    if (opts.seed !== false) seedReferenceData(db);
     return { from, to: from, applied, backedUp };
   }
 
@@ -210,7 +215,7 @@ export function migrate(db: Db, opts: OpenOptions): MigrationResult {
     }
   }
 
-  seedReferenceData(db);
+  if (opts.seed !== false) seedReferenceData(db);
   const to = currentSchemaVersion(db);
   const now = new Date().toISOString();
   setMeta(db, 'schema_version', String(to));

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { call } from '../api.js';
+import { useShopRefresh } from '../lib/use-shop-refresh.js';
 import { BarList, CHART_COLORS, LineChart } from '../charts.js';
 import { dateTime, greeting, money, qty, relative, today } from '../format.js';
 import { Icon } from '../icons.js';
@@ -96,6 +97,9 @@ export function DashboardPage({
       setLoading(false);
     }
   };
+
+  // Shop events from the Main PC invalidate this screen (client mode).
+  useShopRefresh('dashboard', () => void load());
 
   useEffect(() => {
     void load();

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { call, onEvent, onV1Event } from './api.js';
+import { shopQueries } from './lib/shop-events.js';
 import { Icon, SaudaLogo, type IconName } from './icons.js';
 import { setFormatPrefs, initials, money, today } from './format.js';
 import { UIProvider, useUI, EmptyState, Spinner, Button, Loading } from './ui.js';
@@ -183,6 +184,9 @@ function MainApp() {
    */
   useEffect(() => {
     return onV1Event((evt) => {
+      // The registry decides which mounted screens reload; event payloads are never
+      // rendered, every screen refetches through its own route.
+      shopQueries.handle(evt);
       window.dispatchEvent(new CustomEvent('sauda:shop-event', { detail: evt }));
       if (evt.kind === 'resync' || (evt.kind === 'state' && evt.state === 'error')) void refreshBoot();
     });
