@@ -33,8 +33,17 @@ jobs:
       - name: Verify core (typecheck + tests)
         shell: bash
         run: |
-          node node_modules/typescript/bin/tsc -p packages/core/tsconfig.json --noEmit
-          node node_modules/vitest/vitest.mjs run
+          set -o pipefail
+          node node_modules/typescript/bin/tsc -p packages/core/tsconfig.json --noEmit 2>&1 | tee verify-typecheck.log
+          node node_modules/vitest/vitest.mjs run --reporter=verbose 2>&1 | tee verify-tests.log
+
+      - name: Upload verification logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: verify-logs
+          path: verify-*.log
+          if-no-files-found: ignore
 
       - name: Stamp version
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.version != '' }}
