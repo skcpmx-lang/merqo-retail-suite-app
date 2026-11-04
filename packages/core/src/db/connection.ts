@@ -8,6 +8,7 @@ import { migrateToV2 } from './migration-v2.js';
 import { migrateToV3 } from './migration-v3.js';
 import { migrateToV4 } from './migration-v4.js';
 import { migrateToV5 } from './migration-v5.js';
+import { migrateToV6 } from './migration-v6.js';
 
 export type Db = SqliteDb;
 
@@ -148,6 +149,13 @@ export const MIGRATIONS: Migration[] = [
     name: 'multi_pc_devices_sessions_events',
     up: (db) => {
       migrateToV5(db);
+    },
+  },
+  {
+    version: 6,
+    name: 'replay_protection_and_rotation_journal',
+    up: (db) => {
+      migrateToV6(db);
     },
   },
 ];

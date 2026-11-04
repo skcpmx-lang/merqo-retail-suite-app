@@ -11,7 +11,7 @@
  *                   never hard-deleted, they are voided with an audit record
  */
 
-export const SCHEMA_VERSION = 5;
+export const SCHEMA_VERSION = 6;
 
 export const SCHEMA_V1 = /* sql */ `
 CREATE TABLE IF NOT EXISTS meta (

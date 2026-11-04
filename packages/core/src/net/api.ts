@@ -13,7 +13,8 @@ import {
   type Terminal,
 } from '../services/devices.js';
 import { withIdempotencyAsync, IdempotencyError } from '../services/idempotency.js';
-import { ReplayGuard, verifyRequest } from './device-auth.js';
+import { verifyRequest, type NonceGuard } from './device-auth.js';
+import { SqliteReplayGuard } from './replay-store.js';
 
 /**
  * `/api/v1` — device-authenticated LAN API (Phase 3, Milestone B).
@@ -66,7 +67,9 @@ export async function startLanApi(opts: LanApiOptions): Promise<LanApi> {
   if (!opts.tls?.certPem || !opts.tls.keyPem) {
     throw new Error('TLS ছাড়া LAN API চালু করা যাবে না।');
   }
-  const guard = new ReplayGuard();
+  // Durable, restart-safe replay protection: a captured request stays dead after a
+  // crash or an operator restart, not just for the lifetime of this process.
+  const guard: NonceGuard = new SqliteReplayGuard(opts.db);
   const server = https.createServer(
     { cert: opts.tls.certPem, key: opts.tls.keyPem, minVersion: 'TLSv1.2' },
     (req, res) => {

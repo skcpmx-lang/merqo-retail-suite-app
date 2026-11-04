@@ -84,12 +84,22 @@ export interface VerifyResult {
 }
 
 /**
+ * Minimal contract for replay protection so the API can use either the in-memory
+ * guard (tests, single-shot tools) or the durable SQLite guard
+ * (`SqliteReplayGuard`, net/replay-store.ts) which survives restarts. The API uses
+ * the durable one; the in-memory class remains for lightweight callers.
+ */
+export interface NonceGuard {
+  claim(deviceId: string, nonce: string, now?: number): boolean;
+}
+
+/**
  * In-memory replay window. A nonce is remembered for twice the clock skew, so a
  * replay inside the accepted window is rejected even if the timestamp is still
- * "fresh". A host restart empties the cache, which is safe because the window is
- * bounded and the signature still has to verify.
+ * "fresh". A host restart empties it — which is why the LAN API uses the durable
+ * `SqliteReplayGuard` instead and this class is only a fallback.
  */
-export class ReplayGuard {
+export class ReplayGuard implements NonceGuard {
   private seen = new Map<string, number>();
   constructor(private readonly windowMs = MAX_CLOCK_SKEW_MS * 2) {}
 
@@ -120,7 +130,7 @@ export function verifyRequest(input: {
   method: string;
   path: string;
   body: string;
-  guard: ReplayGuard;
+  guard: NonceGuard;
   now?: number;
   maxSkewMs?: number;
 }): VerifyResult {
@@ -142,9 +152,6 @@ export function verifyRequest(input: {
   }
   if (!input.publicKeySpkiB64) {
     return { ok: false, code: 'NO_DEVICE_KEY', message: 'এই ডিভাইসের কোনো নিবন্ধিত কী নেই।', deviceId };
-  }
-  if (!input.guard.claim(deviceId, nonce, now)) {
-    return { ok: false, code: 'REPLAY', message: 'একই অনুরোধ দুইবার পাঠানো হয়েছে — প্রত্যাখ্যাত।', deviceId };
   }
   let verified = false;
   try {
@@ -173,6 +180,11 @@ export function verifyRequest(input: {
   }
   if (!verified) {
     return { ok: false, code: 'BAD_SIGNATURE', message: 'ডিভাইসের স্বাক্ষর মেলেনি — অনুরোধ প্রত্যাখ্যাত।', deviceId };
+  }
+  // Only an authentic request may consume a nonce, otherwise anyone could burn a
+  // device's nonce space without holding its key.
+  if (!input.guard.claim(deviceId, nonce, now)) {
+    return { ok: false, code: 'REPLAY', message: 'একই অনুরোধ দুইবার পাঠানো হয়েছে — প্রত্যাখ্যাত।', deviceId };
   }
   return { ok: true, deviceId };
 }

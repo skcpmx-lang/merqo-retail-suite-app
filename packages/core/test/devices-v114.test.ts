@@ -12,6 +12,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
 import {
+  SCHEMA_VERSION,
   activeSessions,
   appendEvent,
   approveDevice,
@@ -348,7 +349,10 @@ describe('licence payload v2 / v1 compatibility', () => {
     try {
       const seeded = seedProducts(ctx);
       expect(seeded.rice.id).toBeGreaterThan(0);
-      expect(ctx.db.pragma('user_version', { simple: true })).toBe(5);
+      // v1.1.4 ships migrations 5 *and* 6, so a fresh database lands on the current
+      // version; the point of this test is that the data survived, not the number.
+      expect(ctx.db.pragma('user_version', { simple: true })).toBe(SCHEMA_VERSION);
+      expect(Number(SCHEMA_VERSION)).toBeGreaterThanOrEqual(5);
       expect(ctx.db.prepare('SELECT COUNT(*) AS n FROM products').get()).toEqual({ n: 2 });
       expect(ctx.db.prepare('SELECT COUNT(*) AS n FROM store_servers').get()).toEqual({ n: 1 });
     } finally {
