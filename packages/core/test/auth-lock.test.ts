@@ -84,4 +84,18 @@ describe('login attempt protection', () => {
     expect(message).toMatch(/ইউজারনেম বা পাসওয়ার্ড/);
     ctx.cleanup();
   });
+
+  it('counts failures for usernames that do not exist and audits every one', () => {
+    const ctx = makeTestDb();
+    for (let i = 0; i < LOGIN_MAX_FAILURES; i += 1) {
+      expect(() => login(ctx.db, 'ghost', 'wrong')).toThrow(/ইউজারনেম বা পাসওয়ার্ড/);
+    }
+    // Same cool-down as a real account: the guess surface is throttled either way.
+    expect(() => login(ctx.db, 'ghost', 'wrong')).toThrow(/মিনিট পর আবার চেষ্টা করুন/);
+    const row = ctx.db
+      .prepare("SELECT COUNT(*) AS c FROM audit_logs WHERE action = 'auth.login_failed' AND username = 'ghost'")
+      .get() as { c: number };
+    expect(row.c).toBe(LOGIN_MAX_FAILURES);
+    ctx.cleanup();
+  });
 });

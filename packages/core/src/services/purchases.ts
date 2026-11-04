@@ -140,6 +140,12 @@ export function computePurchase(db: Db, input: PurchaseInput): PurchaseComputati
 export function createPurchase(db: Db, input: PurchaseInput): { purchaseId: number; purchaseNo: string; computation: PurchaseComputation } {
   const settings = getSettings(db);
   const computation = computePurchase(db, input);
+  // A credit purchase must belong to somebody. Without a supplier the ledger
+  // would carry a "payable" that no supplier record can ever settle, which
+  // silently inflates liabilities and breaks reconciliation forever.
+  if (computation.due !== 0 && !input.supplierId) {
+    throw new Error('বাকি থাকলে সাপ্লায়ার নির্বাচন করুন — নইলে পুরো টাকা পরিশোধ করতে হবে।');
+  }
   let payments = (input.payments ?? []).filter((p) => Math.round(p.amount) > 0).map((p) => ({ ...p, amount: Math.round(p.amount) }));
   if (!payments.length && computation.paid > 0) {
     const methodId = input.defaultMethodId ?? settings.default_payment_method_id;

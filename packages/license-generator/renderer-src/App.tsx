@@ -224,7 +224,7 @@ function Shell() {
               <span className={`dot ${keyStatus.loaded ? 'ok' : ''}`} />
               {keyStatus.loaded ? `কী লোড: ${keyStatus.keyId}` : 'সাইনিং কী লোড হয়নি'}
             </div>
-            <div style={{ marginTop: 4 }}>v{info?.generatorVersion ?? '1.1.1'}</div>
+            <div style={{ marginTop: 4 }}>v{info?.generatorVersion ?? '1.1.2'}</div>
           </div>
         </aside>
 

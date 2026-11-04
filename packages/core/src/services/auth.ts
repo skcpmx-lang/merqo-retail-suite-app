@@ -341,10 +341,30 @@ export function clearLoginFailures(db: Db, username: string): void {
   db.prepare('DELETE FROM login_attempts WHERE username = ?').run(normalizeText(username).toLowerCase());
 }
 
+/**
+ * A throwaway salt/hash so a login for a username that does not exist costs the
+ * same scrypt work as a real one. Without this, the response time itself tells an
+ * attacker which usernames are real, and failures for unknown names were never
+ * counted towards the cool-down at all.
+ */
+const DUMMY_SALT = '00000000000000000000000000000000';
+const DUMMY_HASH = hashPassword('sauda-dummy-password', DUMMY_SALT).hash;
+
 export function login(db: Db, username: string, password: string): LoginResult {
   assertNotLocked(db, username);
   const row = getByUsername(db, username);
-  if (!row) throw new Error('ইউজারনেম বা পাসওয়ার্ড সঠিক নয়।');
+  if (!row) {
+    verifyPassword(password, DUMMY_SALT, DUMMY_HASH);
+    registerLoginFailure(db, username);
+    audit(db, {
+      userId: null,
+      username: normalizeText(username).toLowerCase() || 'unknown',
+      action: 'auth.login_failed',
+      entity: 'user',
+      entityId: null,
+    });
+    throw new Error('ইউজারনেম বা পাসওয়ার্ড সঠিক নয়।');
+  }
   if (!row.is_active) throw new Error('এই ইউজার অ্যাকাউন্ট নিষ্ক্রিয় করা হয়েছে।');
   if (!verifyPassword(password, row.password_salt, row.password_hash)) {
     registerLoginFailure(db, row.username);

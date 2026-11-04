@@ -17,7 +17,14 @@ import { insertPayment } from './payments.js';
 import { markSerialsSold } from './stock-ops.js';
 import { assertCreditLimit, customerPriceLevel, earnLoyaltyForSale, reverseLoyaltyForSale } from './crm.js';
 import { getSettings } from './settings.js';
-import { checkCoupon, checkGiftCard, consumeGiftCard, giftCardMethodId, recordCouponRedemption } from './promotions.js';
+import {
+  checkCoupon,
+  checkGiftCard,
+  consumeGiftCard,
+  giftCardMethodId,
+  recordCouponRedemption,
+  restoreGiftCardsForSale,
+} from './promotions.js';
 import { productPriceBreakdown, type PriceLevel } from './products.js';
 
 export interface SaleLineInput {
@@ -652,7 +659,15 @@ export function voidSale(db: Db, saleId: number, reason: string, actor: { id: nu
       }
     }
     db.prepare("UPDATE sales SET status = 'voided' WHERE id = ?").run(saleId);
-    // Points earned on a voided invoice are taken back (audited in the ledger).
+    // Stored value (gift card / voucher) taken by this invoice goes back on the
+    // card: a void means the sale never happened.
+    const giftRestored = restoreGiftCardsForSale(db, {
+      saleId,
+      userId: actor.id,
+      note: `ইনভয়েস বাতিল ${sale.invoice_no}`,
+    });
+    // Points earned on a voided invoice are taken back; points the customer
+    // spent on it are handed back (the ledger stores the net, so this is exact).
     reverseLoyaltyForSale(db, saleId, `ইনভয়েস বাতিল: ${sale.invoice_no}`, actor);
     if (isPostingEnabled(db)) {
       reverseDocument(db, 'sale', saleId, { userId: actor.id, memo: `বাতিল: ${sale.invoice_no} — ${reason}` });
@@ -663,7 +678,13 @@ export function voidSale(db: Db, saleId: number, reason: string, actor: { id: nu
       action: 'sale.void',
       entity: 'sale',
       entityId: saleId,
-      details: { invoiceNo: sale.invoice_no, total: sale.total_paisa, reason },
+      details: {
+        invoiceNo: sale.invoice_no,
+        total: sale.total_paisa,
+        reason,
+        giftCardRestored: giftRestored.amountPaisa,
+        giftCards: giftRestored.cards,
+      },
     });
   });
   run();

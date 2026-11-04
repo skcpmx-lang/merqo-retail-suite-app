@@ -36,7 +36,7 @@ export interface ReturnResult {
   total: number;
   /** Cash that actually left (or entered) the drawer for this return. */
   refund: number;
-  /** Part of the requested refund that settled an outstanding balance instead of cash. */
+  /** Part of the returned value that settled an outstanding balance instead of cash. */
   appliedToDue: number;
 }
 
@@ -102,7 +102,9 @@ export function createSaleReturn(db: Db, input: SaleReturnInput): ReturnResult {
   if (!Number.isFinite(requested) || requested < 0) throw new Error('রিফান্ডের পরিমাণ সঠিক নয়।');
   if (requested > total) throw new Error('রিফান্ড রিটার্নের মোট টাকার চেয়ে বেশি হতে পারবে না।');
   const refund = Math.min(requested, creditAfterReturn);
-  const appliedToDue = requested - refund;
+  // Everything that is not handed back as cash settles the party's balance —
+  // including the part the caller never asked to refund.
+  const appliedToDue = total - refund;
   if (refund > 0 && !input.refundMethodId) throw new Error('রিফান্ডের পেমেন্ট মেথড নির্বাচন করুন।');
 
   const run = db.transaction((): ReturnResult => {
@@ -299,7 +301,7 @@ export function createPurchaseReturn(db: Db, input: PurchaseReturnInput): Return
   if (!Number.isFinite(requested) || requested < 0 || requested > total)
     throw new Error('রিফান্ডের পরিমাণ সঠিক নয়।');
   const refund = Math.min(requested, creditAfterReturn);
-  const appliedToDue = requested - refund;
+  const appliedToDue = total - refund;
   if (refund > 0 && !input.refundMethodId) throw new Error('রিফান্ডের পেমেন্ট মেথড নির্বাচন করুন।');
 
   const run = db.transaction((): ReturnResult => {

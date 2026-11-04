@@ -9,7 +9,11 @@ export default defineConfig({
   },
   test: {
     environment: 'node',
-    include: ['packages/core/test/**/*.test.ts', 'packages/license-generator/test/**/*.test.{ts,tsx}'],
+    include: [
+      'packages/core/test/**/*.test.ts',
+      'packages/license-generator/test/**/*.test.{ts,tsx}',
+      'packages/app/test/**/*.test.{ts,tsx}',
+    ],
     testTimeout: 60_000,
     hookTimeout: 60_000,
     pool: 'forks',

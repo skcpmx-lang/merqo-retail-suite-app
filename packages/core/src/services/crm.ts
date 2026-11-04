@@ -175,20 +175,30 @@ export function redeemLoyalty(
   return { points, valuePaisa: points * summary.redeemValuePaisa };
 }
 
-/** Give back every point earned on a document (void / full return). */
+/**
+ * Undo the *whole* loyalty effect of a document (void / full return).
+ *
+ * A sale can both earn points and spend them (a redemption is written against
+ * the same sale). Reversing only the "earn" rows would silently burn the points
+ * the customer paid with, so this reverses the net of every sales-linked row:
+ * earned points are taken back and redeemed points are handed back, leaving the
+ * customer exactly where they were before the invoice.
+ */
 export function reverseLoyaltyForSale(db: Db, saleId: number, reason: string, actor?: Actor): number {
-  const earned = db
-    .prepare("SELECT COALESCE(SUM(points),0) AS v FROM loyalty_ledger WHERE ref_type = 'sale' AND ref_id = ? AND type = 'earn'")
-    .get(saleId) as { v: number };
-  const reversed = db
-    .prepare("SELECT COALESCE(SUM(-points),0) AS v FROM loyalty_ledger WHERE ref_type = 'sale' AND ref_id = ? AND type = 'reverse'")
-    .get(saleId) as { v: number };
-  const remaining = Number(earned.v) - Number(reversed.v);
-  if (remaining <= 0) return 0;
-  const sale = db.prepare('SELECT customer_id FROM sales WHERE id = ?').get(saleId) as { customer_id: number | null } | undefined;
+  const sale = db.prepare('SELECT customer_id FROM sales WHERE id = ?').get(saleId) as
+    | { customer_id: number | null }
+    | undefined;
   if (!sale?.customer_id) return 0;
-  writeLedger(db, sale.customer_id, -remaining, 'reverse', 'sale', saleId, reason, actor?.id ?? null);
-  return remaining;
+  const net = Number(
+    (
+      db
+        .prepare("SELECT COALESCE(SUM(points),0) AS v FROM loyalty_ledger WHERE ref_type = 'sale' AND ref_id = ?")
+        .get(saleId) as { v: number }
+    ).v,
+  );
+  if (net === 0) return 0;
+  writeLedger(db, sale.customer_id, -net, 'reverse', 'sale', saleId, reason, actor?.id ?? null);
+  return net;
 }
 
 /** Expire stale points: points earned more than `days` ago that are still held. */
