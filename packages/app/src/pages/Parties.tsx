@@ -195,7 +195,7 @@ export function CustomersPage({ can, settings }: { can: (perm?: string) => boole
               <Button size="sm" variant="ghost" icon="download" onClick={exportCsv}>
                 CSV এক্সপোর্ট
               </Button>
-              <label className="btn btn-ghost btn-sm" style={{ cursor: 'pointer' }}>
+              <label className="btn ghost sm" style={{ cursor: 'pointer' }}>
                 <Icon name="upload" size={15} /> {importing ? 'ইমপোর্ট হচ্ছে…' : 'CSV ইমপোর্ট'}
                 <input
                   type="file"

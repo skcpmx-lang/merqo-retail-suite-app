@@ -802,6 +802,57 @@ on(
   'customer.manage',
 );
 
+/* ------------------------------------------------------------------ */
+/* CRM: credit limits, groups, price levels, loyalty, CSV              */
+/* ------------------------------------------------------------------ */
+
+on('customers.creditCheck', (ctx, id: number, addingPaisa: number) => creditCheck(ctx.db, id, addingPaisa), 'customer.manage');
+on(
+  'customers.setCreditLimit',
+  (ctx, id: number, limitPaisa: number) =>
+    setCreditLimit(ctx.db, id, limitPaisa, ctx.user ? { id: ctx.user.id, username: ctx.user.username } : null),
+  'customer.manage',
+);
+on(
+  'customers.setGroup',
+  (ctx, id: number, group: string | null) =>
+    assignCustomerGroup(ctx.db, id, group, ctx.user ? { id: ctx.user.id, username: ctx.user.username } : null),
+  'customer.manage',
+);
+on('customers.groups', (ctx) => listCustomerGroups(ctx.db), 'customer.manage');
+on(
+  'customers.setPriceLevel',
+  (ctx, id: number, level: 'retail' | 'wholesale' | 'special') =>
+    setCustomerPriceLevel(ctx.db, id, level, ctx.user ? { id: ctx.user.id, username: ctx.user.username } : null),
+  'customer.manage',
+);
+on('customers.priceLevel', (ctx, id: number) => customerPriceLevel(ctx.db, id), 'customer.manage');
+on('customers.exportCsv', (ctx) => customersToCsv(ctx.db), 'customer.manage');
+on(
+  'customers.importCsv',
+  (ctx, csv: string) =>
+    importCustomersCsv(ctx.db, csv, ctx.user ? { id: ctx.user.id, username: ctx.user.username } : null),
+  'customer.manage',
+);
+on('loyalty.summary', (ctx, id: number) => loyaltySummary(ctx.db, id), 'customer.manage');
+on('loyalty.history', (ctx, id: number, limit?: number) => loyaltyHistory(ctx.db, id, limit ?? 200), 'customer.manage');
+on(
+  'loyalty.redeem',
+  (ctx, input) => redeemLoyalty(ctx.db, { ...input, actor: { id: ctx.user!.id, username: ctx.user!.username } }),
+  'loyalty.manage',
+);
+on(
+  'loyalty.adjust',
+  (ctx, input) => adjustLoyaltyPoints(ctx.db, { ...input, actor: { id: ctx.user!.id, username: ctx.user!.username } }),
+  'loyalty.manage',
+);
+on(
+  'loyalty.expire',
+  (ctx, days?: number) =>
+    expireLoyaltyPoints(ctx.db, days ?? 365, ctx.user ? { id: ctx.user.id, username: ctx.user.username } : null),
+  'loyalty.manage',
+);
+
 on('suppliers.list', (ctx, filter) => listSuppliers(ctx.db, filter), 'supplier.manage');
 on('suppliers.get', (ctx, id: number) => getSupplier(ctx.db, id), 'supplier.manage');
 on('suppliers.statement', (ctx, id: number, from?: string, to?: string) => supplierStatement(ctx.db, id, from, to), 'supplier.manage');

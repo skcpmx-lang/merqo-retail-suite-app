@@ -1864,3 +1864,6 @@ table.data tfoot td {
     background: #fff;
   }
 }
+
+/* generic vertical stack used by the v1.0.1 screens */
+.stack { display: flex; flex-direction: column; gap: 8px; }
