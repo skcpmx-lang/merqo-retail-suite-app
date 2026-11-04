@@ -17,7 +17,7 @@
 | জেনারেটর ওয়্যারিং | `audit-license-generator.mjs` | ১২ পাতা · ৩৭ রাউট · ৪৪ কল সাইট · ১১১ CSS · ২৯ আইকন · ০ সমস্যা |
 | সিক্রেট স্ক্যান | `verify.mjs` | git-ট্র্যাকড কী-মেটেরিয়াল নেই |
 | বিল্ড | `build-app.mjs`, `build-license-generator.mjs` | দুটোই সফল (Linux/electron-builder ছাড়া শুধু JS বান্ডল) |
-| **Windows ইনস্টলার** | CI `release.yml` (windows-latest) | এই ডকুমেন্ট লেখার সময় **অপেক্ষমাণ** — নিচে §6-এ যাচাইয়ের ফল বসবে |
+| **Windows ইনস্টলার** | CI `release.yml` (windows-latest) | **সম্পন্ন** — রান 41804296461 success, ৩টি অ্যাসেট প্রকাশিত (§6) |
 | ইনস্টল/আনইনস্টল, UAC | Windows মেশিন | **BLOCKED** (স্যান্ডবক্সে Windows নেই) |
 
 > ঐতিহাসিক নোট: গেটের প্রথম চালানিতে জেনারেটর অডিট **দুটি প্রকৃত ত্রুটি** ধরেছিল — `.step-label` CSS
@@ -90,10 +90,12 @@ Windows ইনস্টলার/UAC, কোড সাইনিং, লাইভ
 
 ## 6. রিলিজ যাচাই (প্রকাশের পর পূরণ)
 
-- ট্যাগ: `v1.1.1`
-- ওয়ার্কফ্লো রান: `<!-- FILL -->`
-- অ্যাসেট: `Sauda-Retail-Suite-Setup-1.1.1.exe`, `Sauda-License-Generator-1.1.1.exe`, `SHA256SUMS.txt`
-- `gh api` যাচাই: `<!-- FILL -->`
+- ট্যাগ: `v1.1.1` @ `2f6c8db497ce91814d6fd7a240cb195c11583ad8` (PR #6 মার্জ)
+- ওয়ার্কফ্লো রান: **41804296461** — `success`
+- অ্যাসেট (`gh api` যাচাই): `Sauda-Retail-Suite-Setup-1.1.1.exe` ১১০,৯৬১,৯১৫ বাইট ·
+  `Sauda-License-Generator-1.1.1.exe` ১১০,৭৮২,৪০৬ বাইট · `SHA256SUMS.txt` ২০১ বাইট
+- **চেকসামের মান পুনর্গণনা: BLOCKED** — স্যান্ডবক্স `release-assets.githubusercontent.com` ডাউনলোড দেয় না;
+  তাই এখানে কোনো হ্যাশ মান লেখা হয়নি। বিস্তারিত: `FINAL_RELEASE_VERIFICATION_V111.md` §3।
 
 > রিলিজ সফল ঘোষণা করা হবে **কেবল** GitHub Release দেখা যাওয়ার পর এবং দুটি অ্যাসেটের অস্তিত্ব
 > `gh api` দিয়ে নিশ্চিত হওয়ার পর। অ্যাসেট যাচাইয়ের বিস্তারিত: `FINAL_RELEASE_VERIFICATION_V111.md`।
