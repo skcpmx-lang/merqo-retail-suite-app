@@ -87,8 +87,9 @@ const ctx: AppContext = {
     } catch {
       /* ignore */
     }
-    db = openDatabase({ file: appPaths().dbPath, appVersion: PRODUCT_VERSION });
-    ctx.db = db;
+    // Reopen in the same role: a Client PC must never come back with an unguarded
+    // handle just because something asked for a reopen.
+    bootstrapDatabase();
     return db;
   },
 };
@@ -171,10 +172,15 @@ function bootstrapTransport(): void {
           try {
             return { ok: true, data: await manager.invoke(method, args) };
           } catch (err) {
-            const e = err as Error & { code?: string };
+            const e = err as Error & { code?: string; details?: unknown };
             const code = err instanceof OfflineError ? 'OFFLINE' : (e.code ?? 'ERROR');
             writeLog('warn', `client route ${method} failed`, { code, message: e.message });
-            return { ok: false, error: e.message, code };
+            return {
+              ok: false,
+              error: e.message,
+              code,
+              ...(e.details === undefined ? {} : { details: e.details }),
+            };
           }
         },
       };

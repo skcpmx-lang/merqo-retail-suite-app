@@ -177,6 +177,7 @@ import {
   validateBackup,
   voidExpense,
   voidPurchase,
+  validateCart,
   voidSale,
   writeOffStock,
   fingerprintForDisplay,
@@ -748,6 +749,20 @@ on(
     });
     return { ...result, sale: getSale(ctx.db, result.saleId) };
   },
+  'pos.sell',
+);
+/**
+ * Read-only cart revalidation. The POS calls this when an event says prices or stock
+ * moved, and before committing a recovered draft; it returns the authoritative lines and
+ * any conflict, and never writes.
+ */
+on(
+  'sales.validateCart',
+  (ctx, input) =>
+    validateCart(ctx.db, {
+      ...input,
+      actor: { id: ctx.user!.id, username: ctx.user!.username },
+    } as never),
   'pos.sell',
 );
 on('sales.list', (ctx, filter) => listSales(ctx.db, filter), 'report.view');
@@ -2350,6 +2365,11 @@ export interface InvokeResult {
   data?: unknown;
   error?: string;
   code?: string;
+  /**
+   * Structured error payload (e.g. the affected cart lines of a `SALE_CONFLICT`).
+   * Must be JSON-serialisable: it crosses IPC and, for a Client, HTTPS.
+   */
+  details?: unknown;
 }
 
 /**
@@ -2399,9 +2419,14 @@ export async function invokeRoute(ctx: AppContext, method: string, args: any[]):
     const data = await route.fn(ctx, ...args);
     return { ok: true, data };
   } catch (err) {
-    const e = err as Error & { code?: string };
+    const e = err as Error & { code?: string; details?: unknown };
     writeLog('error', `ipc ${method} failed: ${e.message}`, e);
-    return { ok: false, error: e.message || 'অজানা ত্রুটি', code: e.code ?? 'ERROR' };
+    return {
+      ok: false,
+      error: e.message || 'অজানা ত্রুটি',
+      code: e.code ?? 'ERROR',
+      ...(e.details === undefined ? {} : { details: e.details }),
+    };
   }
 }
 

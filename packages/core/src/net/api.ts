@@ -47,7 +47,11 @@ export interface LanApiOptions {
   storeId: () => string;
   serverId: () => string;
   licensedCapacity: () => number;
-  invoke: (method: string, args: unknown[], user: ApiUser | null) => Promise<{ ok: boolean; data?: unknown; error?: string; code?: string }>;
+  invoke: (
+    method: string,
+    args: unknown[],
+    user: ApiUser | null,
+  ) => Promise<{ ok: boolean; data?: unknown; error?: string; code?: string; details?: unknown }>;
   authenticate: (username: string, password: string) => Promise<ApiUser>;
   allowRemote?: (address: string) => boolean;
   /** How often an event stream polls the outbox (tests shorten it). */
@@ -377,7 +381,9 @@ export async function startLanApi(opts: LanApiOptions): Promise<LanApi> {
             call,
           )
         : await call();
-      return { status: resolved.ok ? 200 : 403, body: resolved };
+      // A conflicting cart is a precondition failure, not an authorisation failure.
+      const status = resolved.ok ? 200 : resolved.code === 'SALE_CONFLICT' ? 409 : 403;
+      return { status, body: resolved };
     } catch (err) {
       if (err instanceof IdempotencyError) {
         return { status: 409, body: { ok: false, code: err.code, message: err.message } };

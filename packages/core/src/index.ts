@@ -32,6 +32,7 @@ export * from './services/suppliers.js';
 export * from './services/payments.js';
 export * from './services/cash.js';
 export * from './services/sales.js';
+export * from './services/sale-conflicts.js';
 export * from './services/purchases.js';
 export * from './services/returns.js';
 export * from './services/expenses.js';

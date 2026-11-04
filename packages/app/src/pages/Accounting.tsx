@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { call } from '../api.js';
+import { useShopRefresh } from '../lib/use-shop-refresh.js';
 import { money, today, addDays } from '../format.js';
 import { Icon } from '../icons.js';
 import {
@@ -86,6 +87,9 @@ export function AccountingPage({ can }: { can: (perm?: string) => boolean }) {
   useEffect(() => {
     void loadAccounts();
   }, []);
+
+  // Shop events from the Main PC invalidate this screen.
+  useShopRefresh('accounting', () => void load());
 
   const load = async () => {
     setLoading(true);

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { call } from '../api.js';
+import { useShopRefresh } from '../lib/use-shop-refresh.js';
 import { money, dateShort, today, addDays } from '../format.js';
 import { Icon } from '../icons.js';
 import {
@@ -42,6 +43,9 @@ export function ExpensesPage({ can }: { can: (perm?: string) => boolean }) {
   const [newCategory, setNewCategory] = useState('');
 
   const canManage = can('expense.manage');
+
+  // Shop events from the Main PC invalidate this screen.
+  useShopRefresh('expenses', () => void load());
 
   const load = async () => {
     setLoading(true);

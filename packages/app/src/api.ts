@@ -3,6 +3,8 @@ export interface BridgeResponse<T = unknown> {
   data?: T;
   error?: string;
   code?: string;
+  /** Structured failure payload (e.g. stale-cart conflicts). */
+  details?: unknown;
 }
 
 interface SaudaBridge {
@@ -36,9 +38,15 @@ export interface ShopEvent {
 
 export class ApiError extends Error {
   code: string;
-  constructor(message: string, code = 'ERROR') {
+  /**
+   * Structured failure payload from the backend. For a stale cart this is
+   * `{ conflicts: [...] }`, which is what lets the POS mark the exact lines that moved.
+   */
+  details?: unknown;
+  constructor(message: string, code = 'ERROR', details?: unknown) {
     super(message);
     this.code = code;
+    if (details !== undefined) this.details = details;
   }
 }
 
@@ -50,7 +58,7 @@ export async function call<T = any>(method: string, ...args: unknown[]): Promise
     // The licence gate lives in the main process; when it fires the shell must
     // fall back to the activation screen instead of leaving dead buttons.
     if (res.code === 'LICENSE_REQUIRED') window.dispatchEvent(new Event('sauda:license-required'));
-    throw new ApiError(res.error || 'অজানা ত্রুটি', res.code);
+    throw new ApiError(res.error || 'অজানা ত্রুটি', res.code, res.details);
   }
   return res.data as T;
 }

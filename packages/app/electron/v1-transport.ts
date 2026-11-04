@@ -256,8 +256,10 @@ export class V1Terminal {
       if (res.code === 'OFFLINE' || res.code === 'TIMEOUT') {
         throw new OfflineError(res.error ?? undefined);
       }
-      const error = new Error(res.error ?? 'অনুরোধ ব্যর্থ হয়েছে।') as Error & { code?: string };
+      const error = new Error(res.error ?? 'অনুরোধ ব্যর্থ হয়েছে।') as Error & { code?: string; details?: unknown };
       error.code = res.code;
+      // Structured conflicts (stale cart) must reach the renderer intact.
+      if (res.details !== undefined) error.details = res.details;
       throw error;
     }
     return res.data as T;

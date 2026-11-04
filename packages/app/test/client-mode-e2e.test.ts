@@ -18,6 +18,7 @@ import {
   createPairingToken,
   createProduct,
   createSale,
+  validateCart,
   getStoreIdentity,
   initializeApp,
   listUnits,
@@ -114,9 +115,18 @@ describe('client mode end to end', () => {
       allowRemote: () => true,
       invoke: async (method, args) => {
         if (method === 'sale.create') {
-          // The real service, on the real shop database.
-          const result = createSale(db, args[0] as never);
-          return { ok: true, data: result };
+          // The real service, on the real shop database; conflicts travel as data.
+          try {
+            const result = createSale(db, args[0] as never);
+            return { ok: true, data: result };
+          } catch (err) {
+            const e = err as Error & { code?: string; details?: unknown };
+            if (e.code === 'SALE_CONFLICT') return { ok: false, code: e.code, error: e.message, details: e.details };
+            return { ok: false, code: e.code ?? 'ERROR', error: e.message };
+          }
+        }
+        if (method === 'sales.validateCart') {
+          return { ok: true, data: validateCart(db, args[0] as never) };
         }
         if (method === 'products.list') {
           return { ok: true, data: { rows: db.prepare('SELECT id, name FROM products').all(), total: 1 } };
@@ -181,6 +191,41 @@ describe('client mode end to end', () => {
         actor,
       }),
     ).toThrow(ClientIsolationError);
+
+    // A cart the cashier scanned before a price change must be refused, not silently
+    // re-priced: the host answers with structured conflicts and the cart stays put.
+    db.prepare('UPDATE products SET sale_price = sale_price + 1000 WHERE id = ?').run(product.id);
+    const staleError = await terminal
+      .invoke('sale.create', [
+        {
+          lines: [{ productId: product.id, unitId: kg.id, qtyMilli: 1000 }],
+          paidPaisa: 10_000,
+          defaultMethodId: cash,
+          actor,
+          expected: { lines: [{ productId: product.id, unitPricePaisa: 10_000, qtyBaseMilli: 1_000_000 }] },
+        },
+      ])
+      .then(() => null)
+      .catch((err: Error & { code?: string; details?: { conflicts?: Array<{ kind: string }> } }) => err);
+    expect(staleError?.code).toBe('SALE_CONFLICT');
+    expect(staleError?.details?.conflicts?.[0]?.kind).toBe('PRICE_CHANGED');
+    // Nothing was sold, nothing was written.
+    expect(countSales(db)).toBe(1);
+    // A read-only preview shows the same conflict, so the cashier can review the cart.
+    const preview = await terminal.invoke<{ ok: boolean; conflicts: Array<{ kind: string; currentPaisa?: number }> }>(
+      'sales.validateCart',
+      [
+        {
+          lines: [{ productId: product.id, unitId: kg.id, qtyMilli: 1000 }],
+          expected: { lines: [{ productId: product.id, unitPricePaisa: 10_000, qtyBaseMilli: 1_000_000 }] },
+        },
+      ],
+    );
+    expect(preview.ok).toBe(false);
+    const currentPrice = (db.prepare('SELECT sale_price FROM products WHERE id = ?').get(product.id) as { sale_price: number })
+      .sale_price;
+    expect(preview.conflicts[0]?.currentPaisa).toBe(currentPrice);
+    expect(preview.conflicts[0]?.currentPaisa).not.toBe(10_000);
 
     // The client sees the product list through the host, not from its own file.
     const products = await terminal.invoke<{ rows: Array<{ name: string }> }>('products.list', []);

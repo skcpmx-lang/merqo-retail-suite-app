@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { call } from '../api.js';
+import { useShopRefresh } from '../lib/use-shop-refresh.js';
 import { money, dateTime } from '../format.js';
 import { Icon } from '../icons.js';
 import {
@@ -1220,6 +1221,10 @@ function DeviceAdminPanel() {
   const [identity, setIdentity] = useState<{ store_id: string; server_id: string; short_fingerprint: string | null } | null>(null);
   const [pairing, setPairing] = useState<{ code: string; expires_at: string } | null>(null);
   const [busy, setBusy] = useState(false);
+
+  // Device and licence events (approved, revoked, capacity) refresh the panel without
+  // waiting for the 20 s poll.
+  useShopRefresh(['devices', 'license'], () => void load());
 
   const load = async () => {
     try {

@@ -97,6 +97,20 @@ async function harness(): Promise<Harness> {
         }
         return { ok: true, data: { profit: 100 } };
       }
+      if (method === 'pos.createSale') {
+        // A cart whose price or stock moved since the cashier scanned it.
+        return {
+          ok: false,
+          code: 'SALE_CONFLICT',
+          error: 'কার্টের তথ্য বদলে গেছে।',
+          details: {
+            conflicts: [
+              { kind: 'PRICE_CHANGED', lineIndex: 0, productId: 3, expectedPaisa: 15000, currentPaisa: 17000 },
+              { kind: 'STOCK_CHANGED', lineIndex: 1, productId: 4, requiredBaseMilli: 2_000_000, availableBaseMilli: 500_000 },
+            ],
+          },
+        };
+      }
       if (method === 'counter.bump') {
         const n = (db.prepare("SELECT value FROM meta WHERE key='counter'").get() as { value: string } | undefined)
           ?.value;
@@ -362,6 +376,23 @@ describe('sessions and authorisation', () => {
     const denied = await h.call({ path: '/api/v1/rpc', body: { method: 'reports.profit', args: [], session }, keys: device });
     expect(denied.json.ok).toBe(false);
     expect(denied.json.code).toBe('FORBIDDEN');
+  });
+
+  it('answers a stale cart with 409 and the per-line conflicts', async () => {
+    const h = await harness();
+    const device = enrol(h, { deviceId: 'DEV-11' });
+    const login = await h.call({ path: '/api/v1/auth/login', body: { username: 'owner', password: 'owner123' }, keys: device });
+    const session = login.json.data.session as string;
+    const res = await h.call({
+      path: '/api/v1/rpc',
+      body: { method: 'pos.createSale', args: [{ lines: [] }], session },
+      keys: device,
+    });
+    // Not an authorisation failure: the cashier must be able to see and fix the cart.
+    expect(res.status).toBe(409);
+    expect(res.json.code).toBe('SALE_CONFLICT');
+    expect(res.json.details.conflicts).toHaveLength(2);
+    expect(res.json.details.conflicts[0].kind).toBe('PRICE_CHANGED');
   });
 
   it('requires a session for /rpc', async () => {

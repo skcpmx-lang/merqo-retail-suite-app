@@ -67,6 +67,16 @@ describe('event → query plan', () => {
     expect(planForEvent('device.approved').keys).toContain('devices');
   });
 
+  it('maps purchases, expenses, cash and accounting to their screens', () => {
+    expect(planForEvent('purchase.received').keys).toEqual(
+      expect.arrayContaining(['purchases', 'stock', 'products', 'pos-catalog']),
+    );
+    expect(planForEvent('expense.created').keys).toEqual(expect.arrayContaining(['expenses', 'cash', 'reports']));
+    expect(planForEvent('cash.closed').keys).toEqual(expect.arrayContaining(['cash', 'accounting', 'reports']));
+    expect(planForEvent('accounting.entry_posted').keys).toEqual(expect.arrayContaining(['accounting', 'reports']));
+    expect(planForEvent('settings.updated').keys).toEqual(expect.arrayContaining(['settings', 'pos-catalog']));
+  });
+
   it('falls back to a full refresh for an unknown event type', () => {
     const plan = planForEvent('something.new');
     expect(plan.full).toBe(true);
@@ -123,6 +133,28 @@ describe('registry behaviour', () => {
     tick();
     for (const key of Object.keys(calls)) expect(calls[key]).toBe(1);
     expect(registry.appliedFullRefreshes).toBe(2);
+  });
+
+  it('refreshes only the accounting screens for a journal event', () => {
+    const { registry, tick } = makeRegistry();
+    const calls = register(registry, ['accounting', 'reports', 'dashboard', 'pos-catalog', 'devices']);
+    registry.handle({ kind: 'event', id: 11, type: 'accounting.entry_posted' });
+    tick();
+    expect(calls.accounting).toBe(1);
+    expect(calls.reports).toBe(1);
+    expect(calls.dashboard).toBe(1);
+    expect(calls['pos-catalog']).toBe(0);
+    expect(calls.devices).toBe(0);
+  });
+
+  it('keeps a resync full refresh bounded to mounted screens', () => {
+    const { registry, tick } = makeRegistry();
+    const calls = register(registry, ['purchases', 'expenses']);
+    registry.handle({ kind: 'resync', from: 300 });
+    tick();
+    expect(calls.purchases).toBe(1);
+    expect(calls.expenses).toBe(1);
+    expect(registry.registeredKeys().sort()).toEqual(['expenses', 'purchases']);
   });
 
   it('does not refresh on connection-state changes', () => {

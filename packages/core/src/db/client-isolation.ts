@@ -1,5 +1,5 @@
 import fs from 'node:fs';
-import { openDatabase, type Db } from './connection.js';
+import { openDatabase, setMeta, type Db } from './connection.js';
 
 /**
  * Client-mode database isolation (v1.1.4 Phase 3, finding D-11).
@@ -288,6 +288,9 @@ export function openClientDatabase(opts: OpenClientOptions): Db {
     : openDatabase({ file: opts.file, appVersion: opts.appVersion, seed: false, log: opts.log });
   const guarded = guardClientDatabase(db, { onBlocked: opts.onBlocked });
   Object.defineProperty(guarded, '__clientGuard', { value: true, enumerable: false });
+  // Stamp the file itself so backup/restore/maintenance can refuse it even when they are
+  // handed a raw handle (they check `meta.db_role` before touching anything).
+  setMeta(guarded, 'db_role', 'client');
   return guarded;
 }
 

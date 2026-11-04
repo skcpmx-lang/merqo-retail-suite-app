@@ -42,6 +42,8 @@ export interface V1Result<T = unknown> {
   code?: string;
   error?: string;
   status?: number;
+  /** Structured failure payload, e.g. `{ conflicts: [...] }` for a stale cart. */
+  details?: unknown;
 }
 
 export interface V1Client {
@@ -108,7 +110,7 @@ export function createV1Client(opts: V1ClientOptions): V1Client {
           res.on('data', (c) => chunks.push(Buffer.from(c)));
           res.on('end', () => {
             const text = Buffer.concat(chunks).toString('utf8');
-            let parsed: { ok?: boolean; data?: T; code?: string; message?: string; error?: string } = {};
+            let parsed: { ok?: boolean; data?: T; code?: string; message?: string; error?: string; details?: unknown } = {};
             try {
               parsed = JSON.parse(text);
             } catch {
@@ -121,6 +123,7 @@ export function createV1Client(opts: V1ClientOptions): V1Client {
               code: parsed.code,
               error: parsed.message ?? parsed.error,
               status: res.statusCode,
+              ...(parsed.details === undefined ? {} : { details: parsed.details }),
             });
           });
         },
