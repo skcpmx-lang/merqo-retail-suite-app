@@ -3,6 +3,33 @@
 What was verified before the release, what the release pipeline produces, and
 what remains unverifiable in this environment.
 
+## 0. v1.1.0 release (2026-11-04) — current
+
+| Item | Value |
+|---|---|
+| Merge commit of PR #4 | `10318aa` |
+| Tag | `v1.1.0` (annotated, pushed) |
+| Release workflow | run 41799877558 — **success** |
+| Release | https://github.com/skcpmx-lang/merqo-retail-suite-app/releases/tag/v1.1.0 |
+
+Assets verified through the GitHub API (`gh api …/releases/tags/v1.1.0`), because
+this sandbox cannot download release attachments:
+
+| Asset | Size | SHA-256 |
+|---|---|---|
+| `Sauda-Retail-Suite-Setup-1.1.0.exe` | 110 961 912 B | `50fc4061a5f0479724e956a5cc1607f230cad41eb94062590e1c134937d081e5` |
+| `Sauda-License-Generator-1.1.0.exe` | 110 695 772 B | `56400fc1d7fb0dab707b3678d5557190f6b833f4f4ee1af237127c367bc3d462` |
+| `SHA256SUMS.txt` | 201 B | `74eeca7e08c39e2a12d5d42d7e879276bb3ba3d6685a3d7ebcf0f900c4d21460` |
+
+Pre-release gates on the merged commit: typecheck (core/app/generator) 0 errors,
+**199 tests in 18 files**, `audit-ui` consistent (35 files · 48 icons · 240 CSS
+classes · 242 IPC routes · 184 call sites), secrets scan clean, both NSIS
+installers built and verified by the workflow. Release notes (Bengali) include the
+1.0.1 → 1.1.0 upgrade guide.
+
+Release body was rewritten after publishing to carry the real v1.1 notes and the
+upgrade guide instead of GitHub's auto-generated summary.
+
 ## 1. Pre-release gates (all green on the audited commit)
 
 | Gate | Command / workflow | Result |
