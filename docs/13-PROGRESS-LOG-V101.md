@@ -42,3 +42,14 @@ node scripts/verify.mjs # full gate
   (no hardware here), licence revocation is PARTIAL (offline), signed installers and a
   two-week pilot are BLOCKED. Deferred to v1.1: PO + partial receiving, coupons/vouchers/gift
   cards, one-screen exchange, LAN multi-terminal, Bangla⇄English toggle, customer display.
+
+## Released (2026-11-04)
+
+- PR **#3** → `main`, CI `Type-check, test and build` pass (36s), merge commit `e326dc7`.
+- Annotated tag **`v1.0.1`** pushed; Release workflow run **41795021867** → success.
+- Assets verified via Releases API:
+  - `Sauda-Retail-Suite-Setup-1.0.1.exe` — 110 925 778 B — `6ba347da371341f7…9405283b`
+  - `Sauda-License-Generator-1.0.1.exe` — 110 695 747 B — `6790d8244afa8b53…98473066`
+  - `SHA256SUMS.txt` — 201 B — `aa798cc6fe7adde3…26f9b6dc81`
+- Acceptance gate recorded in `docs/15-ACCEPTANCE-GATE-V101.md`: Critical 0 / High 0,
+  four BLOCKED and one PARTIAL item carried into the release notes rather than hidden.
