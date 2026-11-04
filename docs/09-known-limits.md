@@ -78,3 +78,16 @@ GitHub Actions: `CI` ওয়ার্কফ্লো (ubuntu-latest) সবু
 - Electron বাইনারি ডাউনলোড ব্লকড হলে `ELECTRON_SKIP_BINARY_DOWNLOAD=1`।
 - `better-sqlite3` prebuilt না পেলে `npm_config_build_from_source=true` + `node-gyp` টুলচেইন।
 - `@vitejs/plugin-react` এই Vite সংস্করণে প্রয়োজন নেই; JSX `esbuild.jsx = 'automatic'` দিয়ে হ্যান্ডেল হয়।
+
+## v1.1.0 additions
+
+- **English translation is partial.** Shell, the four new v1.1 screens and all
+  printed documents are bilingual; the pre-v1.1 screens remain Bengali-only and
+  fall back to Bengali rather than showing raw keys. Tracked in docs/18.
+- **Licence revocation is offline.** Voiding a licence cannot reach an installed
+  copy that never goes online; the seller re-issues or blocks future activation.
+  Reported as PARTIAL in the licence audit.
+- **No visual regression baseline.** UI is enforced by the wiring audit and
+  token-only styling, not by pixel diffs.
+- **LAN is single-host.** No replication, no queued offline sales; a disconnected
+  terminal refuses to sell rather than creating invoices that would conflict.
