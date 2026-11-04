@@ -11,8 +11,9 @@
 | কাজের শাখা | `arena/45805452-merqo-retail-suite-app` |
 | কমিট | `7c8e4cd` (মূল কাজ) + `178ed9e` (verify স্ক্যানের পরিধি ঠিক) |
 | PR | **#9** “v1.1.3 — close credential leak, licence trust bypass, LAN plaintext, coupon/serial reversal” |
-| মার্জ | ২০২৬-১১-০৪T১০:২২:১৮Z → `main` = **`f4dc640`** |
-| ট্যাগ | **`v1.1.3`** → `f4dc640` |
+| মার্জ | ২০২৬-১১-০৪T১০:২২:১৮Z → `main` = **`f4dc640`** (কোড মার্জ) |
+| ট্যাগ | **`v1.1.3`** → `f4dc640` (রিলিজ রান এই কমিট থেকেই) |
+| এরপরের কমিট | PR **#10** → `main` = `e2d76cd` — শুধু এই প্রমাণ-নথিটি যোগ করে; **কোড অপরিবর্তিত** |
 
 ## ২. CI (PR ও push)
 
