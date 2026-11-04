@@ -78,7 +78,19 @@ export function openDatabase(opts: OpenOptions): Db {
     db.pragma('busy_timeout = 8000');
   }
   if (!opts.skipMigrate && !readonly) {
-    migrate(db, opts);
+    try {
+      migrate(db, opts);
+    } catch (err) {
+      // A failed open (e.g. the database was written by a newer version) must
+      // not leak the connection: on Windows the file stays locked and the
+      // shopkeeper cannot retry, move or back up their data.
+      try {
+        db.close();
+      } catch {
+        /* already closed */
+      }
+      throw err;
+    }
   }
   return db;
 }
