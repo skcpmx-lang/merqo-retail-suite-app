@@ -1,0 +1,132 @@
+name: Release (Windows installers)
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to stamp on the installers (e.g. 1.0.0)'
+        required: false
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    name: Build Windows EXEs
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install dependencies
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+        run: npm ci --no-audit --no-fund
+
+      - name: Typecheck core
+        shell: bash
+        run: node node_modules/typescript/bin/tsc -p packages/core/tsconfig.json --noEmit 2>&1 | tee verify-typecheck.log
+
+      - name: Run core tests
+        shell: bash
+        run: |
+          set -o pipefail
+          node node_modules/vitest/vitest.mjs run --reporter=verbose 2>&1 | tee verify-tests.log
+
+      - name: Surface failure summary
+        if: failure()
+        shell: bash
+        run: |
+          node -e "
+            const fs = require('fs');
+            const tail = (f, n) => {
+              try { return fs.readFileSync(f, 'utf8').split(/\r?\n/).filter(Boolean).slice(-n).join(' ~ '); }
+              catch { return '(missing ' + f + ')'; }
+            };
+            const clean = (t) => t.replace(/%/g, '%25').replace(/\r/g, ' ');
+            console.log('::error title=typecheck::' + clean(tail('verify-typecheck.log', 6)));
+            console.log('::error title=tests::' + clean(tail('verify-tests.log', 14)));
+          "
+
+      - name: Upload verification logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: verify-logs
+          path: verify-*.log
+          if-no-files-found: ignore
+
+      - name: Stamp version
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.version != '' }}
+        shell: bash
+        run: |
+          npm version "${{ inputs.version }}" --no-git-tag-version --workspaces --include-workspace-root
+
+      - name: Generate icons
+        run: node scripts/make-icons.mjs
+
+      - name: Build both applications
+        run: |
+          node scripts/build-app.mjs
+          node scripts/build-license-generator.mjs
+
+      - name: Package Sauda Retail Suite (NSIS)
+        run: node scripts/package-app.mjs
+
+      - name: Package Sauda License Generator (NSIS)
+        run: node scripts/package-license-generator.mjs
+
+      - name: Collect installers
+        shell: bash
+        run: |
+          mkdir -p artifacts
+          cp packages/app/release/*.exe artifacts/ || true
+          cp packages/license-generator/release/*.exe artifacts/ || true
+          ls -la artifacts
+
+      - name: Verify installers (size, key material, checksums)
+        shell: bash
+        run: node scripts/verify-installer.mjs --dir artifacts
+
+      - name: Upload workflow artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: sauda-windows-installers
+          path: |
+            artifacts/*.exe
+            artifacts/SHA256SUMS.txt
+          if-no-files-found: error
+
+      - name: Publish GitHub Release
+        # Pre-release tags (v1.0.0-rc.1 …) only prove the packaging pipeline; they
+        # must not publish a customer-facing release.
+        if: startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-rc')
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Sauda Retail Suite ${{ github.ref_name }}
+          draft: false
+          generate_release_notes: true
+          files: |
+            artifacts/*.exe
+            artifacts/SHA256SUMS.txt
+          body: |
+            ## সাউদা রিটেইল স্যুট ${{ github.ref_name }}
+
+            এই রিলিজে দুটি Windows ইনস্টলার আছে:
+
+            | ফাইল | কী |
+            |---|---|
+            | `Sauda-Retail-Suite-Setup-*.exe` | গ্রাহকের মূল POS অ্যাপ্লিকেশন |
+            | `Sauda-License-Generator-*.exe` | MERQO-র ভেতরের লাইসেন্স জেনারেটর (প্রাইভেট) |
+
+            **ইনস্টল করার আগে:** Windows 10/11 (64-bit), ৪ GB RAM, ৫০০ MB ফাঁকা জায়গা।
+            সাইনিং প্রাইভেট কী এই ইনস্টলারের ভেতরে নেই — জেনারেটর চালু করার পর আলাদা ফাইল থেকে লোড করতে হবে।
+
+            সব ডেটা আপনার কম্পিউটারেই থাকে। কোনো ইন্টারনেট সংযোগ বা ক্লাউড অ্যাকাউন্ট লাগে না।

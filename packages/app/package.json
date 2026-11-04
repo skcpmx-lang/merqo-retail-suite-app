@@ -1,0 +1,72 @@
+{
+  "name": "sauda-pos",
+  "productName": "Sauda Retail Suite",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Sauda Retail Suite - offline retail POS & business management for Bangladesh",
+  "author": {
+    "name": "MERQO",
+    "email": "merqoonline@gmail.com"
+  },
+  "main": "dist/main/main.js",
+  "dependencies": {
+    "better-sqlite3": "13.0.3",
+    "qrcode-generator": "1.4.4"
+  },
+  "scripts": {
+    "build": "node ../../scripts/build-app.mjs",
+    "package": "node ../../scripts/package-app.mjs"
+  },
+  "build": {
+    "appId": "com.merqo.sauda.retailsuite",
+    "productName": "Sauda Retail Suite",
+    "copyright": "Copyright © 2026 MERQO",
+    "directories": {
+      "output": "release",
+      "buildResources": "../../build"
+    },
+    "files": [
+      "dist/**/*",
+      "package.json",
+      "!**/*.map"
+    ],
+    "extraMetadata": {
+      "main": "dist/main/main.js"
+    },
+    "asar": true,
+    "asarUnpack": [
+      "**/node_modules/better-sqlite3/**"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "../../build/icon.ico",
+      "artifactName": "Sauda-Retail-Suite-Setup-${version}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowElevation": true,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "সাউদা রিটেইল স্যুট",
+      "uninstallDisplayName": "সাউদা রিটেইল স্যুট",
+      "deleteAppDataOnUninstall": false,
+      "runAfterFinish": true
+    },
+    "linux": {
+      "target": [
+        "dir"
+      ],
+      "icon": "../../build/icon.png",
+      "category": "Office"
+    }
+  }
+}
