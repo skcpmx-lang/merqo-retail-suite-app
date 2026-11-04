@@ -6,8 +6,22 @@
     "noEmit": true,
     "composite": false,
     "declaration": false,
-    "types": ["node"]
+    "jsx": "react-jsx",
+    "lib": [
+      "ES2022",
+      "DOM",
+      "DOM.Iterable"
+    ],
+    "types": [
+      "node"
+    ]
   },
-  "include": ["src/**/*.ts"],
-  "exclude": ["dist"]
+  "include": [
+    "src/**/*.ts",
+    "renderer-src/**/*.ts",
+    "renderer-src/**/*.tsx"
+  ],
+  "exclude": [
+    "dist"
+  ]
 }

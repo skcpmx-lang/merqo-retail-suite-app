@@ -1,7 +1,9 @@
 /**
- * Builds the private License Generator desktop app (main + preload bundles,
- * plus a straight copy of the static renderer).
+ * Builds the private License Generator desktop app:
+ *   1. electron main + preload → packages/license-generator/dist/main/*.js
+ *   2. React renderer          → packages/license-generator/dist/renderer (vite)
  */
+import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -48,6 +50,19 @@ await esbuild.build({
   outfile: path.join(outDir, 'main', 'preload.js'),
 });
 
-fs.cpSync(path.join(pkgDir, 'renderer'), path.join(outDir, 'renderer'), { recursive: true });
+// Renderer — vite build (React + TypeScript), same pipeline as the retail app.
+const viteBin = path.join(root, 'node_modules', 'vite', 'bin', 'vite.js');
+if (!fs.existsSync(viteBin)) {
+  console.error('[build:license-generator] vite is not installed — run `npm ci` at the repo root.');
+  process.exit(1);
+}
+const vite = spawnSync(process.execPath, [viteBin, 'build', '--config', path.join(pkgDir, 'vite.config.ts')], {
+  cwd: pkgDir,
+  stdio: 'inherit',
+});
+if (vite.status !== 0) {
+  console.error('[build:license-generator] renderer build failed.');
+  process.exit(vite.status ?? 1);
+}
 
 console.log('[build:license-generator] done → packages/license-generator/dist');

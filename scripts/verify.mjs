@@ -23,6 +23,7 @@ step('typecheck: app', process.execPath, [tsc, '-p', 'packages/app/tsconfig.json
 step('typecheck: license generator', process.execPath, [tsc, '-p', 'packages/license-generator/tsconfig.json', '--noEmit']);
 step('tests: core', process.execPath, [vitest, 'run']);
 step('ui wiring', process.execPath, ['scripts/audit-ui.mjs']);
+step('license generator wiring', process.execPath, ['scripts/audit-license-generator.mjs']);
 step('icons', process.execPath, ['scripts/make-icons.mjs']);
 step('build: app', process.execPath, ['scripts/build-app.mjs']);
 step('build: license generator', process.execPath, ['scripts/build-license-generator.mjs']);

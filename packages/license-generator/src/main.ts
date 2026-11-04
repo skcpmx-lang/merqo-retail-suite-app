@@ -1,27 +1,66 @@
-import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron';
+import { app, BrowserWindow, clipboard, dialog, ipcMain, shell } from 'electron';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import {
-  buildPayload,
-  encodeLicenseKey,
-  keyIdForPublicKey,
-  issueLicense,
-  parseLicenseFile,
-  verifyLicense,
-  PRODUCT_NAME,
+  buildLicenseDocumentHtml,
+  buildReportHtml,
   PRODUCT_VERSION,
-  type DeviceFingerprint,
+  verifyLicense,
+  type BrandInfo,
   type LicensePayload,
 } from '@sauda/core';
-import { appendLedger, isRevoked, ledgerFile, listLedger, revokedIds } from './ledger.js';
+import {
+  EDITIONS,
+  FEATURES,
+  REPORTS,
+  appendLedger,
+  buildBackup,
+  createCustomer,
+  customerById,
+  describePrivateKey,
+  licenseById,
+  licenseState,
+  licensesForCustomer,
+  listCustomers,
+  listLedger,
+  listLicenses,
+  parseBackup,
+  parseDeviceRequest,
+  readStore,
+  recordIssuedLicense,
+  reportRows,
+  revokeLicense,
+  revokedIds as ledgerRevokedIds,
+  signLicense,
+  summarize,
+  toLicenseFile,
+  updateCustomer,
+  verifyLicenseFile,
+  writeStore,
+  type BackupBundle,
+  type Customer,
+  type DeviceRequest,
+  type IssueInput,
+  type LicenseRecord,
+  type LedgerEntry,
+  type Store,
+} from './domain.js';
+import { htmlToPdf, openPreview, printHtml } from './printing.js';
+
+/* ------------------------------------------------------------------ */
+/* Paths + config                                                      */
+/* ------------------------------------------------------------------ */
 
 interface AppConfig {
   keyPath: string | null;
   lastDir: string | null;
 }
 
-const configPath = () => path.join(app.getPath('userData'), 'generator-config.json');
+const userData = () => app.getPath('userData');
+const configPath = () => path.join(userData(), 'generator-config.json');
+const storePath = () => path.join(userData(), 'licenses-admin.json');
+const ledgerPath = () => path.join(userData(), 'issue-ledger.jsonl');
 
 function readConfig(): AppConfig {
   try {
@@ -38,34 +77,42 @@ function writeConfig(patch: Partial<AppConfig>): AppConfig {
   return next;
 }
 
-/** Accepts a raw base64 PKCS#8 key, a PEM file, or a JSON wrapper {"privateKey":"..."}. */
+function loadStore(): Store {
+  return readStore(storePath());
+}
+
+function saveStore(store: Store): void {
+  writeStore(storePath(), store);
+}
+
+function ledger(): LedgerEntry[] {
+  return listLedger(ledgerPath());
+}
+
+function revokedIds(): string[] {
+  return ledgerRevokedIds(ledgerPath());
+}
+
+/* ------------------------------------------------------------------ */
+/* Signing key (never persisted, never returned in full)               */
+/* ------------------------------------------------------------------ */
+
 function loadPrivateKeyB64(filePath: string): { b64: string; publicKeyB64: string; keyId: string } {
   const raw = fs.readFileSync(filePath, 'utf8').trim();
   let b64 = raw;
   if (raw.startsWith('{')) {
-    const parsed = JSON.parse(raw);
+    const parsed = JSON.parse(raw) as Record<string, string>;
     b64 = parsed.privateKey ?? parsed.private_key ?? parsed.privateKeyPkcs8Base64 ?? '';
   } else if (raw.includes('-----BEGIN')) {
-    b64 = raw
-      .replace(/-----BEGIN [^-]+-----/g, '')
-      .replace(/-----END [^-]+-----/g, '')
-      .replace(/\s+/g, '');
+    b64 = raw.replace(/-----BEGIN [^-]+-----/g, '').replace(/-----END [^-]+-----/g, '').replace(/\s+/g, '');
   }
   b64 = b64.replace(/\s+/g, '');
   if (!b64) throw new Error('ফাইলে কোনো প্রাইভেট কী পাওয়া যায়নি।');
-  const der = Buffer.from(b64, 'base64');
-  const keyObject = crypto.createPrivateKey({ key: der, format: 'der', type: 'pkcs8' });
-  if (keyObject.asymmetricKeyType !== 'ed25519') {
-    throw new Error(`ভুল কী ধরন: ${keyObject.asymmetricKeyType}. Ed25519 কী প্রয়োজন।`);
-  }
-  const publicKeyB64 = crypto
-    .createPublicKey(keyObject)
-    .export({ type: 'spki', format: 'der' })
-    .toString('base64');
-  return { b64, publicKeyB64, keyId: keyIdForPublicKey(publicKeyB64) };
+  const { keyId, publicKeyB64 } = describePrivateKey(b64);
+  return { b64, publicKeyB64, keyId };
 }
 
-function currentKey() {
+function currentKey(): { b64: string; publicKeyB64: string; keyId: string; path: string } | null {
   const config = readConfig();
   if (!config.keyPath || !fs.existsSync(config.keyPath)) return null;
   try {
@@ -75,65 +122,127 @@ function currentKey() {
   }
 }
 
-export interface DeviceRequest {
-  kind: string;
-  v: number;
-  fingerprint: string;
-  components: { key: string; hash: string; weight: number }[];
-  platform?: string;
-  app_version?: string;
-  business_name?: string | null;
-  created_at?: string;
+function requireKey() {
+  const key = currentKey();
+  if (!key) throw new Error('সাইনিং প্রাইভেট কী লোড করা হয়নি — সেটি লোড না করে লাইসেন্স ইস্যু করা যাবে না।');
+  return key;
 }
 
-function parseDeviceRequest(content: string): DeviceRequest {
-  let parsed: any;
-  try {
-    parsed = JSON.parse(content);
-  } catch {
-    throw new Error('ডিভাইস ফাইলটি JSON নয়।');
-  }
-  const components = Array.isArray(parsed.components) ? parsed.components : [];
-  const clean = components
-    .filter((c: any) => c && typeof c.key === 'string' && typeof c.hash === 'string' && c.hash.length > 0)
-    .map((c: any) => ({ key: c.key, hash: c.hash, weight: Number(c.weight) || 0 }));
-  if (!clean.length) throw new Error('ডিভাইস ফাইলে কোনো ব্যবহারযোগ্য কম্পোনেন্ট নেই।');
+function brand(): BrandInfo {
+  const store = loadStore();
   return {
-    kind: parsed.kind ?? 'sauda-device-request',
-    v: Number(parsed.v) || 1,
-    fingerprint: String(parsed.fingerprint ?? ''),
-    components: clean,
-    platform: parsed.platform,
-    app_version: parsed.app_version,
-    business_name: parsed.business_name ?? null,
-    created_at: parsed.created_at,
+    name: 'MERQO • লাইসেন্স প্রশাসন',
+    address: 'Sauda Retail Suite লাইসেন্সিং',
+    email: 'merqoonline@gmail.com',
+    footer: store.settings.company_footer,
+    documentFooter: 'এই নথিটি Sauda License Generator থেকে তৈরি — স্বাক্ষরিত লাইসেন্স পেলোড অপরিবর্তনযোগ্য।',
   };
 }
 
-function deviceFingerprint(request: DeviceRequest): DeviceFingerprint {
-  return {
-    version: request.v,
-    hash: request.fingerprint,
-    components: request.components,
-  } as DeviceFingerprint;
+/* ------------------------------------------------------------------ */
+/* Helpers                                                             */
+/* ------------------------------------------------------------------ */
+
+function safeFileStem(value: string, fallback = 'license'): string {
+  const cleaned = String(value ?? '')
+    .normalize('NFKC')
+    .replace(/[^\p{L}\p{N} ._-]/gu, '')
+    .trim()
+    .slice(0, 48);
+  return cleaned || fallback;
 }
 
-const routes: Record<string, (...args: any[]) => any | Promise<any>> = {
+function toIssueInput(input: Partial<IssueInput>): IssueInput {
+  return {
+    org: String(input.org ?? ''),
+    owner: input.owner ? String(input.owner) : '',
+    phone: input.phone ? String(input.phone) : '',
+    email: input.email ? String(input.email) : '',
+    address: input.address ? String(input.address) : '',
+    edition: (input.edition ?? 'standard') as IssueInput['edition'],
+    expiresAt: input.expiresAt ?? null,
+    maxDevices: Number(input.maxDevices ?? 1),
+    features: Array.isArray(input.features) ? input.features.map(String) : [],
+    note: input.note ?? null,
+  };
+}
+
+function ledgerEntryFor(
+  record: LicenseRecord,
+  action: LedgerEntry['action'],
+  extra: { reason?: string | null; file?: string | null; replaces?: string | null } = {},
+): LedgerEntry {
+  return appendLedger(ledgerPath(), {
+    license_id: record.license_id,
+    org: record.org,
+    owner: record.owner,
+    edition: record.edition,
+    expires_at: record.expires_at,
+    max_devices: record.max_devices,
+    device_hash: record.fingerprint || null,
+    key_id: record.key_id,
+    action,
+    replaces: extra.replaces ?? record.replaces,
+    reason: extra.reason ?? null,
+    file: extra.file ?? record.file_path,
+    customer_id: record.customer_id,
+  });
+}
+
+async function saveLicenseDialog(defaultName: string, body: string): Promise<string | null> {
+  const config = readConfig();
+  const res = await dialog.showSaveDialog({
+    title: 'লাইসেন্স ফাইল সংরক্ষণ করুন',
+    defaultPath: path.join(config.lastDir ?? app.getPath('documents'), defaultName),
+    filters: [{ name: 'Sauda License', extensions: ['sauda'] }],
+  });
+  if (res.canceled || !res.filePath) return null;
+  fs.writeFileSync(res.filePath, body, 'utf8');
+  writeConfig({ lastDir: path.dirname(res.filePath) });
+  return res.filePath;
+}
+
+/* ------------------------------------------------------------------ */
+/* Routes                                                              */
+/* ------------------------------------------------------------------ */
+
+type Route = (event: unknown, ...args: any[]) => unknown | Promise<unknown>;
+
+const routes: Record<string, Route> = {
   'app.info': () => ({
-    product: PRODUCT_NAME,
+    product: 'Sauda License Generator',
     appVersion: PRODUCT_VERSION,
     generatorVersion: app.getVersion(),
     electron: process.versions.electron,
     node: process.versions.node,
     platform: process.platform,
+    userData: userData(),
+    storePath: storePath(),
+    ledgerPath: ledgerPath(),
   }),
 
+  /* ---------------- settings ---------------- */
+  'settings.get': () => loadStore().settings,
+  'settings.update': (_e, patch: Record<string, unknown>) => {
+    const store = loadStore();
+    const allowed = ['theme', 'admin_name', 'default_edition', 'default_expiry_days', 'company_footer'] as const;
+    for (const key of allowed) {
+      if (patch[key] !== undefined) {
+        (store.settings as unknown as Record<string, unknown>)[key] = patch[key];
+      }
+    }
+    if (!['light', 'dark'].includes(store.settings.theme)) store.settings.theme = 'light';
+    saveStore(store);
+    return store.settings;
+  },
+
+  /* ---------------- key ---------------- */
   'key.status': () => {
     const key = currentKey();
     if (!key) return { loaded: false };
+    // Only public material leaves the main process.
     return { loaded: true, keyId: key.keyId, publicKeyB64: key.publicKeyB64, path: key.path };
   },
-
   'key.load': async () => {
     const res = await dialog.showOpenDialog({
       title: 'সাইনিং প্রাইভেট কী নির্বাচন করুন',
@@ -148,12 +257,42 @@ const routes: Record<string, (...args: any[]) => any | Promise<any>> = {
     writeConfig({ keyPath: res.filePaths[0], lastDir: path.dirname(res.filePaths[0]) });
     return { loaded: true, keyId: key.keyId, publicKeyB64: key.publicKeyB64, path: res.filePaths[0] };
   },
-
   'key.clear': () => {
     writeConfig({ keyPath: null });
     return { loaded: false };
   },
+  /* ---------------- customers ---------------- */
+  'customers.list': (_e, filter: { q?: string; activeOnly?: boolean } = {}) => {
+    const store = loadStore();
+    return listCustomers(store, filter).map((c) => {
+      const list = licensesForCustomer(store, c.id);
+      return {
+        ...c,
+        license_count: list.length,
+        active_count: list.filter((l) => licenseState(l) === 'active').length,
+      };
+    });
+  },
+  'customers.get': (_e, id: string) => {
+    const store = loadStore();
+    const customer = customerById(store, id);
+    if (!customer) throw new Error('কাস্টমার পাওয়া যায়নি।');
+    return { customer, licenses: licensesForCustomer(store, id) };
+  },
+  'customers.create': (_e, input: Parameters<typeof createCustomer>[1]) => {
+    const store = loadStore();
+    const customer = createCustomer(store, input);
+    saveStore(store);
+    return customer;
+  },
+  'customers.update': (_e, id: string, input: Parameters<typeof updateCustomer>[2]) => {
+    const store = loadStore();
+    const customer = updateCustomer(store, id, input);
+    saveStore(store);
+    return customer;
+  },
 
+  /* ---------------- device request ---------------- */
   'device.import': async () => {
     const config = readConfig();
     const res = await dialog.showOpenDialog({
@@ -171,204 +310,349 @@ const routes: Record<string, (...args: any[]) => any | Promise<any>> = {
     writeConfig({ lastDir: path.dirname(res.filePaths[0]) });
     return { ...request, file: res.filePaths[0] };
   },
+  'device.parse': (_e, content: string) => parseDeviceRequest(String(content ?? '')),
 
-  'license.build': (_e: unknown, request: DeviceRequest, input: any) => {
-    if (!request?.components?.length) throw new Error('আগে ডিভাইস রিকোয়েস্ট ফাইল লোড করুন।');
-    const payload = buildPayload({
-      org: input.org,
-      owner: input.owner || undefined,
-      phone: input.phone || undefined,
-      email: input.email || undefined,
-      address: input.address || undefined,
-      edition: input.edition,
-      expiresAt: input.expiresAt ? `${input.expiresAt}T23:59:59.000Z` : null,
-      maxDevices: Number(input.maxDevices) || 1,
-      features: input.features,
-      note: input.note || undefined,
-      generator: `Sauda License Generator ${app.getVersion()}`,
-      device: deviceFingerprint(request),
+  /* ---------------- issuance ---------------- */
+  'license.issue': async (
+    _e,
+    args: {
+      device: DeviceRequest;
+      customerId: string | null;
+      issue: Partial<IssueInput>;
+      save?: boolean;
+    },
+  ) => {
+    const key = requireKey();
+    const store = loadStore();
+    if (args.customerId && !customerById(store, args.customerId)) throw new Error('কাস্টমার পাওয়া যায়নি।');
+    const result = signLicense({
+      device: args.device,
+      issue: toIssueInput(args.issue),
+      privateKeyB64: key.b64,
+      generatorVersion: app.getVersion(),
     });
-    return payload;
+    const record = recordIssuedLicense(store, {
+      result,
+      customerId: args.customerId,
+      filePath: null,
+      note: args.issue.note ?? null,
+    });
+    let filePath: string | null = null;
+    if (args.save !== false) {
+      filePath = await saveLicenseDialog(
+        `${safeFileStem(record.org)}-${record.license_id.slice(-6)}.sauda`,
+        toLicenseFile(record, { customer: args.customerId ? customerById(store, args.customerId)?.name ?? null : null }),
+      );
+      record.file_path = filePath;
+    }
+    saveStore(store);
+    ledgerEntryFor(record, 'issued', { file: filePath });
+    return { record, payload: result.payload, licenseKey: result.licenseKey, filePath, check: result.check };
   },
 
-  'license.issue': (_e: unknown, request: DeviceRequest, input: any) => {
-    const key = currentKey();
-    if (!key) throw new Error('সাইনিং কী লোড করা হয়নি। আগে প্রাইভেট কী ফাইল লোড করুন।');
-    if (!request?.components?.length) throw new Error('আগে ডিভাইস রিকোয়েস্ট ফাইল লোড করুন।');
-    const { license, key: licenseKey } = issueLicense(
-      {
-        org: input.org,
-        owner: input.owner || undefined,
-        phone: input.phone || undefined,
-        email: input.email || undefined,
-        address: input.address || undefined,
-        edition: input.edition,
-        expiresAt: input.expiresAt ? `${input.expiresAt}T23:59:59.000Z` : null,
-        maxDevices: Number(input.maxDevices) || 1,
-        features: input.features,
-        note: input.note || undefined,
-        generator: `Sauda License Generator ${app.getVersion()}`,
-        device: deviceFingerprint(request),
-      },
-      key.b64,
+  'license.reissue': async (
+    _e,
+    args: {
+      device: DeviceRequest;
+      previousLicenseId: string;
+      issue: Partial<IssueInput>;
+      reason: string;
+      save?: boolean;
+    },
+  ) => {
+    const reason = String(args.reason ?? '').trim();
+    if (!reason) throw new Error('রি-ইস্যুর কারণ লিখতে হবে — এটি অডিটে সংরক্ষিত হবে।');
+    const key = requireKey();
+    const store = loadStore();
+    const previous = licenseById(store, args.previousLicenseId);
+    if (!previous) throw new Error('আগের লাইসেন্সটি রেকর্ডে নেই।');
+
+    const result = signLicense({
+      device: args.device,
+      issue: toIssueInput({ ...args.issue, org: args.issue.org || previous.org }),
+      privateKeyB64: key.b64,
+      generatorVersion: app.getVersion(),
+    });
+    const record = recordIssuedLicense(store, {
+      result,
+      customerId: previous.customer_id,
+      filePath: null,
+      replaces: previous.license_id,
+      note: `রি-ইস্যু (${previous.license_id.slice(-6)}): ${reason}`,
+    });
+    let filePath: string | null = null;
+    if (args.save !== false) {
+      filePath = await saveLicenseDialog(
+        `${safeFileStem(record.org)}-${record.license_id.slice(-6)}.sauda`,
+        toLicenseFile(record),
+      );
+      record.file_path = filePath;
+    }
+    saveStore(store);
+    // The replaced licence is closed out in the ledger, with the reason kept.
+    ledgerEntryFor(previous, 'revoked', { reason: `রি-ইস্যু: ${reason}` });
+    ledgerEntryFor(record, 'reissued', { reason, file: filePath, replaces: previous.license_id });
+    return { record, payload: result.payload, licenseKey: result.licenseKey, filePath, replaces: previous.license_id };
+  },
+
+  'license.saveFile': async (_e, licenseId: string) => {
+    const store = loadStore();
+    const record = licenseById(store, licenseId);
+    if (!record) throw new Error('লাইসেন্সটি রেকর্ডে নেই।');
+    const filePath = await saveLicenseDialog(
+      `${safeFileStem(record.org)}-${record.license_id.slice(-6)}.sauda`,
+      toLicenseFile(record),
     );
-    // Self-check with the public key before anything is handed to a customer.
-    const check = verifyLicense(license, { device: deviceFingerprint(request), publicKeyB64: key.publicKeyB64 });
-    if (!check.activated) throw new Error(`নিজস্ব যাচাই ব্যর্থ: ${check.message}`);
-    return { license, key: licenseKey, payload: license.payload, check };
+    if (!filePath) return null;
+    record.file_path = filePath;
+    saveStore(store);
+    return filePath;
   },
 
-  'license.save': async (_e: unknown, payload: LicensePayload, licenseKey: string, fingerprint: string) => {
-    const config = readConfig();
-    const safeOrg = String(payload.org).replace(/[^\p{L}\n0-9 _-]/gu, '').trim().slice(0, 40) || 'license';
-    const res = await dialog.showSaveDialog({
-      title: 'লাইসেন্স ফাইল সংরক্ষণ করুন',
-      defaultPath: path.join(
-        config.lastDir ?? app.getPath('documents'),
-        `${safeOrg}-${payload.license_id.slice(-6)}.sauda`,
-      ),
-      filters: [{ name: 'Sauda License', extensions: ['sauda'] }],
-    });
-    if (res.canceled || !res.filePath) return null;
-    const body = {
-      format: 'sauda-license',
-      v: 1,
-      key: licenseKey,
-      payload,
-      device_fingerprint: fingerprint,
-      issued_by: 'Sauda License Generator',
-      issued_at: new Date().toISOString(),
-    };
-    fs.writeFileSync(res.filePath, JSON.stringify(body, null, 2), 'utf8');
-    writeConfig({ lastDir: path.dirname(res.filePath) });
-    appendLedger({
-      license_id: payload.license_id,
-      org: payload.org,
-      owner: payload.owner ?? null,
-      edition: payload.edition,
-      expires_at: payload.expires_at ?? null,
-      max_devices: payload.max_devices,
-      device_hash: fingerprint || null,
-      key_id: currentKey()?.keyId ?? 'unknown',
-      action: 'issued',
-      replaces: null,
-      reason: null,
-      file: res.filePath,
-    });
-    return res.filePath;
+  'license.revoke': (_e, licenseId: string, reason: string) => {
+    const store = loadStore();
+    const record = revokeLicense(store, licenseId, reason);
+    saveStore(store);
+    const entry = ledgerEntryFor(record, 'revoked', { reason: record.revoke_reason });
+    return { record, entry };
   },
 
   'license.check': async () => {
+    const config = readConfig();
     const res = await dialog.showOpenDialog({
       title: 'যাচাই করার জন্য লাইসেন্স ফাইল খুলুন',
+      defaultPath: config.lastDir ?? undefined,
       filters: [{ name: 'Sauda License', extensions: ['sauda', 'license', 'json', 'txt'] }],
       properties: ['openFile'],
     });
     if (res.canceled || !res.filePaths[0]) return null;
-    const key = currentKey();
     const content = fs.readFileSync(res.filePaths[0], 'utf8');
-    const parsed = parseLicenseFile(content);
-    if (!parsed.ok || !parsed.license) return { ok: false, message: parsed.message ?? 'ফাইল সঠিক নয়' };
-    const signature = verifyLicense(parsed.license, { skipDevice: true, publicKeyB64: key?.publicKeyB64 });
+    const key = currentKey();
+    const outcome = verifyLicenseFile(content, { publicKeyB64: key?.publicKeyB64, revokedIds: revokedIds() });
+    writeConfig({ lastDir: path.dirname(res.filePaths[0]) });
+    return { ...outcome, file: res.filePaths[0], keyId: key?.keyId ?? null };
+  },
+  'license.checkText': (_e, content: string) => {
+    const key = currentKey();
+    return verifyLicenseFile(String(content ?? ''), { publicKeyB64: key?.publicKeyB64, revokedIds: revokedIds() });
+  },
+
+  /* ---------------- registers ---------------- */
+  'licenses.list': (_e, filter: Parameters<typeof listLicenses>[1] = {}) => {
+    const store = loadStore();
+    return listLicenses(store, filter).map((l) => ({ ...l, state: licenseState(l), license: undefined }));
+  },
+  'licenses.get': (_e, licenseId: string) => {
+    const store = loadStore();
+    const record = licenseById(store, licenseId);
+    if (!record) throw new Error('লাইসেন্স পাওয়া যায়নি।');
+    const customer = record.customer_id ? customerById(store, record.customer_id) : null;
+    return { record: { ...record, state: licenseState(record) }, customer };
+  },
+  'licenses.verifyRecord': (_e, licenseId: string) => {
+    const key = currentKey();
+    const store = loadStore();
+    const record = licenseById(store, licenseId);
+    if (!record) throw new Error('লাইসেন্স পাওয়া যায়নি।');
+    const state = verifyLicense(record.license, { publicKeyB64: key?.publicKeyB64 ?? undefined, skipDevice: true });
     return {
-      ok: signature.activated,
-      message: signature.message,
-      payload: parsed.license.payload,
-      keyText: parsed.license ? encodeLicenseKey(parsed.license) : null,
+      ok: state.activated,
+      message: state.message,
+      payload: record.license.payload,
+      licenseKey: null,
+      revoked: revokedIds().includes(record.license_id),
     };
   },
 
-  'history.list': () => ({ entries: listLedger(), revoked: revokedIds(), file: ledgerFile() }),
+  /* ---------------- dashboard / metadata ---------------- */
+  'dashboard.summary': () => {
+    const store = loadStore();
+    return {
+      summary: summarize(store),
+      recent: listLedger(ledgerPath()).slice(0, 8),
+      storePath: storePath(),
+      ledgerPath: ledgerPath(),
+      keyLoaded: Boolean(currentKey()),
+    };
+  },
+  'meta.catalog': () => ({ editions: EDITIONS, features: FEATURES, reports: REPORTS }),
+  'ledger.list': (_e, limit = 200) => ledger().slice(0, Math.max(1, Number(limit) || 200)),
 
-  'history.reveal': async () => {
-    const file = ledgerFile();
-    if (!fs.existsSync(file)) throw new Error('এখনো কোনো লাইসেন্স ইস্যু হয়নি।');
-    shell.showItemInFolder(file);
-    return true;
+  /* ---------------- reports ---------------- */
+  'reports.build': (_e, reportId: string) => {
+    const store = loadStore();
+    const { definition, rows } = reportRows(store, ledger(), reportId);
+    return { definition, rows, summary: summarize(store) };
+  },
+  'reports.preview': async (_e, reportId: string) => {
+    const store = loadStore();
+    const { definition, rows } = reportRows(store, ledger(), reportId);
+    const html = buildReportHtml({
+      title: definition.title,
+      subtitle: definition.note,
+      columns: definition.columns.map((c) => ({ label: c.label, align: c.align })),
+      rows,
+      brand: brand(),
+      landscape: rows.some((r) => r.length > 6),
+    });
+    return openPreview(html);
+  },
+  'reports.pdf': async (_e, reportId: string) => {
+    const store = loadStore();
+    const { definition, rows } = reportRows(store, ledger(), reportId);
+    const res = await dialog.showSaveDialog({
+      title: 'রিপোর্ট PDF সংরক্ষণ',
+      defaultPath: path.join(app.getPath('documents'), `${reportId}-${new Date().toISOString().slice(0, 10)}.pdf`),
+      filters: [{ name: 'PDF', extensions: ['pdf'] }],
+    });
+    if (res.canceled || !res.filePath) return null;
+    const html = buildReportHtml({
+      title: definition.title,
+      subtitle: definition.note,
+      columns: definition.columns.map((c) => ({ label: c.label, align: c.align })),
+      rows,
+      brand: brand(),
+      landscape: rows.some((r) => r.length > 6),
+    });
+    return htmlToPdf(html, res.filePath, { landscape: rows.some((r) => r.length > 6) });
+  },
+  'reports.print': async (_e, reportId: string) => {
+    const store = loadStore();
+    const { definition, rows } = reportRows(store, ledger(), reportId);
+    const html = buildReportHtml({
+      title: definition.title,
+      subtitle: definition.note,
+      columns: definition.columns.map((c) => ({ label: c.label, align: c.align })),
+      rows,
+      brand: brand(),
+      landscape: rows.some((r) => r.length > 6),
+    });
+    return printHtml(html);
   },
 
-  'license.revoke': (_e: unknown, payload: LicensePayload, reason: string) => {
-    if (!payload?.license_id) throw new Error('লাইসেন্স আইডি পাওয়া যায়নি।');
-    const note = String(reason ?? '').trim();
-    if (!note) throw new Error('রিভোক করার কারণ লিখতে হবে — এটা ইতিহাসে সংরক্ষিত হবে।');
-    const entry = appendLedger({
-      license_id: payload.license_id,
+  /* ---------------- licence certificate ---------------- */
+  'license.document': (_e, licenseId: string) => {
+    const store = loadStore();
+    const record = licenseById(store, licenseId);
+    if (!record) throw new Error('লাইসেন্স পাওয়া যায়নি।');
+    const payload: LicensePayload = record.license.payload;
+    return buildLicenseDocumentHtml({
       org: payload.org,
-      owner: payload.owner ?? null,
+      licenseId: payload.license_id,
       edition: payload.edition,
-      expires_at: payload.expires_at ?? null,
-      max_devices: payload.max_devices,
-      device_hash: null,
-      key_id: currentKey()?.keyId ?? 'unknown',
-      action: 'revoked',
-      replaces: null,
-      reason: note,
-      file: null,
+      issuedAt: payload.issued_at,
+      expiresAt: payload.expires_at,
+      maxDevices: payload.max_devices,
+      features: payload.features ?? [],
+      fingerprint: payload.fingerprint,
+      keyId: record.key_id,
+      brand: brand(),
+      version: PRODUCT_VERSION,
     });
-    return { revoked: true, entry, already: isRevoked(payload.license_id) };
+  },
+  'license.previewDoc': async (_e, licenseId: string) => {
+    const html = routes['license.document'](null, licenseId) as string;
+    return openPreview(html);
+  },
+  'license.pdf': async (_e, licenseId: string) => {
+    const html = routes['license.document'](null, licenseId) as string;
+    const store = loadStore();
+    const record = licenseById(store, licenseId);
+    const res = await dialog.showSaveDialog({
+      title: 'লাইসেন্স সার্টিফিকেট PDF',
+      defaultPath: path.join(app.getPath('documents'), `${safeFileStem(record?.org ?? 'license')}-certificate.pdf`),
+      filters: [{ name: 'PDF', extensions: ['pdf'] }],
+    });
+    if (res.canceled || !res.filePath) return null;
+    return htmlToPdf(html, res.filePath, { landscape: false });
+  },
+  'license.print': async (_e, licenseId: string) => {
+    const html = routes['license.document'](null, licenseId) as string;
+    return printHtml(html);
   },
 
-  'license.reissue': (_e: unknown, request: DeviceRequest, previous: LicensePayload, input: any) => {
-    const key = currentKey();
-    if (!key) throw new Error('সাইনিং কী লোড করা হয়নি। আগে প্রাইভেট কী ফাইল লোড করুন।');
-    if (!previous?.license_id) throw new Error('আগের লাইসেন্স পাওয়া যায়নি।');
-    const reason = String(input?.reason ?? '').trim();
-    if (!reason) throw new Error('রি-ইস্যুর কারণ লিখতে হবে।');
-    // Old licence is revoked first so the ledger always shows the reason.
-    appendLedger({
-      license_id: previous.license_id,
-      org: previous.org,
-      owner: previous.owner ?? null,
-      edition: previous.edition,
-      expires_at: previous.expires_at ?? null,
-      max_devices: previous.max_devices,
-      device_hash: null,
-      key_id: currentKey()?.keyId ?? 'unknown',
-      action: 'revoked',
-      replaces: null,
-      reason: `রি-ইস্যু: ${reason}`,
-      file: null,
+  /* ---------------- backup / diagnostics ---------------- */
+  'backup.export': async () => {
+    const store = loadStore();
+    const bundle = buildBackup(store, ledger());
+    const res = await dialog.showSaveDialog({
+      title: 'প্রশাসনিক ব্যাকআপ সংরক্ষণ',
+      defaultPath: path.join(
+        app.getPath('documents'),
+        `sauda-license-admin-${new Date().toISOString().slice(0, 10)}.json`,
+      ),
+      filters: [{ name: 'Sauda Admin Backup', extensions: ['json'] }],
     });
-    const { license, key: licenseKey } = issueLicense(
-      {
-        org: previous.org,
-        owner: previous.owner ?? undefined,
-        phone: previous.phone ?? undefined,
-        email: previous.email ?? undefined,
-        address: previous.address ?? undefined,
-        edition: previous.edition,
-        expiresAt: previous.expires_at ?? null,
-        maxDevices: previous.max_devices,
-        features: previous.features,
-        note: `রি-ইস্যু (${previous.license_id.slice(-6)}): ${reason}`,
-        generator: `Sauda License Generator ${app.getVersion()}`,
-        device: deviceFingerprint(request),
-      },
-      key.b64,
-    );
-    const check = verifyLicense(license, { device: deviceFingerprint(request), publicKeyB64: key.publicKeyB64 });
-    if (!check.activated) throw new Error(`নিজস্ব যাচাই ব্যর্থ: ${check.message}`);
-    return { license, key: licenseKey, payload: license.payload, check, replaces: previous.license_id };
+    if (res.canceled || !res.filePath) return null;
+    fs.writeFileSync(res.filePath, JSON.stringify(bundle, null, 2), 'utf8');
+    return { file: res.filePath, customers: store.customers.length, licenses: store.licenses.length };
   },
-
-  'reveal': async (_e: unknown, target: string) => {
-    shell.showItemInFolder(target);
+  'backup.inspect': async () => {
+    const res = await dialog.showOpenDialog({
+      title: 'ব্যাকআপ ফাইল নির্বাচন',
+      filters: [{ name: 'Sauda Admin Backup', extensions: ['json'] }],
+      properties: ['openFile'],
+    });
+    if (res.canceled || !res.filePaths[0]) return null;
+    const bundle = parseBackup(fs.readFileSync(res.filePaths[0], 'utf8'));
+    return {
+      file: res.filePaths[0],
+      created_at: bundle.created_at,
+      customers: bundle.store.customers.length,
+      licenses: bundle.store.licenses.length,
+      ledger: bundle.ledger.length,
+    };
+  },
+  'backup.restore': async (_e, file: string) => {
+    const bundle: BackupBundle = parseBackup(fs.readFileSync(file, 'utf8'));
+    // Never overwrite silently: current data is parked next to the store first.
+    const current = loadStore();
+    const parking = `${storePath()}.before-restore-${Date.now()}.json`;
+    writeStore(parking, current);
+    writeStore(storePath(), bundle.store);
+    return { restored: { customers: bundle.store.customers.length, licenses: bundle.store.licenses.length }, previous: parking };
+  },
+  'backup.reveal': () => {
+    if (!fs.existsSync(storePath())) throw new Error('এখনো কোনো ডেটা ফাইল তৈরি হয়নি।');
+    shell.showItemInFolder(storePath());
     return true;
   },
+  'diagnostics.get': () => ({
+    appVersion: PRODUCT_VERSION,
+    generatorVersion: app.getVersion(),
+    electron: process.versions.electron,
+    node: process.versions.node,
+    platform: process.platform,
+    userData: userData(),
+    storePath: storePath(),
+    ledgerPath: ledgerPath(),
+    keyPath: readConfig().keyPath,
+    storeExists: fs.existsSync(storePath()),
+    ledgerExists: fs.existsSync(ledgerPath()),
+    ledgerLines: ledger().length,
+  }),
 
-  'copy': (_e: unknown, text: string) => {
-    require('electron').clipboard.writeText(String(text ?? ''));
+  'reveal': (_e, target: string) => {
+    shell.showItemInFolder(String(target));
+    return true;
+  },
+  'copy': (_e, text: string) => {
+    clipboard.writeText(String(text ?? ''));
     return true;
   },
 };
 
+/* ------------------------------------------------------------------ */
+/* Window                                                              */
+/* ------------------------------------------------------------------ */
+
 function createWindow() {
   const win = new BrowserWindow({
-    width: 1180,
-    height: 820,
-    minWidth: 980,
-    minHeight: 700,
-    backgroundColor: '#f3f6f6',
+    width: 1280,
+    height: 860,
+    minWidth: 1024,
+    minHeight: 720,
+    backgroundColor: '#0f1518',
     title: 'সাউদা লাইসেন্স জেনারেটর',
     autoHideMenuBar: true,
     webPreferences: {
@@ -380,11 +664,8 @@ function createWindow() {
   });
 
   const devUrl = process.env.LICGEN_DEV_URL;
-  if (devUrl) {
-    void win.loadURL(devUrl);
-  } else {
-    void win.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'));
-  }
+  if (devUrl) void win.loadURL(devUrl);
+  else void win.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'));
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
 }
 
@@ -401,11 +682,11 @@ if (!gotLock) {
   });
 
   void app.whenReady().then(() => {
-    ipcMain.handle('licgen:invoke', async (_event, method: string, args: any[] = []) => {
+    ipcMain.handle('licgen:invoke', async (event, method: string, args: any[] = []) => {
       const fn = routes[method];
       if (!fn) return { ok: false, error: `অজানা অনুরোধ: ${method}` };
       try {
-        const data = await (fn as any)(_event, ...args);
+        const data = await fn(event, ...args);
         return { ok: true, data };
       } catch (err) {
         return { ok: false, error: (err as Error).message };
@@ -422,3 +703,6 @@ if (!gotLock) {
     if (process.platform !== 'darwin') app.quit();
   });
 }
+
+/** Kept for consumers that only need the crypto surface in tests. */
+export const __crypto = crypto;
