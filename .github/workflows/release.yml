@@ -30,12 +30,30 @@ jobs:
           ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
         run: npm ci --no-audit --no-fund
 
-      - name: Verify core (typecheck + tests)
+      - name: Typecheck core
+        shell: bash
+        run: node node_modules/typescript/bin/tsc -p packages/core/tsconfig.json --noEmit 2>&1 | tee verify-typecheck.log
+
+      - name: Run core tests
         shell: bash
         run: |
           set -o pipefail
-          node node_modules/typescript/bin/tsc -p packages/core/tsconfig.json --noEmit 2>&1 | tee verify-typecheck.log
           node node_modules/vitest/vitest.mjs run --reporter=verbose 2>&1 | tee verify-tests.log
+
+      - name: Surface failure summary
+        if: failure()
+        shell: bash
+        run: |
+          node -e "
+            const fs = require('fs');
+            const tail = (f, n) => {
+              try { return fs.readFileSync(f, 'utf8').split(/\r?\n/).filter(Boolean).slice(-n).join(' ~ '); }
+              catch { return '(missing ' + f + ')'; }
+            };
+            const clean = (t) => t.replace(/%/g, '%25').replace(/\r/g, ' ');
+            console.log('::error title=typecheck::' + clean(tail('verify-typecheck.log', 6)));
+            console.log('::error title=tests::' + clean(tail('verify-tests.log', 14)));
+          "
 
       - name: Upload verification logs
         if: always()
