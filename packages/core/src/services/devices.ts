@@ -34,6 +34,7 @@ export interface Terminal {
   store_id: string;
   license_id: string | null;
   status: DeviceStatus;
+  public_key: string | null;
   platform: string | null;
   app_version: string | null;
   fingerprint: string | null;

@@ -7,6 +7,7 @@
  */
 import crypto from 'node:crypto';
 import http from 'node:http';
+import tls from 'node:tls';
 import { describe, expect, it } from 'vitest';
 import {
   checkPinnedFingerprint,
@@ -72,6 +73,32 @@ describe('certificate generation', () => {
     expect(parsed.publicKey.asymmetricKeyDetails?.modulusLength).toBe(2048);
     expect(fingerprintOf(cert.certPem)).not.toBe(fingerprintOf(other.certPem));
   });
+
+  it('encodes a serial that starts with zero bytes as minimal DER', () => {
+    // Regression: a leading 0x00 in the serial used to produce a non-minimal INTEGER,
+    // which OpenSSL rejects with "illegal padding" — so roughly 1 first boot in 256
+    // would fail to create its certificate.
+    const zeroed = generateServerCertificate({
+      serial: Buffer.from([0x00, 0x00, 0x5c, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d]),
+    });
+    const parsed = new crypto.X509Certificate(zeroed.certPem);
+    expect(parsed.serialNumber.toUpperCase()).toBe('5C0102030405060708090A0B0C0D');
+    // A high-bit serial still needs its leading zero to stay positive.
+    const highBit = generateServerCertificate({
+      serial: Buffer.from([0xff, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f]),
+    });
+    expect(new crypto.X509Certificate(highBit.certPem).serialNumber.toUpperCase()).toBe(
+      'FF0102030405060708090A0B0C0D0E0F',
+    );
+  });
+
+  it('produces certificates a TLS context accepts across many random serials', () => {
+    // Cheap sweep over the randomness that caused the intermittent failure above.
+    for (let i = 0; i < 40; i += 1) {
+      const generated = generateServerCertificate({ ips: ['192.168.0.10'] });
+      expect(() => tls.createSecureContext({ cert: generated.certPem, key: generated.keyPem })).not.toThrow();
+    }
+  }, 60_000);
 
   it('ignores malformed IP input instead of producing a broken SAN', () => {
     const weird = generateServerCertificate({ ips: ['999.1.1.1', 'not-an-ip', '10.0.0.5'] });

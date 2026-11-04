@@ -49,7 +49,13 @@ const der = {
       if ((bytes[0]! & 0x80) !== 0) bytes.unshift(0);
       return tlv(0x02, Buffer.from(bytes));
     }
-    const body = value[0]! & 0x80 ? Buffer.concat([Buffer.from([0]), value]) : value;
+    // DER INTEGERs must be minimal: a leading 0x00 is only legal when it keeps the
+    // value positive. Random serials start with 0x00 once in 256, and OpenSSL rejects
+    // such a certificate with "illegal padding" (found by a load test in Milestone B).
+    let start = 0;
+    while (start < value.length - 1 && value[start] === 0x00) start += 1;
+    const minimal = value.subarray(start);
+    const body = (minimal[0]! & 0x80) !== 0 ? Buffer.concat([Buffer.from([0]), minimal]) : minimal;
     return tlv(0x02, body);
   },
   null: () => tlv(0x05, Buffer.alloc(0)),

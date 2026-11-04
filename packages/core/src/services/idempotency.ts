@@ -89,6 +89,49 @@ export function withIdempotency<T>(db: Db, opts: IdempotencyOptions, fn: () => T
   return result;
 }
 
+/**
+ * Async variant: awaits the operation first so the **resolved** value is stored.
+ * (Storing a pending Promise would replay `{}` — a bug the API tests caught.)
+ */
+export async function withIdempotencyAsync<T>(
+  db: Db,
+  opts: IdempotencyOptions,
+  fn: () => Promise<T>,
+): Promise<T> {
+  const key = String(opts.key ?? '').trim();
+  if (!key) return fn();
+  if (key.length > 200) throw new IdempotencyError('BAD_KEY', 'ইডেম্পোটেন্সি কী অনেক বড়।');
+  const hash = requestHash(opts.body);
+  const now = new Date();
+  const existing = db.prepare('SELECT * FROM idempotency_keys WHERE key = ?').get(key) as
+    | { request_hash: string; response: string | null; method: string }
+    | undefined;
+  if (existing) {
+    if (existing.request_hash !== hash || existing.method !== opts.method) {
+      throw new IdempotencyError(
+        'IDEMPOTENCY_CONFLICT',
+        'একই কী দিয়ে ভিন্ন অনুরোধ পাঠানো হয়েছে — প্রত্যাখ্যাত।',
+      );
+    }
+    if (existing.response) return JSON.parse(existing.response) as T;
+  }
+  const result = await fn();
+  db.prepare(
+    `INSERT INTO idempotency_keys (key, device_id, method, request_hash, response, created_at, expires_at)
+     VALUES (?,?,?,?,?,?,?)
+     ON CONFLICT(key) DO UPDATE SET response = excluded.response`,
+  ).run(
+    key,
+    opts.deviceId ?? null,
+    opts.method,
+    hash,
+    JSON.stringify(result ?? null),
+    now.toISOString(),
+    new Date(now.getTime() + (opts.ttlMs ?? 24 * 60 * 60 * 1000)).toISOString(),
+  );
+  return result;
+}
+
 export function pruneIdempotencyKeys(db: Db): number {
   return db.prepare('DELETE FROM idempotency_keys WHERE expires_at <= ?').run(new Date().toISOString()).changes;
 }
