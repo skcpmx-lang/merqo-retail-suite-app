@@ -13,6 +13,8 @@ npm run verify
 ✔ secrets scan: no key material tracked
 ```
 
+GitHub Actions-এও একই গেট সবুজ হয়েছে: `CI` ওয়ার্কফ্লো (ubuntu-latest, `npm ci` + `npm run verify`) প্রথম রানেই পাস — ২০২৬-১১-০৪।
+
 ## ২. যা স্যান্ডবক্সে যাচাই করা যায়নি (প্রমাণ বাকি)
 
 | আইটেম | কেন | প্রয়োজন |
