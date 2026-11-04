@@ -57,10 +57,57 @@ export function ensureDirFor(file: string): void {
   if (dir && dir !== '.' && !fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 }
 
+/**
+ * Open-connection accounting (window into leaked handles).
+ *
+ * Windows refuses to unlink a file that still has an open handle, so a connection that is never
+ * `close()`d surfaces as `EBUSY` there while Linux hides it completely: the test suite was green on
+ * Linux and failed on Windows for exactly this reason. Counting live connections lets the suite
+ * assert "every database this test opened was closed" on *every* platform, so the leak is caught by
+ * the fast Linux job instead of the release build.
+ *
+ * It is bookkeeping only — no behaviour change, no extra locking, and nothing is retained that
+ * would prevent the connection from closing.
+ */
+const liveConnections = new Map<string, number>();
+
+function trackConnection(db: Db, file: string): void {
+  const key = file === ':memory:' ? ':memory:' : path.resolve(file);
+  liveConnections.set(key, (liveConnections.get(key) ?? 0) + 1);
+  const close = db.close.bind(db);
+  let closed = false;
+  // `close()` is idempotent here: a second call is a no-op instead of a double decrement.
+  db.close = (() => {
+    if (!closed) {
+      closed = true;
+      const remaining = (liveConnections.get(key) ?? 1) - 1;
+      if (remaining > 0) liveConnections.set(key, remaining);
+      else liveConnections.delete(key);
+    }
+    return close();
+  }) as typeof db.close;
+}
+
+/**
+ * Number of database connections that are still open in this process, and which files they hold.
+ * Used by the test suite's leak guard; also useful in a diagnostic build when a shop reports that
+ * Windows will not let them back up or restore their database.
+ */
+export function openDatabaseCount(): { count: number; fileBacked: number; files: string[] } {
+  let count = 0;
+  let fileBacked = 0;
+  for (const [file, open] of liveConnections) {
+    count += open;
+    if (file !== ':memory:') fileBacked += open;
+  }
+  return { count, fileBacked, files: [...liveConnections.keys()].filter((f) => f !== ':memory:').sort() };
+}
+
 export function openDatabase(opts: OpenOptions): Db {
   const { file, readonly = false } = opts;
   if (file !== ':memory:') ensureDirFor(file);
   const db = new Database(file, { readonly, fileMustExist: readonly });
+  trackConnection(db, file);
   if (!readonly) {
     for (const p of PRAGMAS) {
       try {

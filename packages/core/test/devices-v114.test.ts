@@ -43,17 +43,19 @@ import {
   type EnrolInput,
 } from '../src/index.js';
 import { makeTestDb, seedProducts } from './helpers.js';
+import { closeTrackedDatabases, openTrackedDatabase, removeTempDirs } from '../../../test-setup/temp-resources.js';
 
 const dirs: string[] = [];
 afterAll(() => {
-  for (const dir of dirs) fs.rmSync(dir, { recursive: true, force: true });
+  closeTrackedDatabases();
+  removeTempDirs(dirs);
 });
 
 /** A real store database with the owner account that approves devices. */
 function fresh(): Db {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sauda-devices-'));
   dirs.push(dir);
-  const db = openDatabase({ file: path.join(dir, 'shop.db'), appVersion: '1.1.4' });
+  const db = openTrackedDatabase({ file: path.join(dir, 'shop.db'), appVersion: '1.1.4' });
   initializeApp(db, {
     businessName: 'টেস্ট স্টোর',
     businessAddress: 'চট্টগ্রাম',

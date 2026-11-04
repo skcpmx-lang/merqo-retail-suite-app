@@ -32,6 +32,7 @@ import {
   rejectDeviceFor,
   revokeDeviceFor,
 } from '../electron/device-admin.js';
+import { closeTrackedDatabases, openTrackedDatabase, removeTempDirs } from '../../../test-setup/temp-resources.js';
 
 interface Ctx {
   db: Db;
@@ -43,7 +44,7 @@ const dirs: string[] = [];
 function makeCtx(): Ctx {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sauda-dev-'));
   dirs.push(dir);
-  const db = openDatabase({ file: path.join(dir, 'shop.db'), appVersion: '1.1.4' });
+  const db = openTrackedDatabase({ file: path.join(dir, 'shop.db'), appVersion: '1.1.4' });
   initializeApp(db, {
     businessName: 'ডিভাইস স্টোর',
     businessAddress: 'ঢাকা',
@@ -95,7 +96,8 @@ function enrol(ctx: Ctx, deviceId: string) {
 }
 
 afterAll(() => {
-  for (const dir of dirs) fs.rmSync(dir, { recursive: true, force: true });
+  closeTrackedDatabases();
+  removeTempDirs(dirs);
 });
 
 describe('device administration', () => {

@@ -17,6 +17,8 @@ export default defineConfig({
   },
   test: {
     environment: 'node',
+    // Fails a test file that leaves a file-backed SQLite connection open (Windows EBUSY class).
+    setupFiles: ['test-setup/database-leak-guard.ts'],
     include: [
       'packages/core/test/**/*.test.ts',
       'packages/license-generator/test/**/*.test.{ts,tsx}',

@@ -20,6 +20,7 @@ import {
   type Sealer,
 } from '@sauda/core';
 import { TerminalManager } from '../electron/terminal.js';
+import { closeTrackedDatabases, openTrackedDatabase, removeTempDirs } from '../../../test-setup/temp-resources.js';
 
 vi.setConfig({ testTimeout: 30_000 });
 
@@ -46,7 +47,8 @@ function manager(dir: string): TerminalManager {
 
 afterAll(async () => {
   for (const api of apis) await api.stop().catch(() => undefined);
-  for (const dir of dirs) fs.rmSync(dir, { recursive: true, force: true });
+  closeTrackedDatabases();
+  removeTempDirs(dirs);
 });
 
 describe('saved trusted servers', () => {
@@ -118,7 +120,7 @@ describe('saved trusted servers', () => {
 describe('end-to-end client flow through the manager', () => {
   it('pairs, is approved, logs in, receives events and remembers the last id', async () => {
     const hostDir = tempDir();
-    const db: Db = openDatabase({ file: path.join(hostDir, 'shop.db'), appVersion: '1.1.4' });
+    const db: Db = openTrackedDatabase({ file: path.join(hostDir, 'shop.db'), appVersion: '1.1.4' });
     initializeApp(db, {
       businessName: 'ম্যানেজার স্টোর',
       businessAddress: 'ঢাকা',

@@ -108,6 +108,7 @@ describe('global search', () => {
 
     const byPhone = searchEverything(ctx.db, '01922');
     expect(byPhone.some((h) => h.kind === 'customer' && h.title === 'করিম সাহেব')).toBe(true);
+    ctx.cleanup();
   });
 
   it('returns nothing for an empty term and no hits for a bogus term', () => {

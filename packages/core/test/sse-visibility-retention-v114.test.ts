@@ -21,6 +21,7 @@ import {
   type LanApi,
 } from '../src/index.js';
 import { generateDeviceKeyPair } from '../src/net/device-auth.js';
+import { closeTrackedDatabases, openTrackedDatabase, removeTempDirs } from '../../../test-setup/temp-resources.js';
 
 vi.setConfig({ testTimeout: 30_000 });
 
@@ -37,7 +38,7 @@ function tempDir(): string {
 type Bot = ReturnType<typeof openDatabase>;
 
 function freshDb(dir: string): Bot {
-  const db = openDatabase({ file: path.join(dir, 'shop.db'), appVersion: '1.1.4' });
+  const db = openTrackedDatabase({ file: path.join(dir, 'shop.db'), appVersion: '1.1.4' });
   initializeApp(db, {
     businessName: 'ভিজিবিলিটি স্টোর',
     businessAddress: 'ঢাকা',
@@ -175,7 +176,8 @@ async function waitFor(check: () => boolean, timeoutMs = 6000): Promise<void> {
 afterAll(async () => {
   for (const s of sockets) s.destroy();
   for (const api of apis) await api.stop().catch(() => undefined);
-  for (const dir of dirs) fs.rmSync(dir, { recursive: true, force: true });
+  closeTrackedDatabases();
+  removeTempDirs(dirs);
 });
 
 describe('role-based event visibility', () => {
