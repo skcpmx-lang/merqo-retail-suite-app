@@ -1293,24 +1293,6 @@ on(
   'backup.manage',
 );
 on(
-  'settings.pickLogo',
-  async () => {
-    const res = await dialog.showOpenDialog({
-      title: 'দোকানের লোগো নির্বাচন করুন',
-      filters: [{ name: 'ছবি', extensions: ['png', 'jpg', 'jpeg', 'webp'] }],
-      properties: ['openFile'],
-    });
-    if (res.canceled || !res.filePaths[0]) return null;
-    const src = res.filePaths[0];
-    if (fs.statSync(src).size > 2 * 1024 * 1024) throw new Error('লোগোর আকার ২ মেগাবাইটের কম হতে হবে।');
-    const target = path.join(appPaths().dataDir, `logo-${Date.now()}${path.extname(src).toLowerCase()}`);
-    fs.copyFileSync(src, target);
-    return target;
-  },
-  'settings.manage',
-);
-
-on(
   'print.test',
   async (ctx) => {
     const settings = getSettings(ctx.db);

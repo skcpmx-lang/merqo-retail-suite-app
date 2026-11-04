@@ -1,21 +1,30 @@
 name: Release (Windows installers)
 
+# Builds the two Windows x64 installers and hands them back as verified workflow artefacts.
+#
+# v1.1.4 release policy: unsigned installers are accepted by the owner. Authenticode is optional
+# and never a dependency of this workflow — no certificate secret is required, and being unsigned
+# is not a failure.
+#
+# This workflow never publishes. `permissions: contents: read` means it cannot write a release,
+# and there is no release step. Publishing is a separate, deliberate act by the owner:
+# download the verified artefacts, create a DRAFT release, re-verify, then publish.
+#
+# Triggers: manual dispatch, and a `v*` tag push so a reproducible build can be produced for a
+# specific commit. A tag build still cannot publish anything.
+
 on:
+  workflow_dispatch:
   push:
     tags:
       - 'v*'
-  workflow_dispatch:
-    inputs:
-      version:
-        description: 'Version to stamp on the installers (e.g. 1.0.0)'
-        required: false
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   windows:
-    name: Build Windows EXEs
+    name: Build Windows installers (unsigned accepted)
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -25,14 +34,18 @@ jobs:
           node-version: '22'
           cache: 'npm'
 
+      # Informational only: states whether this run can sign, or is unsigned (accepted).
+      - name: Report signing status
+        continue-on-error: true
+        run: node scripts/check-signing-env.mjs
+
       - name: Install dependencies
         env:
           ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
         run: npm ci --no-audit --no-fund
 
-      # v1.1.3: the release runs exactly the same gate as a pull request —
-      # typecheck, all tests, UI/IPC wiring audits, both builds, secret scans and a
-      # production dependency audit — instead of a weaker subset.
+      # The same gate as a pull request: typecheck, all tests, UI/IPC wiring audits, both builds,
+      # secret scans and a production dependency audit.
       - name: Verify (typecheck, tests, audits, builds, secrets, audit)
         shell: bash
         run: |
@@ -61,12 +74,6 @@ jobs:
           path: verify-*.log
           if-no-files-found: ignore
 
-      - name: Stamp version
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.version != '' }}
-        shell: bash
-        run: |
-          npm version "${{ inputs.version }}" --no-git-tag-version --workspaces --include-workspace-root
-
       - name: Generate icons
         run: node scripts/make-icons.mjs
 
@@ -75,56 +82,38 @@ jobs:
           node scripts/build-app.mjs
           node scripts/build-license-generator.mjs
 
+      # Signing is optional: if a certificate is present the NSIS output is signed, otherwise
+      # the build continues and the artefacts are reported as unsigned (accepted).
       - name: Package Sauda Retail Suite (NSIS)
         run: node scripts/package-app.mjs
 
       - name: Package Sauda License Generator (NSIS)
         run: node scripts/package-license-generator.mjs
 
-      - name: Collect installers
+      # Hard gate: both artefacts present, ProductVersion/FileVersion, x64 PE, no key material,
+      # and SHA256SUMS.txt computed from these exact files. Authenticode status is reported
+      # (unsigned is accepted); it is not a failure.
+      - name: Verify installers (version, architecture, key material, SHA-256)
         shell: bash
         run: |
           mkdir -p artifacts
-          cp packages/app/release/*.exe artifacts/ || true
-          cp packages/license-generator/release/*.exe artifacts/ || true
-          ls -la artifacts
+          cp packages/app/release/*.exe artifacts/
+          cp packages/license-generator/release/*.exe artifacts/
+          node scripts/verify-installer.mjs --dir artifacts
 
-      - name: Verify installers (size, key material, checksums)
+      # D-3: the reviewed notes file is the only accepted release text. Sections are enforced
+      # here; the filled-values gate runs at publish time (scripts/check-release-notes.mjs
+      # --require-filled) once the measured sizes and hashes are recorded.
+      - name: Require the reviewed release notes
         shell: bash
-        run: node scripts/verify-installer.mjs --dir artifacts
+        run: node scripts/check-release-notes.mjs --file docs/V1.1.4_RELEASE_NOTES.md
 
-      - name: Upload workflow artifacts
+      - name: Upload installers (no release is created)
         uses: actions/upload-artifact@v4
         with:
           name: sauda-windows-installers
           path: |
             artifacts/*.exe
             artifacts/SHA256SUMS.txt
+            docs/V1.1.4_RELEASE_NOTES.md
           if-no-files-found: error
-
-      - name: Publish GitHub Release
-        # Pre-release tags (v1.0.0-rc.1 …) only prove the packaging pipeline; they
-        # must not publish a customer-facing release.
-        if: startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-rc')
-        uses: softprops/action-gh-release@v2
-        with:
-          name: Sauda Retail Suite ${{ github.ref_name }}
-          draft: false
-          generate_release_notes: true
-          files: |
-            artifacts/*.exe
-            artifacts/SHA256SUMS.txt
-          body: |
-            ## সাউদা রিটেইল স্যুট ${{ github.ref_name }}
-
-            এই রিলিজে দুটি Windows ইনস্টলার আছে:
-
-            | ফাইল | কী |
-            |---|---|
-            | `Sauda-Retail-Suite-Setup-*.exe` | গ্রাহকের মূল POS অ্যাপ্লিকেশন |
-            | `Sauda-License-Generator-*.exe` | MERQO-র ভেতরের লাইসেন্স জেনারেটর (প্রাইভেট) |
-
-            **ইনস্টল করার আগে:** Windows 10/11 (64-bit), ৪ GB RAM, ৫০০ MB ফাঁকা জায়গা।
-            সাইনিং প্রাইভেট কী এই ইনস্টলারের ভেতরে নেই — জেনারেটর চালু করার পর আলাদা ফাইল থেকে লোড করতে হবে।
-
-            সব ডেটা আপনার কম্পিউটারেই থাকে। কোনো ইন্টারনেট সংযোগ বা ক্লাউড অ্যাকাউন্ট লাগে না।

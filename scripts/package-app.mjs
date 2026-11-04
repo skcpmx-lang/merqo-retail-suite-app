@@ -1,11 +1,16 @@
 /**
- * Packages the Sauda POS app with electron-builder (NSIS installer for
- * Windows). Requires the app to be built first (scripts/build-app.mjs).
+ * Packages the Sauda POS app with electron-builder (NSIS installer for Windows).
+ * Requires the app to be built first (scripts/build-app.mjs).
+ *
+ * Release builds are **signed or refused** (D-1): if no Authenticode method is configured the
+ * script stops before electron-builder runs, so an unsigned installer can never be produced by
+ * accident. See docs/V1.1.4_WINDOWS_BUILD_SIGNING_HANDOFF.md §3.
  */
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { describeSigning, signingConfig } from './lib/signing.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const appDir = path.join(root, 'packages', 'app');
@@ -21,10 +26,25 @@ if (!fs.existsSync(builderBin)) {
   process.exit(1);
 }
 
-const args = [builderBin, '--win', 'nsis', '--x64', '--publish', 'never', ...process.argv.slice(2)];
+// Code signing is optional (v1.1.4 policy: unsigned installers are accepted). When a
+// certificate is available it is used automatically; otherwise the build is reported as unsigned.
+const signing = signingConfig(process.env);
+console.log(`[package-app] signing: ${describeSigning(signing)}`);
+
+const args = [
+  builderBin,
+  '--win',
+  'nsis',
+  '--x64',
+  '--publish',
+  'never',
+  ...signing.builderArgs,
+  ...process.argv.slice(2),
+];
 const result = spawnSync(process.execPath, args, { cwd: appDir, stdio: 'inherit' });
 if (result.status !== 0) {
   console.error('[package-app] electron-builder failed.');
   process.exit(result.status ?? 1);
 }
 console.log('[package-app] installer written to packages/app/release');
+console.log('[package-app] run `node scripts/verify-installer.mjs --dir artifacts` before uploading anything');

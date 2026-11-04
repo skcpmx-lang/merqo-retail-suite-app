@@ -141,6 +141,9 @@ export function setServerCertificate(db: Db, fingerprint: string): void {
  * registered yet (a brand-new install) the answer is 0, which blocks enrolment
  * rather than silently allowing an unlimited shop.
  */
+/** Hard ceiling for a licensed device count — a claim must never be able to inflate it. */
+export const MAX_LICENSED_DEVICES = 100;
+
 export function licensedCapacity(db: Db): number {
   const row = db
     .prepare(
@@ -149,7 +152,40 @@ export function licensedCapacity(db: Db): number {
         ORDER BY registered_at DESC, rowid DESC LIMIT 1`,
     )
     .get() as { capacity: number } | undefined;
-  return row ? Math.max(0, Number(row.capacity) || 0) : 0;
+  if (row) return Math.max(0, Number(row.capacity) || 0);
+  // No SERVER_POS row yet (a freshly activated shop). The Main App's own activation row is
+  // the authority then: it was written only after the licence signature verified, so its
+  // capacity can be trusted. Without this fallback every client would hit NO_LICENSE.
+  const activation = db
+    .prepare("SELECT payload FROM activations ORDER BY rowid DESC LIMIT 1")
+    .get() as { payload?: string } | undefined;
+  if (!activation?.payload) return 0;
+  try {
+    const payload = JSON.parse(activation.payload) as { device_capacity?: unknown; max_devices?: unknown };
+    const declared = Number(payload.device_capacity ?? payload.max_devices ?? 0);
+    return Number.isFinite(declared) ? Math.max(0, Math.min(MAX_LICENSED_DEVICES, Math.trunc(declared))) : 0;
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * Role a remote device may claim while pairing.
+ *
+ * `SERVER_POS` is *not* claimable over the network: only the Main PC registers the shop's own
+ * licence (locally, after activation), and the server role is what sets licensed capacity.
+ * Accepting it from a LAN claim let any device with a pairing code install itself as the server
+ * with an arbitrary capacity.
+ */
+export function validateClaimRole(raw: unknown): DeviceRole {
+  const role = String(raw ?? 'CLIENT_POS');
+  if (role === 'SERVER_POS') {
+    throw new DeviceError('BAD_ROLE', 'সার্ভার ভূমিকা শুধু প্রধান কম্পিউটার নিজেই নিতে পারে।');
+  }
+  if (role !== 'CLIENT_POS' && role !== 'CLIENT_MANAGEMENT') {
+    throw new DeviceError('BAD_ROLE', 'ডিভাইসের ভূমিকা সঠিক নয়।');
+  }
+  return role;
 }
 
 export function capacitySummary(db: Db): CapacitySummary {
@@ -313,7 +349,7 @@ function registerLicense(db: Db, input: EnrolInput): void {
     input.store_id,
     input.device_id,
     input.role,
-    Math.max(1, Number(input.capacity) || 1),
+    Math.max(1, Math.min(MAX_LICENSED_DEVICES, Math.trunc(Number(input.capacity) || 1))),
     input.edition ?? null,
     input.issued_at,
     input.expires_at ?? null,

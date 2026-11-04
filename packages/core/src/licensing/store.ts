@@ -4,7 +4,7 @@ import { nowLocal } from '../domain/datetime.js';
 import type { ActivationState, SignedLicense } from '../domain/types.js';
 import { audit } from '../services/audit.js';
 import { getDeviceFingerprint } from './fingerprint.js';
-import { decodeLicenseKey, parseLicenseFile, verifyLicense } from './verify.js';
+import { checkDeviceBinding, decodeLicenseKey, parseLicenseFile, verifyLicense } from './verify.js';
 
 interface ActivationRow {
   id: number;
@@ -103,6 +103,29 @@ export function activate(
 
   const device = getDeviceFingerprint(true);
   const state = verifyLicense(license, { device, publicKeyB64: input.publicKeyB64 });
+  // v1.1.4: a licence that names a store may only be used in that store. Licences without a
+  // store_id (every licence issued before this check) are unaffected.
+  if (state.activated) {
+    const storeRow = db.prepare('SELECT store_id FROM store_servers WHERE id = 1').get() as
+      | { store_id?: string }
+      | undefined;
+    const binding = checkDeviceBinding(license.payload, { storeId: storeRow?.store_id });
+    if (!binding.ok) {
+      audit(db, {
+        userId: actor?.id ?? null,
+        username: actor?.username,
+        action: 'license.activate_failed',
+        entity: 'license',
+        details: { reason: 'store_mismatch', licenseId: license.payload?.license_id },
+      });
+      return {
+        ...state,
+        activated: false,
+        reason: 'store_mismatch',
+        message: binding.message ?? 'এই লাইসেন্স অন্য দোকানের জন্য তৈরি।',
+      };
+    }
+  }
   if (!state.activated) {
     audit(db, {
       userId: actor?.id ?? null,

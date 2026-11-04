@@ -1428,10 +1428,10 @@ function NetworkForm({
         <Field label="পোর্ট">
           <TextInput
             value={settings.lan_port}
-            onChange={(v) => patch({ lan_port: Math.max(1024, Math.min(65535, Number(v.replace(/[^\d]/g, '')) || 8787)) })}
+            onChange={(v) => patch({ lan_port: Math.max(1024, Math.min(65535, Number(v.replace(/[^\d]/g, '')) || 4747)) })}
           />
         </Field>
-        <Field label="হোস্ট ঠিকানা" span={2} hint="যেমন: http://192.168.0.10:8787">
+        <Field label="হোস্ট ঠিকানা" span={2} hint="যেমন: https://192.168.0.10:4747">
           <TextInput value={settings.lan_host_url} onChange={(v) => patch({ lan_host_url: v.trim() })} />
         </Field>
       </div>

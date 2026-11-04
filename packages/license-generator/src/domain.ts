@@ -184,7 +184,19 @@ export function nowIso(): string {
 export function readStore(file: string): Store {
   if (!fs.existsSync(file)) return emptyStore();
   const raw = fs.readFileSync(file, 'utf8');
-  const parsed = JSON.parse(raw) as Partial<Store>;
+  let parsed: Partial<Store>;
+  try {
+    parsed = JSON.parse(raw) as Partial<Store>;
+  } catch {
+    // Never silently start from an empty store: that would look like "all customers and
+    // licences disappeared" and the operator would keep issuing into a fresh file.
+    throw new Error(
+      `সংরক্ষিত তথ্য ফাইলটি নষ্ট (JSON নয়): ${path.basename(file)}। ফাইলটি মুছবেন না — ব্যাকআপ থেকে পুনরুদ্ধার করুন।`,
+    );
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error('সংরক্ষিত তথ্য ফাইলের কাঠামো সঠিক নয় — ব্যাকআপ থেকে পুনরুদ্ধার করুন।');
+  }
   const base = emptyStore();
   return {
     ...base,
@@ -377,6 +389,14 @@ export interface IssueInput {
   maxDevices: number;
   features: string[];
   note?: string | null;
+  /**
+   * v1.1.4 multi-PC binding. Optional: a standalone licence omits all four and keeps working
+   * on any PC of the shop (the legacy v1 behaviour).
+   */
+  storeId?: string;
+  deviceId?: string;
+  deviceRole?: 'SERVER_POS' | 'CLIENT_POS' | 'CLIENT_MANAGEMENT';
+  deviceCapacity?: number;
 }
 
 export interface IssueResult {
@@ -409,6 +429,18 @@ export function signLicense(input: {
   if (!features.length) throw new Error('অন্তত একটি ফিচার এনটাইটেলমেন্ট নির্বাচন করুন।');
   const unsupported = features.filter((f) => !allowed.has(f));
   if (unsupported.length) throw new Error(`এই এডিশনে অনুমোদিত নয়: ${unsupported.join(', ')}`);
+  // Multi-PC binding: validated here so a bound licence can never be minted with an unknown
+  // role or an absurd capacity.
+  const storeId = String(issue.storeId ?? '').trim();
+  const deviceId = String(issue.deviceId ?? '').trim();
+  if (storeId && storeId.length > 64) throw new Error('Store ID অনেক বড়।');
+  if (deviceId && deviceId.length > 64) throw new Error('ডিভাইস আইডি অনেক বড়।');
+  if (issue.deviceRole && !['SERVER_POS', 'CLIENT_POS', 'CLIENT_MANAGEMENT'].includes(issue.deviceRole)) {
+    throw new Error('ডিভাইসের ভূমিকা সঠিক নয়।');
+  }
+  if (issue.deviceRole && !storeId) {
+    throw new Error('ডিভাইস ভূমিকা দিতে হলে Store ID দিতে হবে।');
+  }
   if (issue.expiresAt) {
     const expiry = new Date(issue.expiresAt);
     if (Number.isNaN(expiry.getTime())) throw new Error('মেয়াদ শেষের তারিখ সঠিক নয়।');
@@ -429,6 +461,14 @@ export function signLicense(input: {
       note: issue.note ? String(issue.note).slice(0, 500) : undefined,
       generator: `Sauda License Generator ${input.generatorVersion}`,
       device: deviceFingerprint(device),
+      // Multi-PC binding. These used to be dropped here, so a bound licence could never be
+      // produced even when the caller supplied the store/device identity.
+      ...(storeId ? { storeId } : {}),
+      ...(deviceId ? { deviceId } : {}),
+      ...(issue.deviceRole ? { deviceRole: issue.deviceRole } : {}),
+      ...(issue.deviceCapacity !== undefined
+        ? { deviceCapacity: Math.max(1, Math.min(100, Math.trunc(Number(issue.deviceCapacity) || 1))) }
+        : {}),
     },
     input.privateKeyB64,
   );
@@ -539,8 +579,19 @@ function fieldsKeyId(license: SignedLicense): string {
   return license.key_id;
 }
 
-/** The exact bytes written to the `.sauda` file the customer imports. */
+/**
+ * The exact bytes written to the `.sauda` file the customer imports.
+ *
+ * A revoked licence must never be exportable again: re-writing the file would hand the
+ * customer a working copy of a licence the operator deliberately withdrew (the file is
+ * signed, so the Main App cannot tell it was revoked offline).
+ */
 export function toLicenseFile(record: LicenseRecord, meta: { customer?: string | null } = {}): string {
+  if (record.revoked_at) {
+    throw new Error(
+      'এই লাইসেন্সটি প্রত্যাহার করা হয়েছে — এর ফাইল আর রপ্তানি করা যাবে না। প্রয়োজনে নতুন লাইসেন্স ইস্যু করুন।',
+    );
+  }
   return JSON.stringify(
     {
       format: 'sauda-license',

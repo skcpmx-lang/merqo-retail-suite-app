@@ -7,6 +7,7 @@ import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { describeSigning, signingConfig } from './lib/signing.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const pkgDir = path.join(root, 'packages', 'license-generator');
@@ -39,7 +40,22 @@ if (realSuspicious.length) {
   process.exit(1);
 }
 
-const args = [builderBin, '--win', 'nsis', '--x64', '--publish', 'never', ...process.argv.slice(2)];
+// Signed or refused (D-1) — the same rule as the main app.
+// Code signing is optional (v1.1.4 policy: unsigned installers are accepted). When a
+// certificate is available it is used automatically; otherwise the build is reported as unsigned.
+const signing = signingConfig(process.env);
+console.log(`[package-license-generator] signing: ${describeSigning(signing)}`);
+
+const args = [
+  builderBin,
+  '--win',
+  'nsis',
+  '--x64',
+  '--publish',
+  'never',
+  ...signing.builderArgs,
+  ...process.argv.slice(2),
+];
 const result = spawnSync(process.execPath, args, { cwd: pkgDir, stdio: 'inherit' });
 if (result.status !== 0) {
   console.error('[package-license-generator] electron-builder failed.');
