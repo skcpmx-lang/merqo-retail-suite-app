@@ -33,6 +33,8 @@ interface CartLine {
   priceEdited: boolean;
   discountPaisa: number;
   stockBaseMilli: number;
+  /** Serial / IMEI numbers attached to this line (only for tracked products). */
+  serials: string[];
   minStockMilli: number;
 }
 
@@ -101,6 +103,12 @@ export function POSPage({
   const [quickPicks, setQuickPicks] = useState<any[]>([]);
   const [loyalty, setLoyalty] = useState<any>(null);
   const [redeemPoints, setRedeemPoints] = useState(0);
+  // Serial / IMEI picker (v1.1.3): the sale service has always accepted serials,
+  // but the till had no way to attach one.
+  const [serialLineKey, setSerialLineKey] = useState<string | null>(null);
+  const [serialOptions, setSerialOptions] = useState<{ id: number; serial: string }[]>([]);
+  const [serialPicked, setSerialPicked] = useState<string[]>([]);
+  const [serialBusy, setSerialBusy] = useState(false);
   const redeemValuePaisa = loyalty ? Math.max(0, Math.round(redeemPoints)) * (loyalty.redeemValuePaisa ?? 0) : 0;
   const [held, setHeld] = useState<any[]>([]);
   const [heldOpen, setHeldOpen] = useState(false);
@@ -225,6 +233,7 @@ export function POSPage({
             discountPaisa: 0,
             stockBaseMilli: product.stock_base_milli,
             minStockMilli: product.min_stock_base_milli,
+            serials: [],
           },
         ];
       });
@@ -235,6 +244,38 @@ export function POSPage({
   const patchLine = (key: string, patch: Partial<CartLine>) =>
     setLines((prev) => prev.map((l) => (l.key === key ? { ...l, ...patch } : l)));
   const removeLine = (key: string) => setLines((prev) => prev.filter((l) => l.key !== key));
+
+  const openSerialPicker = async (line: CartLine) => {
+    setSerialLineKey(line.key);
+    setSerialPicked(line.serials ?? []);
+    setSerialBusy(true);
+    try {
+      const res = await call<{ rows: { id: number; serial: string }[]; total: number }>('serials.available', {
+        productId: line.productId,
+        limit: 100,
+      });
+      setSerialOptions(res.rows);
+    } catch (err) {
+      setSerialOptions([]);
+      ui.error('সিরিয়াল তালিকা আনা যায়নি', (err as Error).message);
+    } finally {
+      setSerialBusy(false);
+    }
+  };
+
+  const saveSerialPicker = () => {
+    const key = serialLineKey;
+    if (!key) return;
+    const line = lines.find((l) => l.key === key);
+    if (!line) return;
+    const maxUnits = Math.floor(line.qtyMilli / 1000);
+    if (serialPicked.length > maxUnits) {
+      ui.error('সিরিয়াল সংখ্যা বেশি', `এই লাইনে সর্বোচ্চ ${maxUnits}টি সিরিয়াল দেওয়া যাবে।`);
+      return;
+    }
+    patchLine(key, { serials: serialPicked });
+    setSerialLineKey(null);
+  };
 
   const clearCart = () => {
     setLines([]);
@@ -264,6 +305,7 @@ export function POSPage({
             qtyMilli: l.qtyMilli,
             unitPricePaisa: l.priceEdited ? l.unitPricePaisa : null,
             discountPaisa: l.discountPaisa || null,
+            serials: l.serials.length ? l.serials : undefined,
           })),
           orderDiscountType:
             redeemValuePaisa > 0 && discountType === 'none' ? 'fixed' : discountType,
@@ -356,6 +398,7 @@ export function POSPage({
           qtyMilli: l.qtyMilli,
           unitPricePaisa: l.priceEdited ? l.unitPricePaisa : null,
           discountPaisa: l.discountPaisa || null,
+          serials: l.serials.length ? l.serials : undefined,
         })),
         note: heldNote || null,
         totalPaisa: computation?.total ?? 0,
@@ -392,6 +435,7 @@ export function POSPage({
           discountPaisa: l.discountPaisa ?? 0,
           stockBaseMilli: product.stock_base_milli,
           minStockMilli: product.min_stock_base_milli,
+          serials: (l.serials ?? []) as string[],
         });
       }
       setLines(restored);
@@ -505,6 +549,7 @@ export function POSPage({
           qtyMilli: l.qtyMilli,
           unitPricePaisa: l.priceEdited ? l.unitPricePaisa : null,
           discountPaisa: l.discountPaisa || null,
+          serials: l.serials.length ? l.serials : undefined,
         })),
         orderDiscountType: redeemValuePaisa > 0 && discountType === 'none' ? 'fixed' : discountType,
         orderDiscountValue: redeemValuePaisa > 0 && discountType === 'none' ? redeemValuePaisa : discountValue,
@@ -811,7 +856,15 @@ export function POSPage({
                           onClick={() => {
                             const step = line.factorMilli === 1000 ? 1000 : 1000;
                             if (line.qtyMilli - step <= 0) removeLine(line.key);
-                            else patchLine(line.key, { qtyMilli: line.qtyMilli - step });
+                            else {
+                              const nextQty = line.qtyMilli - step;
+                              // A line can never keep more serials than whole units.
+                              const keep = Math.floor(nextQty / 1000);
+                              patchLine(line.key, {
+                                qtyMilli: nextQty,
+                                serials: line.serials.slice(0, keep),
+                              });
+                            }
                           }}
                         >
                           −
@@ -847,6 +900,16 @@ export function POSPage({
                       </div>
                       <div className="cl-total num">{money(lineTotal)}</div>
                       <div className="cl-actions">
+                        <IconButton
+                          icon="barcode"
+                          size={15}
+                          title={
+                            line.serials.length
+                              ? `সিরিয়াল: ${line.serials.length}টি`
+                              : 'সিরিয়াল / IMEI যোগ করুন'
+                          }
+                          onClick={() => void openSerialPicker(line)}
+                        />
                         {family.length > 1 ? (
                           <select
                             className="cl-unit"
@@ -1196,6 +1259,64 @@ export function POSPage({
               ))}
             </div>
           )}
+        </Modal>
+      ) : null}
+
+      {serialLineKey ? (
+        <Modal
+          title="সিরিয়াল / IMEI নির্বাচন"
+          sub="বিক্রীত প্রতিটি ইউনিটের নম্বর বেছে নিন — স্টকে ফেরত এলে এটি আবার বিক্রয়যোগ্য হবে"
+          size="md"
+          onClose={() => setSerialLineKey(null)}
+          footer={
+            <>
+              <Button onClick={() => setSerialLineKey(null)}>বাতিল</Button>
+              <Button variant="primary" icon="check" onClick={saveSerialPicker}>
+                সংযুক্ত করুন
+              </Button>
+            </>
+          }
+        >
+          {serialBusy ? (
+            <Loading label="সিরিয়াল আনা হচ্ছে…" />
+          ) : serialOptions.length === 0 ? (
+            <EmptyState
+              icon="barcode"
+              title="এই পণ্যের কোনো সিরিয়াল স্টকে নেই"
+              message="স্টক অপারেশন → সিরিয়াল স্ক্রিন থেকে সিরিয়াল যোগ করুন, তারপর আবার চেষ্টা করুন।"
+            />
+          ) : (
+            <div className="stack" style={{ gap: 6, maxHeight: 320, overflowY: 'auto' }}>
+              {serialOptions.map((option) => {
+                const checked = serialPicked.includes(option.serial);
+                return (
+                  <label
+                    key={option.id}
+                    className="row"
+                    style={{ gap: 8, alignItems: 'center', cursor: 'pointer', padding: '4px 0' }}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={(e) =>
+                        setSerialPicked((prev) =>
+                          e.target.checked
+                            ? [...prev, option.serial]
+                            : prev.filter((x) => x !== option.serial),
+                        )
+                      }
+                    />
+                    <span className="mono">{option.serial}</span>
+                  </label>
+                );
+              })}
+            </div>
+          )}
+          {serialPicked.length ? (
+            <div className="tiny muted" style={{ marginTop: 8 }}>
+              নির্বাচিত: {serialPicked.join(', ')}
+            </div>
+          ) : null}
         </Modal>
       ) : null}
 

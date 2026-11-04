@@ -27,6 +27,7 @@ import {
   listHeldSales,
   listLocations,
   listSerials,
+  listAvailableSerials,
   listStockCounts,
   listTransfers,
   locationStock,
@@ -593,6 +594,11 @@ on('stock.valuation', (ctx, filter) => inventoryValuation(ctx.db, filter ?? {}),
 on('stock.dead', (ctx, days?: number) => deadStock(ctx.db, days ?? 60), 'product.view');
 
 on('serials.list', (ctx, filter) => listSerials(ctx.db, filter), 'product.view');
+// The till needs to see which IMEIs are sellable for a product (v1.1.3).
+on('serials.available', (_ctx, args: { productId: number; limit?: number; search?: string | null }) =>
+  listAvailableSerials(_ctx.db, args),
+  'pos.sell',
+);
 on(
   'serials.register',
   (ctx, input) =>
@@ -1191,7 +1197,19 @@ on(
   },
   'backup.manage',
 );
-on('backup.validate', (ctx, filePath: string) => validateBackup(filePath), 'backup.manage');
+on(
+  'backup.validate',
+  (_ctx, filePath: string) => {
+    // Validate only looks inside the file, but restricting the extension stops the
+    // renderer from using it as a general "does this path exist / is it SQLite" probe.
+    const ext = path.extname(path.resolve(String(filePath ?? ''))).toLowerCase();
+    if (!['.saudabak', '.db', '.sqlite', '.sqlite3'].includes(ext)) {
+      throw new Error('শুধু Sauda ব্যাকআপ ফাইল যাচাই করা যায়।');
+    }
+    return validateBackup(filePath);
+  },
+  'backup.manage',
+);
 on(
   'backup.restore',
   async (ctx, filePath: string) => {
@@ -1399,7 +1417,12 @@ on(
   async (_ctx, filePath: string) => {
     const resolved = path.resolve(filePath);
     if (!fs.existsSync(resolved)) throw new Error('ফাইল পাওয়া যায়নি।');
+    // v1.1.3: the renderer may only hand over what a CSV/TSV import can be.
+    if (!['.csv', '.txt', '.tsv'].includes(path.extname(resolved).toLowerCase())) {
+      throw new Error('শুধু CSV / TXT ফাইল পড়া যায়।');
+    }
     const stat = fs.statSync(resolved);
+    if (!stat.isFile()) throw new Error('এটি ফাইল নয়।');
     if (stat.size > 20 * 1024 * 1024) throw new Error('ফাইল ২০ মেগাবাইটের কম হতে হবে।');
     return fs.readFileSync(resolved, 'utf8');
   },

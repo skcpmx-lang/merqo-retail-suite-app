@@ -5,7 +5,7 @@ import type { AppInfo } from '../domain/types.js';
 
 export const PRODUCT_NAME = 'Sauda Retail Suite';
 export const PRODUCT_TAGLINE = 'অফলাইন রিটেইল POS ও ব্যবসা ব্যবস্থাপনা';
-export const PRODUCT_VERSION = '1.1.2';
+export const PRODUCT_VERSION = '1.1.3';
 export const BRAND_COMPANY = 'MERQO';
 export const BRAND_FOUNDER = 'Shohan Khan';
 export const BRAND_EMAIL = 'merqoonline@gmail.com';

@@ -8,7 +8,7 @@
 | অংশ | ফাইল | কী |
 |---|---|---|
 | কী তৈরি | `scripts/generate-signing-keys.mjs` | Ed25519 keypair → `secrets/` (git-ignored) |
-| পাবলিক কী | `packages/core/src/licensing/publicKey.ts` | অ্যাপে এমবেড করা SPKI base64 + KEY_ID |
+| পাবলিক কী | `packages/core/src/licensing/publicKey.ts` | অ্যাপে এমবেড করা SPKI base64 + KEY_ID — **কোনো env/config override নেই** (v1.1.3) |
 | ইস্যু | `packages/core/src/licensing/issue.ts` | পেলোড তৈরি + স্বাক্ষর |
 | যাচাই | `packages/core/src/licensing/verify.ts` | স্কিমা, স্বাক্ষর, মেয়াদ, ডিভাইস ম্যাচ |
 | ফিঙ্গারপ্রিন্ট | `packages/core/src/licensing/fingerprint.ts` | ৪টি হার্ডওয়্যার উপাদানের ওয়েটেড হ্যাশ |

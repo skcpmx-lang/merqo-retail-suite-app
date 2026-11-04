@@ -3,6 +3,7 @@
  * build both apps and assert that no secret material is tracked by git.
  */
 import { spawnSync } from 'node:child_process';
+import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -40,6 +41,84 @@ if (offenders.length) {
   failures.push('secrets scan');
 } else {
   console.log('no key material tracked by git ✔');
+}
+
+// Content scan (v1.1.3): a private key pasted into a normal-looking source file is
+// still a leaked private key, and filename rules alone would miss it.
+const PEM_PRIVATE = /-----BEGIN (?:[A-Z]+ )?PRIVATE KEY-----/;
+const contentOffenders = [];
+for (const file of tracked.filter((f) => /\.(ts|tsx|js|mjs|cjs|json|html|css|md|yml|yaml|txt)$/i.test(f))) {
+  let text = '';
+  try {
+    text = fs.readFileSync(path.join(root, file), 'utf8');
+  } catch {
+    continue;
+  }
+  if (PEM_PRIVATE.test(text)) contentOffenders.push(`${file} (PEM private key)`);
+  // Only flagged when actually read from process state — a mention in docs is fine.
+  if (/process\.env[.[]\s*['"]?SAUDA_LICENSE_(PUBLIC_)?KEY/.test(text)) {
+    contentOffenders.push(`${file} (runtime licence-key override)`);
+  }
+}
+if (contentOffenders.length) {
+  console.error('Secret material found in tracked content:', contentOffenders.join(', '));
+  failures.push('secrets content scan');
+} else {
+  console.log('no private key or key override in tracked content ✔');
+}
+
+// Electron trust boundary (v1.1.3): both IPC entry points must validate the sender,
+// otherwise a navigated frame inherits the whole privileged bridge.
+process.stdout.write('\n▶ electron trust boundary\n');
+const trustChecks = [
+  ['packages/app/electron/main.ts', /isTrustedSender\(event\)/],
+  ['packages/app/electron/main.ts', /will-navigate[\s\S]{0,200}isTrustedRendererUrl/],
+  ['packages/license-generator/src/main.ts', /isTrustedSender\(event\)/],
+  ['packages/license-generator/src/main.ts', /app\.isPackaged[\s\S]{0,120}LICGEN_DEV_URL|isPackaged\(\)[\s\S]{0,200}devServerUrl/],
+];
+const trustFailures = trustChecks
+  .filter(([file, pattern]) => {
+    try {
+      return !pattern.test(fs.readFileSync(path.join(root, file), 'utf8'));
+    } catch {
+      return true;
+    }
+  })
+  .map(([file]) => file);
+if (trustFailures.length) {
+  console.error('Missing IPC/navigation guard in:', trustFailures.join(', '));
+  failures.push('electron trust boundary');
+} else {
+  console.log('both IPC bridges validate their sender ✔');
+}
+
+// Production dependency audit (v1.1.3). Network failures warn instead of failing a
+// release that is otherwise fine; real high/critical findings in shipped code fail.
+process.stdout.write('\n▶ dependency audit (production only)\n');
+const audit = spawnSync('npm', ['audit', '--omit=dev', '--json'], {
+  cwd: root,
+  encoding: 'utf8',
+  shell: process.platform === 'win32',
+});
+let auditJson = null;
+try {
+  auditJson = JSON.parse(audit.stdout || '');
+} catch {
+  auditJson = null;
+}
+if (!auditJson || !auditJson.metadata) {
+  console.warn('dependency audit skipped (registry unreachable) — run `npm audit --omit=dev` manually');
+} else {
+  const severities = auditJson.metadata.vulnerabilities || {};
+  const blocking = (severities.high || 0) + (severities.critical || 0);
+  if (blocking > 0) {
+    console.error(`production dependencies have ${blocking} high/critical advisories`);
+    failures.push('dependency audit');
+  } else {
+    console.log(
+      `production dependencies: 0 high/critical (moderate ${severities.moderate || 0}, total ${auditJson.metadata.totalDependencies || 0} packages) ✔`,
+    );
+  }
 }
 
 if (failures.length) {

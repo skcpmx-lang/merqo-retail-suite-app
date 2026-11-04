@@ -276,6 +276,13 @@ function AppShell({
 }) {
   const ui = useUI();
   const t = useT();
+  // The main process reports automatic-backup outcomes (v1.1.3). Before this,
+  // a failed nightly backup was only a line in a log file nobody opens.
+  useEffect(() => {
+    return onEvent((evt) => {
+      if (evt.type === 'backup' && evt.message) ui.toast('info', evt.message);
+    });
+  }, [ui]);
   const [lowCount, setLowCount] = useState(0);
   const [search, setSearch] = useState('');
   const [results, setResults] = useState<any[] | null>(null);
@@ -283,7 +290,7 @@ function AppShell({
   const [alerts, setAlerts] = useState<any[]>([]);
   const [alertsOpen, setAlertsOpen] = useState(false);
   const [logoUrl, setLogoUrl] = useState<string | null>(null);
-  const [appVersion, setAppVersion] = useState('1.1.2');
+  const [appVersion, setAppVersion] = useState('1.1.3');
   const [navOpen, setNavOpen] = useState(false);
   const searchRef = useRef<HTMLInputElement | null>(null);
 
@@ -335,7 +342,7 @@ function AppShell({
 
   useEffect(() => {
     void call<{ version: string }>('app.info')
-      .then((info) => setAppVersion(info?.version ?? '1.1.2'))
+      .then((info) => setAppVersion(info?.version ?? '1.1.3'))
       .catch(() => undefined);
   }, []);
 

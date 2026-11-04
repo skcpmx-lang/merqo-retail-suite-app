@@ -712,6 +712,133 @@ export function markSerialsSold(db: Db, serials: string[], saleId: number, actor
   return n;
 }
 
+/**
+ * Serials a POS terminal may attach to a line right now (v1.1.3).
+ *
+ * Before this there was no way to sell a serialised item through the POS at all:
+ * the sale service accepted serials, the stock screen could register them, but the
+ * till could never pick one — so phones/IMEIs silently bypassed tracking.
+ */
+export function listAvailableSerials(
+  db: Db,
+  args: { productId: number; limit?: number; search?: string | null },
+): { rows: { id: number; serial: string; location_id: number | null }[]; total: number } {
+  const limit = Math.min(200, Math.max(1, Math.round(args.limit ?? 50)));
+  const search = (args.search ?? '').trim();
+  const clause = search ? 'AND s.serial LIKE ?' : '';
+  const params: unknown[] = [args.productId];
+  if (search) params.push(`%${search}%`);
+  const total = (
+    db
+      .prepare(`SELECT COUNT(*) AS c FROM serial_numbers s WHERE s.product_id = ? AND s.status = 'in_stock' ${clause}`)
+      .get(...params) as { c: number }
+  ).c;
+  const rows = db
+    .prepare(
+      `SELECT s.id, s.serial, s.location_id FROM serial_numbers s
+        WHERE s.product_id = ? AND s.status = 'in_stock' ${clause}
+        ORDER BY s.id LIMIT ?`,
+    )
+    .all(...params, limit) as { id: number; serial: string; location_id: number | null }[];
+  return { rows, total };
+}
+
+/**
+ * Returns every serial/IMEI this invoice sold to the sellable pool.
+ *
+ * v1.1.3 fix: a voided sale left its serials at `status='sold'` forever, so the
+ * same phone could never be sold again and stock reports disagreed with reality.
+ * Only rows this sale actually sold are touched (`sale_id = ? AND status='sold'`),
+ * so a repeated void is a no-op and a serial sold by another invoice is untouched.
+ */
+export function releaseSerialsForSale(
+  db: Db,
+  saleId: number,
+  opts: { actor?: Actor; note?: string | null } = {},
+): number {
+  const rows = db
+    .prepare("SELECT id, serial FROM serial_numbers WHERE sale_id = ? AND status = 'sold'")
+    .all(saleId) as { id: number; serial: string }[];
+  if (!rows.length) return 0;
+  const now = nowLocal();
+  const upd = db.prepare(
+    "UPDATE serial_numbers SET status = 'in_stock', updated_at = ?, note = COALESCE(?, note) WHERE id = ? AND status = 'sold'",
+  );
+  let n = 0;
+  for (const row of rows) {
+    if (upd.run(now, opts.note ?? null, row.id).changes === 1) n += 1;
+  }
+  if (n > 0) {
+    audit(db, {
+      userId: opts.actor?.id ?? null,
+      username: opts.actor?.username,
+      action: 'serial.sale_reversed',
+      entity: 'sale',
+      entityId: saleId,
+      details: { serials: n, note: opts.note ?? null },
+    });
+  }
+  return n;
+}
+
+/**
+ * Puts specific serials from an invoice back into stock after a return.
+ *
+ * A good, restocked unit becomes sellable again (`in_stock`); a damaged or
+ * non-restocked unit becomes `damaged`/`returned` so it can never be sold silently.
+ * The serial must belong to the invoice being returned against — this is what stops
+ * a made-up or already-returned serial from being "returned" a second time.
+ */
+export function returnSerialsFromSale(
+  db: Db,
+  args: {
+    saleId: number;
+    productId: number;
+    serials: string[];
+    condition?: 'good' | 'damaged' | 'expired';
+    restock?: boolean;
+    actor?: Actor;
+    note?: string | null;
+  },
+): { returned: number; status: 'in_stock' | 'damaged' | 'returned' } {
+  const list = (args.serials ?? []).map((s) => String(s).trim()).filter(Boolean);
+  const target: 'in_stock' | 'damaged' | 'returned' =
+    args.condition && args.condition !== 'good' ? 'damaged' : args.restock === false ? 'returned' : 'in_stock';
+  if (!list.length) return { returned: 0, status: target };
+  const now = nowLocal();
+  let returned = 0;
+  for (const serial of list) {
+    const row = db
+      .prepare('SELECT id, status, sale_id, product_id FROM serial_numbers WHERE serial = ?')
+      .get(serial) as
+      | { id: number; status: string; sale_id: number | null; product_id: number }
+      | undefined;
+    if (!row) throw new Error(`সিরিয়াল "${serial}" পাওয়া যায়নি।`);
+    if (row.product_id !== args.productId) {
+      throw new Error(`সিরিয়াল "${serial}" এই লাইনের পণ্য নয় — ভুল লাইনে ফেরত দেওয়া হচ্ছে।`);
+    }
+    if (row.sale_id !== args.saleId || row.status !== 'sold') {
+      throw new Error(`সিরিয়াল "${serial}" এই ইনভয়েসের বিক্রীত তালিকায় নেই — ফেরত নেওয়া যাবে না।`);
+    }
+    db.prepare('UPDATE serial_numbers SET status = ?, updated_at = ?, note = COALESCE(?, note) WHERE id = ?').run(
+      target,
+      now,
+      args.note ?? null,
+      row.id,
+    );
+    returned += 1;
+  }
+  audit(db, {
+    userId: args.actor?.id ?? null,
+    username: args.actor?.username,
+    action: 'serial.returned',
+    entity: 'sale',
+    entityId: args.saleId,
+    details: { serials: returned, status: target },
+  });
+  return { returned, status: target };
+}
+
 /* ------------------------------------------------------------------ *
  * Bundles / combo packs
  * ------------------------------------------------------------------ */

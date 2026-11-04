@@ -51,7 +51,10 @@ customer display, while all data comes from the host.
 | Peer filter | RFC1918 + loopback only (`isPrivateAddress`) |
 | Body limit | 1 MB per request; JSON only |
 | Method allow-list | Only registered IPC routes; unknown methods fail before touching a service |
-| Rate limit | Failed logins are counted per username and cooled down (schema v4 `login_attempts`) |
+| Transport encryption (v1.1.3) | Every `/rpc` body is sealed with **AES-256-GCM**. Key = `scrypt(shopToken, 'sauda-lan-transport-v2', 32)`; fresh 12-byte nonce per message; AAD `sauda-lan-transport-v2`. Wire form: `{"v":2,"enc":"base64(nonce‖tag‖ciphertext)"}` |
+| Downgrade refusal (v1.1.3) | A plaintext (v1) request gets **426 TRANSPORT_OUTDATED** and never reaches a route; the client maps it to `TRANSPORT_OUTDATED` so the terminal shows “update this terminal”. A tampered body fails the GCM tag → **400 TRANSPORT_CORRUPT**, no route runs |
+| Rate limit | Failed logins are counted per username (`login_attempts`) **and** per source address: 10 failures in 15 minutes → **429 RATE_LIMITED** (v1.1.3) |
+| Health probe | `/health` answers without a token but reveals only that a host exists; the business name is returned only to a token holder (v1.1.3) |
 | No filesystem exposure | At no point is a file path, backup file or private key sent over the wire |
 | No internet | The host never performs DNS or outbound calls; it binds to the LAN interface only |
 
@@ -67,6 +70,9 @@ state and never see the licence key material.
 4. Enter the same shop token (Settings → Network → *টোকেন নবায়ন* on the host
    invalidates every terminal, by design).
 5. Verify with `lan.test` before the shop opens.
+6. **Upgrading to v1.1.3:** the host *and* every terminal must be on 1.1.3. An older
+   terminal speaks the plaintext protocol and is refused with 426 — intentional,
+   because the old protocol exposed every sale and the shop token to the LAN.
 
 ### Firewall
 
@@ -86,7 +92,9 @@ rule for Public networks, and never port-forward 8787 on the router.
 
 | Check | Status |
 | --- | --- |
-| Token/session/peer-guard/body-cap logic | PASS — `packages/core/test/lan.test.ts` (11 tests) |
+| Token/session/peer-guard/body-cap logic | PASS — `packages/core/test/lan.test.ts` (15 tests) |
+| Sealed v2 request/response, 426 downgrade block, tamper rejection, login throttle, anonymous health | PASS — same file, 4 of the 15 |
+| Envelope uses a symmetric pre-shared key (not TLS) | By design — recorded in `docs/FINAL_SECURITY_AUDIT_V113.md` §5 |
 | Two-process multi-terminal run | PASS at the transport level (host launched inside the test) |
 | Real two-PC shop rehearsal on Windows | **BLOCKED** — single sandbox machine |
 | Windows Firewall prompts and installer rules | **BLOCKED** — needs a Windows host |

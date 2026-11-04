@@ -152,6 +152,25 @@ function safeFileStem(value: string, fallback = 'license'): string {
   return cleaned || fallback;
 }
 
+/**
+ * Guard for every route that accepts a path from the renderer: the file must
+ * exist, be a regular file, have an allowed extension and stay within a sane size.
+ * This keeps a compromised renderer from turning a "restore" button into an
+ * arbitrary-file reader on the operator's machine.
+ */
+function requireReadableFile(raw: string, extensions: string[], maxBytes = 8 * 1024 * 1024): string {
+  const resolved = path.resolve(String(raw ?? ''));
+  if (!raw || !fs.existsSync(resolved)) throw new Error('ফাইলটি পাওয়া যায়নি।');
+  const stat = fs.statSync(resolved);
+  if (!stat.isFile()) throw new Error('এটি ফাইল নয়।');
+  if (stat.size > maxBytes) throw new Error('ফাইলটি অনুমোদিত আকারের চেয়ে বড়।');
+  const ext = path.extname(resolved).toLowerCase();
+  if (extensions.length && !extensions.includes(ext)) {
+    throw new Error(`শুধু এই ধরনের ফাইল চলে: ${extensions.join(', ')}`);
+  }
+  return resolved;
+}
+
 function toIssueInput(input: Partial<IssueInput>): IssueInput {
   return {
     org: String(input.org ?? ''),
@@ -207,6 +226,44 @@ async function saveLicenseDialog(defaultName: string, body: string): Promise<str
 /* ------------------------------------------------------------------ */
 
 type Route = (event: unknown, ...args: any[]) => unknown | Promise<unknown>;
+
+/* ------------------------------------------------------------------ */
+/* Trust boundary: which page is allowed to call privileged routes     */
+/* ------------------------------------------------------------------ */
+
+/**
+ * The renderer is the only content allowed to talk to this process. In a packaged
+ * build that is the bundled `renderer/index.html`; during development it is the
+ * Vite server on localhost. Everything else — a remote URL, a redirect, an iframe
+ * on another origin, a `data:` document — is refused before any route runs.
+ */
+let trustedRendererUrl = '';
+
+function rendererFileUrl(): string {
+  const file = path.join(__dirname, '..', 'renderer', 'index.html');
+  return pathToFileUrl(file);
+}
+
+function pathToFileUrl(file: string): string {
+  const resolved = path.resolve(file).replace(/\\/g, '/');
+  return `file:///${resolved.replace(/^\//, '')}`.replace(/ /g, '%20');
+}
+
+function isTrustedSender(event: unknown): boolean {
+  const frameUrl = (event as { senderFrame?: { url?: string } } | undefined)?.senderFrame?.url;
+  if (!frameUrl) return false;
+  if (!trustedRendererUrl) return false;
+  if (frameUrl === trustedRendererUrl) return true;
+  // Hash/query variants of the same document are still our own file.
+  try {
+    const frame = new URL(frameUrl);
+    const trusted = new URL(trustedRendererUrl);
+    if (trusted.protocol === 'file:') return frame.protocol === 'file:' && frame.pathname === trusted.pathname;
+    return frame.origin === trusted.origin;
+  } catch {
+    return false;
+  }
+}
 
 const routes: Record<string, Route> = {
   'app.info': () => ({
@@ -604,7 +661,8 @@ const routes: Record<string, Route> = {
     };
   },
   'backup.restore': async (_e, file: string) => {
-    const bundle: BackupBundle = parseBackup(fs.readFileSync(file, 'utf8'));
+    const backupPath = requireReadableFile(file, ['.json', '.saudabak', '.backup'], 64 * 1024 * 1024);
+    const bundle: BackupBundle = parseBackup(fs.readFileSync(backupPath, 'utf8'));
     // Never overwrite silently: current data is parked next to the store first.
     const current = loadStore();
     const parking = `${storePath()}.before-restore-${Date.now()}.json`;
@@ -633,7 +691,17 @@ const routes: Record<string, Route> = {
   }),
 
   'reveal': (_e, target: string) => {
-    shell.showItemInFolder(String(target));
+    const resolved = path.resolve(String(target ?? ''));
+    const roots = [userData(), app.getPath('documents'), app.getPath('downloads'), app.getPath('desktop')];
+    const lastDir = readConfig().lastDir;
+    if (lastDir) roots.push(path.resolve(lastDir));
+    const inside = roots.some((root) => {
+      const rel = path.relative(path.resolve(root), resolved);
+      return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
+    });
+    if (!inside) throw new Error('এই ফোল্ডারটি দেখানোর অনুমতি নেই।');
+    if (!fs.existsSync(resolved)) throw new Error('ফাইলটি আর পাওয়া যাচ্ছে না।');
+    shell.showItemInFolder(resolved);
     return true;
   },
   'copy': (_e, text: string) => {
@@ -655,18 +723,71 @@ function createWindow() {
     backgroundColor: '#0f1518',
     title: 'সাউদা লাইসেন্স জেনারেটর',
     autoHideMenuBar: true,
+    show: false,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false,
+      nodeIntegrationInWorker: false,
+      sandbox: true,
+      webSecurity: true,
+      allowRunningInsecureContent: false,
+      spellcheck: false,
+      devTools: isDevBuild(),
     },
   });
 
-  const devUrl = process.env.LICGEN_DEV_URL;
-  if (devUrl) void win.loadURL(devUrl);
-  else void win.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'));
+  const rendererFile = path.join(__dirname, '..', 'renderer', 'index.html');
+  const devUrl = devServerUrl();
+  if (devUrl) {
+    trustedRendererUrl = devUrl;
+    void win.loadURL(devUrl);
+  } else {
+    trustedRendererUrl = pathToFileUrl(rendererFile);
+    void win.loadFile(rendererFile);
+  }
+  win.once('ready-to-show', () => win.show());
+
+  // No new windows, ever — a signed licence file is opened by the OS, not by us.
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  // No navigation away from the bundled document, not even to another file.
+  win.webContents.on('will-navigate', (event, url) => {
+    if (!sameRendererDocument(url)) event.preventDefault();
+  });
+  win.webContents.on('will-attach-webview', (event) => event.preventDefault());
+  win.webContents.on('render-process-gone', () => {
+    // Handled by Electron; the window is reloaded by the user rather than silently dead.
+  });
+}
+
+/** Only a loopback dev server, and only in an unpackaged build. */
+function devServerUrl(): string | null {
+  if (app.isPackaged) return null;
+  const raw = process.env.LICGEN_DEV_URL;
+  if (!raw) return null;
+  try {
+    const parsed = new URL(raw);
+    const loopback = parsed.hostname === 'localhost' || parsed.hostname === '127.0.0.1' || parsed.hostname === '[::1]';
+    if (!/^https?:$/.test(parsed.protocol) || !loopback) return null;
+    return parsed.origin;
+  } catch {
+    return null;
+  }
+}
+
+function isDevBuild(): boolean {
+  return !app.isPackaged;
+}
+
+function sameRendererDocument(url: string): boolean {
+  try {
+    const next = new URL(url);
+    const trusted = new URL(trustedRendererUrl || rendererFileUrl());
+    if (trusted.protocol === 'file:') return next.protocol === 'file:' && next.pathname === trusted.pathname;
+    return next.origin === trusted.origin;
+  } catch {
+    return false;
+  }
 }
 
 const gotLock = app.requestSingleInstanceLock();
@@ -683,10 +804,18 @@ if (!gotLock) {
 
   void app.whenReady().then(() => {
     ipcMain.handle('licgen:invoke', async (event, method: string, args: any[] = []) => {
-      const fn = routes[method];
-      if (!fn) return { ok: false, error: `অজানা অনুরোধ: ${method}` };
+      // Sender check first: nothing (including the route name) is inspected on
+      // behalf of an untrusted frame.
+      if (!isTrustedSender(event)) {
+        return { ok: false, error: 'অননুমোদিত উৎস থেকে অনুরোধ — প্রত্যাখ্যাত।' };
+      }
+      if (typeof method !== 'string' || !Object.prototype.hasOwnProperty.call(routes, method)) {
+        return { ok: false, error: `অজানা অনুরোধ: ${String(method)}` };
+      }
+      const fn = routes[method]!;
       try {
-        const data = await fn(event, ...args);
+        const callArgs = Array.isArray(args) ? args : [];
+        const data = await fn(event, ...callArgs);
         return { ok: true, data };
       } catch (err) {
         return { ok: false, error: (err as Error).message };
