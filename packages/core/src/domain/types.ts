@@ -563,6 +563,16 @@ export interface AppSettings {
   scan_increment_qty: 0 | 1;
   session_timeout_minutes: number;
   low_margin_warn_percent_x100: number;
+  // v1.0.1
+  loyalty_enabled: number;
+  loyalty_points_per_100: number;
+  loyalty_redeem_value_paisa: number;
+  loyalty_min_redeem_points: number;
+  credit_limit_enforced: number;
+  theme: string;
+  duplicate_sale_guard_seconds: number;
+  tax_register_enabled: number;
+  accounting_enabled: number;
 }
 
 export interface AppInfo {

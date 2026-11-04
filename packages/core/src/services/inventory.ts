@@ -8,6 +8,8 @@ type Actor = { id: number; username: string } | null | undefined;
 
 export interface MovementInput {
   productId: number;
+  /** Location whose stock mirror moves. Defaults to the default location. */
+  locationId?: number | null;
   type: StockMovementType;
   /** Signed change in BASE unit milli (+ in, − out). */
   qtyBaseMilli: number;
@@ -30,6 +32,42 @@ export interface MovementInput {
 export interface MovementResult {
   balanceAfterMilli: number;
   avgCostMicro: number;
+}
+
+/**
+ * The default location id, created on demand. Stored in `meta` so a shop that
+ * renames its shop keeps the same id.
+ */
+export function defaultLocationId(db: Db): number {
+  const meta = db.prepare("SELECT value FROM meta WHERE key = 'default_location_id'").get() as
+    | { value: string }
+    | undefined;
+  if (meta) {
+    const id = Number(meta.value);
+    const row = db.prepare('SELECT id FROM locations WHERE id = ?').get(id) as { id: number } | undefined;
+    if (row) return row.id;
+  }
+  const existing = db.prepare('SELECT id FROM locations WHERE is_default = 1 ORDER BY id LIMIT 1').get() as
+    | { id: number }
+    | undefined;
+  const id =
+    existing?.id ??
+    Number(
+      db
+        .prepare("INSERT INTO locations (name, kind, is_default, created_at) VALUES ('প্রধান দোকান','shop',1,?)")
+        .run(nowLocal()).lastInsertRowid,
+    );
+  db.prepare(
+    "INSERT INTO meta (key, value) VALUES ('default_location_id', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+  ).run(String(id));
+  return id;
+}
+
+function mirrorLocation(db: Db, productId: number, locationId: number, deltaMilli: number): void {
+  db.prepare(
+    `INSERT INTO stock_levels (product_id, location_id, qty_base_milli) VALUES (?,?,?)
+     ON CONFLICT(product_id, location_id) DO UPDATE SET qty_base_milli = qty_base_milli + excluded.qty_base_milli`,
+  ).run(productId, locationId, deltaMilli);
 }
 
 /**
@@ -72,11 +110,14 @@ export function applyMovement(db: Db, input: MovementInput): MovementResult {
     input.productId,
   );
 
+  const locationId = input.locationId ?? defaultLocationId(db);
+  mirrorLocation(db, input.productId, locationId, input.qtyBaseMilli);
+
   db.prepare(
     `INSERT INTO stock_movements
        (product_id, type, qty_base_milli, balance_after_milli, unit_label, qty_input_milli,
-        ref_type, ref_id, reason, note, user_id, batch_id, created_at)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+        ref_type, ref_id, reason, note, user_id, batch_id, created_at, location_id)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
   ).run(
     input.productId,
     input.type,
@@ -91,6 +132,7 @@ export function applyMovement(db: Db, input: MovementInput): MovementResult {
     input.userId ?? null,
     input.batchId ?? null,
     input.createdAt ?? nowLocal(),
+    locationId,
   );
 
   return { balanceAfterMilli: after, avgCostMicro: avgCost };

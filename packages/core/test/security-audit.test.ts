@@ -38,6 +38,7 @@ import {
   validateBackup,
   verifyLicense,
   type Db,
+  SCHEMA_VERSION,
 } from '../src/index.js';
 import { makeTestDb, seedProducts, type TestContext } from './helpers.js';
 
@@ -203,7 +204,7 @@ describe('backup hardening', () => {
     expect(check.ok).toBe(true);
     expect(check.business_name).toBe('টেস্ট মার্ট');
     expect(check.counts.products).toBe(2);
-    expect(check.db_version).toBe(1);
+    expect(check.db_version).toBe(SCHEMA_VERSION);
     ctx.cleanup();
   });
 

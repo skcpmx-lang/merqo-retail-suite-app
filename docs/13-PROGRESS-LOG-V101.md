@@ -8,8 +8,8 @@ Live log so a new session can resume exactly here. Update at the end of every st
 | Phase 2 competitor research | DONE | `docs/11-COMPETITIVE-MATRIX.md` (Loyverse, uniCenta, RetailPro BD, Nexchar, Smart POS) |
 | Phase 3 gap matrix | DONE | same document, §2 |
 | Phase 4 roadmap | DONE | `docs/12-ROADMAP-V101.md` |
-| S1 migration + schema v2 | IN PROGRESS | |
-| S2 accounting | PENDING | |
+| S1 migration + schema v2 | **DONE** | 17 new tables, 13 new columns, default location + stock mirror, chart of accounts; 5 migration tests incl. real v1→v2 with trading data; 104/104 |
+| S2 accounting | IN PROGRESS | |
 | S3 inventory | PENDING | |
 | S4 POS | PENDING | |
 | S5 CRM | PENDING | |
