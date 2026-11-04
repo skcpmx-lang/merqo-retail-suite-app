@@ -119,7 +119,7 @@ describe('v1.0.0 → v2.0.0 migration', () => {
 
     const db: Db = openDatabase({ file: dbPath, appVersion: '1.0.1' });
     expect(currentSchemaVersion(db)).toBe(SCHEMA_VERSION);
-    expect(SCHEMA_VERSION).toBe(2);
+    expect(SCHEMA_VERSION).toBe(3);
 
     // 1. operational data untouched
     const products = db.prepare('SELECT COUNT(*) AS c FROM products').get() as { c: number };
@@ -185,7 +185,7 @@ describe('v1.0.0 → v2.0.0 migration', () => {
     db = openDatabase({ file: dbPath, appVersion: '1.0.1' });
     expect((db.prepare('SELECT COUNT(*) AS c FROM accounts').get() as { c: number }).c).toBe(accounts1);
     expect((db.prepare('SELECT COUNT(*) AS c FROM locations').get() as { c: number }).c).toBe(loc1);
-    expect(currentSchemaVersion(db)).toBe(2);
+    expect(currentSchemaVersion(db)).toBe(SCHEMA_VERSION);
     closeDatabase(db);
   });
 
@@ -202,7 +202,7 @@ describe('v1.0.0 → v2.0.0 migration', () => {
   it('a fresh database is created directly at v2 with the chart of accounts', () => {
     const dir = tmpDir();
     const db = openDatabase({ file: path.join(dir, 'fresh.db') });
-    expect(currentSchemaVersion(db)).toBe(2);
+    expect(currentSchemaVersion(db)).toBe(SCHEMA_VERSION);
     const codes = db.prepare('SELECT code FROM accounts ORDER BY code').all() as { code: string }[];
     for (const expected of ['1000', '1100', '1200', '2000', '3000', '4000', '4100', '5000']) {
       expect(codes.map((c) => c.code)).toContain(expected);

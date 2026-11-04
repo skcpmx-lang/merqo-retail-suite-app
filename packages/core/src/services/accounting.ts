@@ -68,6 +68,7 @@ export const ACCOUNT_CODES = {
   supplierAdvance: '1300',
   payable: '2000',
   customerAdvance: '2100',
+  giftCard: '2150',
   taxPayable: '2200',
   equity: '3000',
   openingEquity: '3100',
@@ -99,7 +100,7 @@ export function getAccountByCode(db: Db, code: string): Account {
   return row;
 }
 
-function accountIdByCode(db: Db, code: string): number {
+export function accountIdByCode(db: Db, code: string): number {
   return getAccountByCode(db, code).id;
 }
 

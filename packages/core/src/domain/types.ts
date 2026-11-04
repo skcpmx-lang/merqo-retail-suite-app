@@ -604,6 +604,19 @@ export interface AppSettings {
   duplicate_sale_guard_seconds: number;
   tax_register_enabled: number;
   accounting_enabled: number;
+  // v1.1
+  business_website: string;
+  business_type: string;
+  document_footer: string;
+  language: 'bn' | 'en';
+  login_lock_enabled: 0 | 1;
+  customer_display_enabled: 0 | 1;
+  gift_card_expiry_days: number;
+  lan_mode: 'off' | 'host' | 'terminal';
+  lan_port: number;
+  lan_token: string;
+  lan_host_url: string;
+  receipt_show_qr: 0 | 1;
 }
 
 export interface AppInfo {
