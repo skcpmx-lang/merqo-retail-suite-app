@@ -56,6 +56,7 @@ export function migrateToV2(db: Db, log?: (msg: string) => void): void {
   addColumn(db, 'sales', 'tender_summary', 'TEXT');
   addColumn(db, 'purchases', 'location_id', 'INTEGER REFERENCES locations(id)');
   addColumn(db, 'expense_categories', 'account_id', 'INTEGER REFERENCES accounts(id)');
+  addColumn(db, 'payment_methods', 'account_id', 'INTEGER REFERENCES accounts(id)');
   addColumn(db, 'stock_movements', 'location_id', 'INTEGER REFERENCES locations(id)');
 
   /* ---------- default location + stock mirror ---------- */

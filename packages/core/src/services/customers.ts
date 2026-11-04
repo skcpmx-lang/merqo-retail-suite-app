@@ -3,6 +3,7 @@ import { nowLocal } from '../domain/datetime.js';
 import { bengaliSortKey, foldForSearch, normalizeText } from '../domain/text.js';
 import type { Customer, Payment } from '../domain/types.js';
 import { audit } from './audit.js';
+import { isPostingEnabled, postEntry } from './accounting.js';
 import { insertPayment } from './payments.js';
 
 type Actor = { id: number; username: string } | null | undefined;
@@ -135,6 +136,20 @@ export function createCustomer(db: Db, input: CustomerInput, actor?: Actor): Cus
     entityId: id,
     details: { name, opening },
   });
+  if (opening > 0 && isPostingEnabled(db)) {
+    postEntry(db, {
+      date: now,
+      source: 'opening_customer',
+      sourceId: id,
+      memo: `প্রারম্ভিক বাকি: ${name}`,
+      userId: actor?.id ?? null,
+      idempotent: true,
+      lines: [
+        { code: '1100', debit: opening, memo: 'কাস্টমার বাকি' },
+        { code: '3100', credit: opening, memo: 'প্রারম্ভিক ব্যালেন্স' },
+      ],
+    });
+  }
   return db.prepare('SELECT * FROM customers WHERE id = ?').get(id) as Customer;
 }
 

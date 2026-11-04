@@ -3,6 +3,7 @@ import { nowLocal } from '../domain/datetime.js';
 import { costValuePaisa, weightedAverageCost } from '../domain/money.js';
 import type { StockMovement, StockMovementType } from '../domain/types.js';
 import { audit } from './audit.js';
+import { isPostingEnabled, postStockAdjustment } from './accounting.js';
 
 type Actor = { id: number; username: string } | null | undefined;
 
@@ -182,6 +183,15 @@ export function adjustStock(db: Db, input: AdjustInput): MovementResult {
       type: input.type ?? 'adjustment',
     },
   });
+  if (isPostingEnabled(db)) {
+    postStockAdjustment(db, {
+      productId: input.productId,
+      deltaBaseMilli: delta,
+      costMicro: input.costMicro ?? product.avg_cost_micro ?? 0,
+      userId: input.actor?.id ?? null,
+      reason: input.reason,
+    });
+  }
   return res;
 }
 
@@ -209,6 +219,15 @@ export function writeOffStock(
     entityId: input.productId,
     details: { qty, reason: input.reason },
   });
+  if (isPostingEnabled(db)) {
+    postStockAdjustment(db, {
+      productId: input.productId,
+      deltaBaseMilli: -qty,
+      costMicro: res.avgCostMicro,
+      userId: input.actor?.id ?? null,
+      reason: input.reason,
+    });
+  }
   return res;
 }
 

@@ -7,6 +7,7 @@ export * from './db/connection.js';
 export * from './db/schema.js';
 export * from './db/seed.js';
 
+export * from './services/accounting.js';
 export * from './services/audit.js';
 export * from './services/auth.js';
 export * from './services/settings.js';

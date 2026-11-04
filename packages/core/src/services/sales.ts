@@ -11,6 +11,7 @@ import type { Product, Sale, SaleItem } from '../domain/types.js';
 import { audit } from './audit.js';
 import { addCashMovement, ensureOpenSession } from './cash.js';
 import { applyMovement } from './inventory.js';
+import { isPostingEnabled, postSale, reverseDocument } from './accounting.js';
 import { nextDocumentNumber } from './invoice.js';
 import { insertPayment } from './payments.js';
 import { getSettings } from './settings.js';
@@ -340,6 +341,8 @@ export function createSale(db: Db, input: SaleInput): CreateSaleResult {
         items: computation.lines.length,
       },
     });
+    if (isPostingEnabled(db)) postSale(db, saleId);
+
     return { saleId, invoiceNo, computation };
   });
 
@@ -500,6 +503,9 @@ export function voidSale(db: Db, saleId: number, reason: string, actor: { id: nu
       }
     }
     db.prepare("UPDATE sales SET status = 'voided' WHERE id = ?").run(saleId);
+    if (isPostingEnabled(db)) {
+      reverseDocument(db, 'sale', saleId, { userId: actor.id, memo: `বাতিল: ${sale.invoice_no} — ${reason}` });
+    }
     audit(db, {
       userId: actor.id,
       username: actor.username,

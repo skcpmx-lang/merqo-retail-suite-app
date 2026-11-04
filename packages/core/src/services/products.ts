@@ -11,6 +11,8 @@ import { bengaliSortKey, foldForSearch, normalizeText } from '../domain/text.js'
 import type { DiscountType, Paged, Product, ProductWithMeta } from '../domain/types.js';
 import { audit } from './audit.js';
 import { applyMovement } from './inventory.js';
+import { isPostingEnabled, postOpeningBalance } from './accounting.js';
+import { costValuePaisa } from '../domain/money.js';
 
 type Actor = { id: number; username: string } | null | undefined;
 
@@ -320,6 +322,16 @@ export function createProduct(db: Db, input: ProductInput, actor?: Actor): Produ
         userId: actor?.id ?? null,
         incomingCostMicro: input.openingCostMicro ?? 0,
       });
+      if (isPostingEnabled(db)) {
+        const value = costValuePaisa(input.openingStockMilli!, Math.max(0, input.openingCostMicro ?? 0));
+        postOpeningBalance(db, {
+          source: 'opening_stock',
+          sourceId: id,
+          amount: value,
+          kind: 'asset',
+          memo: `ওপেনিং স্টক: ${input.name}`,
+        });
+      }
     }
     return id;
   });

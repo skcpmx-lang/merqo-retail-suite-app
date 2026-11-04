@@ -3,6 +3,7 @@ import { nowLocal } from '../domain/datetime.js';
 import type { Expense } from '../domain/types.js';
 import { audit } from './audit.js';
 import { addCashMovement } from './cash.js';
+import { isPostingEnabled, postExpense, reverseDocument } from './accounting.js';
 import { isCashMethod } from './payments.js';
 
 type Actor = { id: number; username: string };
@@ -47,6 +48,7 @@ export function createExpense(db: Db, input: ExpenseInput, actor: Actor): Expens
         nowLocal(),
       );
     const id = Number(res.lastInsertRowid);
+    if (isPostingEnabled(db)) postExpense(db, id);
     if (cash) {
       addCashMovement(db, {
         userId: actor.id,
@@ -145,6 +147,9 @@ export function voidExpense(db: Db, id: number, reason: string, actor: Actor): v
   if (!reason || !reason.trim()) throw new Error('বাতিল করার কারণ লিখতে হবে।');
   const run = db.transaction(() => {
     db.prepare("UPDATE expenses SET status = 'voided' WHERE id = ?").run(id);
+    if (isPostingEnabled(db)) {
+      reverseDocument(db, 'expense', id, { userId: actor.id, memo: `খরচ বাতিল: ${reason}` });
+    }
     const cash = existing.method_id ? isCashMethod(db, existing.method_id) : false;
     if (cash) {
       addCashMovement(db, {

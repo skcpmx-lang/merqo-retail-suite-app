@@ -5,6 +5,7 @@ import type { ReturnDoc, ReturnItem } from '../domain/types.js';
 import { audit } from './audit.js';
 import { ensureOpenSession } from './cash.js';
 import { applyMovement } from './inventory.js';
+import { isPostingEnabled, postPurchaseReturn, postSaleReturn } from './accounting.js';
 import { nextDocumentNumber } from './invoice.js';
 import { insertPayment } from './payments.js';
 import { getSettings } from './settings.js';
@@ -227,6 +228,7 @@ export function createSaleReturn(db: Db, input: SaleReturnInput): ReturnResult {
       entityId: returnId,
       details: { returnNo, saleId: input.saleId, total, refund, appliedToDue, restock },
     });
+    if (isPostingEnabled(db)) postSaleReturn(db, returnId);
     return { returnId, returnNo, total, refund, appliedToDue };
   });
   return run();
@@ -394,6 +396,7 @@ export function createPurchaseReturn(db: Db, input: PurchaseReturnInput): Return
       entityId: returnId,
       details: { returnNo, purchaseId: input.purchaseId, total, refund, appliedToDue },
     });
+    if (isPostingEnabled(db)) postPurchaseReturn(db, returnId);
     return { returnId, returnNo, total, refund, appliedToDue };
   });
   return run();
