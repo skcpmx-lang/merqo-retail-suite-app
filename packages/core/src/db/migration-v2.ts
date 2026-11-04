@@ -40,6 +40,7 @@ export function migrateToV2(db: Db, log?: (msg: string) => void): void {
   addColumn(db, 'customers', 'loyalty_points', 'INTEGER NOT NULL DEFAULT 0');
   addColumn(db, 'customers', 'visit_count', 'INTEGER NOT NULL DEFAULT 0');
   addColumn(db, 'customers', 'total_spent_paisa', 'INTEGER NOT NULL DEFAULT 0');
+  addColumn(db, 'customers', 'price_level', "TEXT NOT NULL DEFAULT 'retail'");
 
   addColumn(db, 'products', 'min_sale_price', 'INTEGER');
   addColumn(db, 'products', 'max_discount_percent_x100', 'INTEGER');

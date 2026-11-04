@@ -15,6 +15,7 @@ export * from './services/catalog.js';
 export * from './services/inventory.js';
 export * from './services/stock-ops.js';
 export * from './services/pos.js';
+export * from './services/crm.js';
 export * from './services/products.js';
 export * from './services/customers.js';
 export * from './services/suppliers.js';

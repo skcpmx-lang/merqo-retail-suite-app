@@ -7,6 +7,7 @@ import {
   Banner,
   Button,
   Card,
+  CardHead,
   DataTable,
   EmptyState,
   Field,
@@ -44,6 +45,13 @@ export function CustomersPage({ can, settings }: { can: (perm?: string) => boole
   const [methods, setMethods] = useState<any[]>([]);
   const [from, setFrom] = useState(addDays(today(), -180));
   const [to, setTo] = useState(today());
+  const [profile, setProfile] = useState<Customer | null>(null);
+  const [profileLoyalty, setProfileLoyalty] = useState<any>(null);
+  const [profileHistory, setProfileHistory] = useState<any[]>([]);
+  const [limitInput, setLimitInput] = useState(0);
+  const [groupInput, setGroupInput] = useState('');
+  const [levelInput, setLevelInput] = useState<'retail' | 'wholesale' | 'special'>('retail');
+  const [importing, setImporting] = useState(false);
 
   const load = async () => {
     setLoading(true);
@@ -103,6 +111,54 @@ export function CustomersPage({ can, settings }: { can: (perm?: string) => boole
     }
   };
 
+  const openProfile = async (row: Customer) => {
+    setProfile(row);
+    setLimitInput(Math.round(row.credit_limit_paisa ?? 0));
+    setGroupInput(row.group_name ?? '');
+    setLevelInput(((row as any).price_level as any) ?? 'retail');
+    try {
+      const [loyalty, history] = await Promise.all([
+        call<any>('loyalty.summary', row.id).catch(() => null),
+        call<any[]>('loyalty.history', row.id, 100).catch(() => []),
+      ]);
+      setProfileLoyalty(loyalty);
+      setProfileHistory(history);
+    } catch {
+      setProfileLoyalty(null);
+      setProfileHistory([]);
+    }
+  };
+
+  const exportCsv = async () => {
+    try {
+      const csv = await call<string>('customers.exportCsv');
+      const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `customers-${today()}.csv`;
+      a.click();
+      URL.revokeObjectURL(url);
+      ui.success('CSV ডাউনলোড হয়েছে');
+    } catch (err) {
+      ui.error('এক্সপোর্ট ব্যর্থ', (err as Error).message);
+    }
+  };
+
+  const importCsv = async (file: File) => {
+    setImporting(true);
+    try {
+      const text = await file.text();
+      const res = await call<{ created: number; updated: number; skipped: any[] }>('customers.importCsv', text);
+      ui.success('ইমপোর্ট সম্পন্ন', `${res.created} নতুন, ${res.updated} হালনাগাদ, ${res.skipped.length} বাদ`);
+      await load();
+    } catch (err) {
+      ui.error('ইমপোর্ট ব্যর্থ', (err as Error).message);
+    } finally {
+      setImporting(false);
+    }
+  };
+
   const dueTotal = rows.reduce((s, r) => s + Math.max(0, r.balance_paisa), 0);
 
   return (
@@ -134,6 +190,26 @@ export function CustomersPage({ can, settings }: { can: (perm?: string) => boole
           </div>
           <Switch checked={onlyDue} onChange={(v) => { setOnlyDue(v); setPage(1); }} label="শুধু বাকিদার" />
           <span className="grow" />
+          {can('customer.manage') ? (
+            <>
+              <Button size="sm" variant="ghost" icon="download" onClick={exportCsv}>
+                CSV এক্সপোর্ট
+              </Button>
+              <label className="btn btn-ghost btn-sm" style={{ cursor: 'pointer' }}>
+                <Icon name="upload" size={15} /> {importing ? 'ইমপোর্ট হচ্ছে…' : 'CSV ইমপোর্ট'}
+                <input
+                  type="file"
+                  accept=".csv,text/csv"
+                  style={{ display: 'none' }}
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    if (file) void importCsv(file);
+                    e.target.value = '';
+                  }}
+                />
+              </label>
+            </>
+          ) : null}
           <span className="small muted">
             {total} জন • এই পাতায় বাকি <span className="num bold">{money(dueTotal)}</span>
           </span>
@@ -163,6 +239,27 @@ export function CustomersPage({ can, settings }: { can: (perm?: string) => boole
                 },
                 { key: 'phone', label: 'মোবাইল', render: (r) => <span className="mono">{r.phone || '—'}</span> },
                 {
+                  key: 'group_name',
+                  label: 'গ্রুপ',
+                  render: (r) => ((r.group_name ?? r.group_name) ? <Badge tone="teal">{(r.group_name ?? r.group_name)}</Badge> : <span className="muted">—</span>),
+                },
+                {
+                  key: 'credit_limit_paisa',
+                  label: 'বাকির সীমা',
+                  align: 'right',
+                  render: (r) => (
+                    <span className={`num small ${(r.credit_limit_paisa ?? 0) > 0 && r.balance_paisa > (r.credit_limit_paisa ?? 0) ? 'warn-text' : 'muted'}`}>
+                      {(r.credit_limit_paisa ?? 0) > 0 ? money((r.credit_limit_paisa ?? 0)) : 'সীমা নেই'}
+                    </span>
+                  ),
+                },
+                {
+                  key: 'loyalty_points',
+                  label: 'পয়েন্ট',
+                  align: 'right',
+                  render: (r) => <span className="num small">{r.loyalty_points ?? 0}</span>,
+                },
+                {
                   key: 'balance_paisa',
                   label: 'বাকি',
                   align: 'right',
@@ -177,6 +274,7 @@ export function CustomersPage({ can, settings }: { can: (perm?: string) => boole
                   width: 150,
                   render: (r) => (
                     <div className="row" style={{ gap: 2, justifyContent: 'flex-end' }}>
+                      <IconButton icon="user" title="প্রোফাইল ও লয়্যালটি" onClick={() => openProfile(r)} />
                       <IconButton icon="file" title="স্টেটমেন্ট" onClick={() => openStatement(r)} />
                       {!r.is_walkin && can('customer.manage') ? (
                         <Button size="sm" variant="accent" onClick={() => setPaying(r)}>
@@ -238,6 +336,125 @@ export function CustomersPage({ can, settings }: { can: (perm?: string) => boole
             <Field label="নোট" span={2}>
               <TextInput value={editing.note} onChange={(v) => setEditing({ ...editing, note: v })} />
             </Field>
+          </div>
+        </Modal>
+      ) : null}
+
+      {profile ? (
+        <Modal
+          title={`প্রোফাইল — ${profile.name}`}
+          sub={profile.phone ? `${profile.phone} • বাকি ${money(profile.balance_paisa)}` : `বাকি ${money(profile.balance_paisa)}`}
+          size="lg"
+          onClose={() => setProfile(null)}
+          footer={<Button onClick={() => setProfile(null)}>বন্ধ করুন</Button>}
+        >
+          <div className="stack" style={{ gap: 14 }}>
+            <Card>
+              <CardHead title="বাকির সীমা ও গ্রুপ" />
+              <div className="form-grid">
+                <Field label="বাকির সীমা (০ = সীমা নেই)">
+                  <MoneyInput value={limitInput} onChange={setLimitInput} />
+                </Field>
+                <Field label="কাস্টমার গ্রুপ">
+                  <TextInput value={groupInput} onChange={setGroupInput} placeholder="যেমন: পাইকারি" />
+                </Field>
+                <Field label="দামের স্তর">
+                  <Select
+                    value={levelInput}
+                    onChange={(v) => setLevelInput((v as any) || 'retail')}
+                    options={[
+                      { value: 'retail', label: 'খুচরা' },
+                      { value: 'wholesale', label: 'পাইকারি' },
+                      { value: 'special', label: 'বিশেষ' },
+                    ]}
+                  />
+                </Field>
+                <div className="row" style={{ alignItems: 'flex-end' }}>
+                  <Button
+                    variant="primary"
+                    size="sm"
+                    onClick={async () => {
+                      try {
+                        await call('customers.setCreditLimit', profile.id, limitInput);
+                        await call('customers.setGroup', profile.id, groupInput || null);
+                        await call('customers.setPriceLevel', profile.id, levelInput);
+                        ui.success('সংরক্ষিত হয়েছে');
+                        setProfile(null);
+                        await load();
+                      } catch (err) {
+                        ui.error('সংরক্ষণ ব্যর্থ', (err as Error).message);
+                      }
+                    }}
+                  >
+                    সংরক্ষণ
+                  </Button>
+                </div>
+              </div>
+              {(profile.credit_limit_paisa ?? 0) > 0 ? (
+                <div className="tiny muted" style={{ marginTop: 6 }}>
+                  সীমা ব্যবহার: {money(Math.max(0, profile.balance_paisa))} / {money((profile.credit_limit_paisa ?? 0))}
+                </div>
+              ) : null}
+            </Card>
+
+            <Card>
+              <CardHead
+                title="লয়্যালটি"
+                sub={
+                  profileLoyalty?.enabled === false
+                    ? 'লয়্যালটি সুবিধা সেটিংসে বন্ধ আছে'
+                    : `পয়েন্ট ${profileLoyalty?.points ?? 0} • মূল্য ${money(profileLoyalty?.valuePaisa ?? 0)}`
+                }
+                actions={
+                  can('loyalty.manage') ? (
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={async () => {
+                        const points = Number(window.prompt('কত পয়েন্ট সমন্বয় করবেন? (মাইনাস দিলে কমবে)') || 0);
+                        if (!points) return;
+                        const reason = window.prompt('কারণ লিখুন:') || '';
+                        if (!reason.trim()) {
+                          ui.error('কারণ দরকার', 'সমন্বয়ের কারণ ছাড়া সংরক্ষণ হবে না।');
+                          return;
+                        }
+                        try {
+                          await call('loyalty.adjust', { customerId: profile.id, points, reason });
+                          await openProfile(profile);
+                          ui.success('পয়েন্ট সমন্বয় হয়েছে');
+                        } catch (err) {
+                          ui.error('সমন্বয় ব্যর্থ', (err as Error).message);
+                        }
+                      }}
+                    >
+                      পয়েন্ট সমন্বয়
+                    </Button>
+                  ) : null
+                }
+              />
+              {profileHistory.length === 0 ? (
+                <span className="small muted">এখনো কোনো পয়েন্ট লেনদেন নেই।</span>
+              ) : (
+                <DataTable
+                  columns={[
+                    { key: 'created_at', label: 'সময়', render: (r: any) => dateTime(r.created_at) },
+                    {
+                      key: 'type',
+                      label: 'ধরন',
+                      render: (r: any) => (
+                        <Badge tone={r.points > 0 ? 'green' : 'amber'}>
+                          {r.type === 'earn' ? 'অর্জিত' : r.type === 'redeem' ? 'রিডিম' : r.type === 'reverse' ? 'ফেরত' : r.type === 'expire' ? 'মেয়াদোত্তীর্ণ' : 'সমন্বয়'}
+                        </Badge>
+                      ),
+                    },
+                    { key: 'points', label: 'পয়েন্ট', align: 'right', render: (r: any) => <span className="num">{r.points > 0 ? `+${r.points}` : r.points}</span> },
+                    { key: 'note', label: 'নোট', render: (r: any) => r.note || '—' },
+                  ]}
+                  rows={profileHistory}
+                  empty="কোনো লেনদেন নেই"
+                />
+              )}
+            </Card>
           </div>
         </Modal>
       ) : null}

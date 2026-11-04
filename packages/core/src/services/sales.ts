@@ -15,6 +15,7 @@ import { isPostingEnabled, postSale, reverseDocument } from './accounting.js';
 import { nextDocumentNumber } from './invoice.js';
 import { insertPayment } from './payments.js';
 import { markSerialsSold } from './stock-ops.js';
+import { assertCreditLimit, customerPriceLevel, earnLoyaltyForSale, reverseLoyaltyForSale } from './crm.js';
 import { getSettings } from './settings.js';
 import { productPriceBreakdown, type PriceLevel } from './products.js';
 
@@ -96,6 +97,9 @@ export function computeSale(
   const lines: SaleComputation['lines'] = [];
   let subtotal = 0;
   let costTotal = 0;
+  // A customer's agreed price level (wholesale/special) applies unless the
+  // cashier explicitly picks a level per line.
+  const salePriceLevel = customerPriceLevel(db, input.customerId);
 
   for (const line of input.lines) {
     const product = db.prepare('SELECT * FROM products WHERE id = ?').get(line.productId) as Product | undefined;
@@ -116,7 +120,7 @@ export function computeSale(
     if (line.unitPricePaisa != null && line.unitPricePaisa > 0) {
       unitPrice = Math.round(line.unitPricePaisa);
     } else {
-      const breakdown = productPriceBreakdown(product, line.priceLevel ?? 'retail');
+      const breakdown = productPriceBreakdown(product, line.priceLevel ?? salePriceLevel);
       // product-level price is per primary unit; convert to the chosen unit
       const primaryFactor = (db
         .prepare('SELECT factor_milli FROM units WHERE id = ?')
@@ -212,6 +216,8 @@ export function createSale(db: Db, input: SaleInput): CreateSaleResult {
       | undefined;
     if (!customer) throw new Error('কাস্টমার পাওয়া যায়নি।');
     if (customer.is_walkin) throw new Error('ওয়াক-ইন কাস্টমারের নামে বাকি বিক্রয় করা যাবে না।');
+    // Credit limit is enforced here (not in the UI) so every caller is covered.
+    assertCreditLimit(db, input.customerId, computation.due);
   }
 
   const payments = (input.payments ?? []).filter((p) => Math.round(p.amount) > 0);
@@ -359,6 +365,7 @@ export function createSale(db: Db, input: SaleInput): CreateSaleResult {
       },
     });
     if (isPostingEnabled(db)) postSale(db, saleId);
+    earnLoyaltyForSale(db, saleId, input.actor);
 
     return { saleId, invoiceNo, computation };
   });
@@ -520,6 +527,8 @@ export function voidSale(db: Db, saleId: number, reason: string, actor: { id: nu
       }
     }
     db.prepare("UPDATE sales SET status = 'voided' WHERE id = ?").run(saleId);
+    // Points earned on a voided invoice are taken back (audited in the ledger).
+    reverseLoyaltyForSale(db, saleId, `ইনভয়েস বাতিল: ${sale.invoice_no}`, actor);
     if (isPostingEnabled(db)) {
       reverseDocument(db, 'sale', saleId, { userId: actor.id, memo: `বাতিল: ${sale.invoice_no} — ${reason}` });
     }

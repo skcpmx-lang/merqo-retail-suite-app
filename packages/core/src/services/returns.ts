@@ -11,6 +11,7 @@ import { insertPayment } from './payments.js';
 import { getSettings } from './settings.js';
 import { getSale } from './sales.js';
 import { getPurchase } from './purchases.js';
+import { reverseLoyaltyForSale } from './crm.js';
 
 export interface ReturnItemInput {
   lineId: number;
@@ -218,6 +219,8 @@ export function createSaleReturn(db: Db, input: SaleReturnInput): ReturnResult {
     ).v;
     if (!outstanding || outstanding <= 0) {
       db.prepare("UPDATE sales SET status = 'returned' WHERE id = ?").run(input.saleId);
+      // Fully returned invoice: the loyalty points earned on it are reversed.
+      reverseLoyaltyForSale(db, input.saleId, `সম্পূর্ণ রিটার্ন ${returnNo}`, input.actor);
     }
 
     audit(db, {

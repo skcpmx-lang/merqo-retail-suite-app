@@ -170,6 +170,14 @@ export interface Customer {
   is_active: 0 | 1;
   created_at: ISO;
   updated_at: ISO;
+  /** v1.0.1 fields (added by migration v2; 0 when not set). */
+  credit_limit_paisa?: number;
+  group_name?: string | null;
+  price_level?: 'retail' | 'wholesale' | 'special';
+  loyalty_points?: number;
+  birthday?: string | null;
+  visit_count?: number;
+  total_spent_paisa?: number;
 }
 
 export interface Supplier {

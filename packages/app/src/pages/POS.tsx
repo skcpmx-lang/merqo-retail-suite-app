@@ -89,6 +89,9 @@ export function POSPage({
   const [methodId, setMethodId] = useState<number | ''>('');
   const [reference, setReference] = useState('');
   const [quickPicks, setQuickPicks] = useState<any[]>([]);
+  const [loyalty, setLoyalty] = useState<any>(null);
+  const [redeemPoints, setRedeemPoints] = useState(0);
+  const redeemValuePaisa = loyalty ? Math.max(0, Math.round(redeemPoints)) * (loyalty.redeemValuePaisa ?? 0) : 0;
   const [held, setHeld] = useState<any[]>([]);
   const [heldOpen, setHeldOpen] = useState(false);
   const [heldNote, setHeldNote] = useState('');
@@ -252,8 +255,10 @@ export function POSPage({
             unitPricePaisa: l.priceEdited ? l.unitPricePaisa : null,
             discountPaisa: l.discountPaisa || null,
           })),
-          orderDiscountType: discountType,
-          orderDiscountValue: discountValue,
+          orderDiscountType:
+            redeemValuePaisa > 0 && discountType === 'none' ? 'fixed' : discountType,
+          orderDiscountValue:
+            redeemValuePaisa > 0 && discountType === 'none' ? redeemValuePaisa : discountValue,
           taxPercentX100,
           paidPaisa: 0,
           actor: { id: 0, username: 'ui' },
@@ -275,7 +280,27 @@ export function POSPage({
       alive = false;
       window.clearTimeout(timer);
     };
-  }, [lines, customerId, discountType, discountValue, taxPercentX100]);
+  }, [lines, customerId, discountType, discountValue, taxPercentX100, redeemValuePaisa]);
+
+  useEffect(() => {
+    let alive = true;
+    if (!customerId) {
+      setLoyalty(null);
+      setRedeemPoints(0);
+      return;
+    }
+    (async () => {
+      try {
+        const summary = await call<any>('loyalty.summary', Number(customerId));
+        if (alive) setLoyalty(summary);
+      } catch {
+        if (alive) setLoyalty(null);
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [customerId]);
 
   /* ---------------- quick picks & held sales ---------------- */
   const refreshQuickPicks = useCallback(async () => {
@@ -451,6 +476,11 @@ export function POSPage({
     if (!computation) return;
     setSaving(true);
     try {
+      // Redeem loyalty points first: if the customer's balance changed under us
+      // the redemption fails before an invoice is created.
+      if (redeemPoints > 0 && customerId) {
+        await call<any>('loyalty.redeem', { customerId: Number(customerId), points: redeemPoints });
+      }
       const result = await call<{ saleId: number; invoiceNo: string; sale: Sale }>('pos.createSale', {
         customerId: customerId || null,
         lines: lines.map((l) => ({
@@ -460,8 +490,8 @@ export function POSPage({
           unitPricePaisa: l.priceEdited ? l.unitPricePaisa : null,
           discountPaisa: l.discountPaisa || null,
         })),
-        orderDiscountType: discountType,
-        orderDiscountValue: discountValue,
+        orderDiscountType: redeemValuePaisa > 0 && discountType === 'none' ? 'fixed' : discountType,
+        orderDiscountValue: redeemValuePaisa > 0 && discountType === 'none' ? redeemValuePaisa : discountValue,
         taxPercentX100,
         paidPaisa,
         defaultMethodId: methodId || null,
@@ -475,6 +505,7 @@ export function POSPage({
         note: note || null,
       });
       setPayOpen(false);
+      setRedeemPoints(0);
       setLastSale(result.sale);
       clearCart();
       const html = await call<string>('print.receiptHtml', result.saleId);
@@ -952,6 +983,23 @@ export function POSPage({
                 </div>
               ))}
             </div>
+            {loyalty?.enabled && loyalty.points >= (loyalty.minRedeemPoints ?? 0) && loyalty.points > 0 ? (
+              <Field label={`লয়্যালটি পয়েন্ট ব্যবহার (আছে ${loyalty.points})`} span={2}>
+                <div className="row" style={{ gap: 8, alignItems: 'center' }}>
+                  <TextInput
+                    value={redeemPoints / 1}
+                    onChange={(v) => {
+                      const n = Number(v.replace(/[^\d]/g, ''));
+                      setRedeemPoints(Math.max(0, Math.min(loyalty.points, Number.isFinite(n) ? n : 0)));
+                    }}
+                    placeholder="0"
+                  />
+                  <span className="small muted">
+                    = {money(redeemValuePaisa)} • সর্বোচ্চ {loyalty.points} পয়েন্ট (সর্বনিম্ন {loyalty.minRedeemPoints})
+                  </span>
+                </div>
+              </Field>
+            ) : null}
             <div className="span-2">
               <div className="row" style={{ gap: 7, flexWrap: 'wrap' }}>
                 {[computation.total, Math.ceil(computation.total / 10000) * 10000, Math.ceil(computation.total / 50000) * 50000].map(
