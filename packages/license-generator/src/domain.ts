@@ -184,7 +184,19 @@ export function nowIso(): string {
 export function readStore(file: string): Store {
   if (!fs.existsSync(file)) return emptyStore();
   const raw = fs.readFileSync(file, 'utf8');
-  const parsed = JSON.parse(raw) as Partial<Store>;
+  let parsed: Partial<Store>;
+  try {
+    parsed = JSON.parse(raw) as Partial<Store>;
+  } catch {
+    // Never silently start from an empty store: that would look like "all customers and
+    // licences disappeared" and the operator would keep issuing into a fresh file.
+    throw new Error(
+      `সংরক্ষিত তথ্য ফাইলটি নষ্ট (JSON নয়): ${path.basename(file)}। ফাইলটি মুছবেন না — ব্যাকআপ থেকে পুনরুদ্ধার করুন।`,
+    );
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error('সংরক্ষিত তথ্য ফাইলের কাঠামো সঠিক নয় — ব্যাকআপ থেকে পুনরুদ্ধার করুন।');
+  }
   const base = emptyStore();
   return {
     ...base,
@@ -567,8 +579,19 @@ function fieldsKeyId(license: SignedLicense): string {
   return license.key_id;
 }
 
-/** The exact bytes written to the `.sauda` file the customer imports. */
+/**
+ * The exact bytes written to the `.sauda` file the customer imports.
+ *
+ * A revoked licence must never be exportable again: re-writing the file would hand the
+ * customer a working copy of a licence the operator deliberately withdrew (the file is
+ * signed, so the Main App cannot tell it was revoked offline).
+ */
 export function toLicenseFile(record: LicenseRecord, meta: { customer?: string | null } = {}): string {
+  if (record.revoked_at) {
+    throw new Error(
+      'এই লাইসেন্সটি প্রত্যাহার করা হয়েছে — এর ফাইল আর রপ্তানি করা যাবে না। প্রয়োজনে নতুন লাইসেন্স ইস্যু করুন।',
+    );
+  }
   return JSON.stringify(
     {
       format: 'sauda-license',

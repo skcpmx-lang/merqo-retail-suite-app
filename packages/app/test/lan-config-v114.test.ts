@@ -40,4 +40,25 @@ describe('LAN configuration consistency', () => {
   it('quotes the same default port in the client-facing error message', () => {
     expect(terminal).toContain(`https://192.168.0.10:${DEFAULT_SETTINGS.lan_port}`);
   });
+
+  it('has no other LAN port literal anywhere in the Electron main process', () => {
+    const port = String(DEFAULT_SETTINGS.lan_port);
+    const files = fs.readdirSync(electronDir).filter((f) => f.endsWith('.ts'));
+    const offenders: string[] = [];
+    for (const file of files) {
+      const text = read(electronDir, file);
+      // Any numeric default that looks like a LAN port must be the seeded one.
+      const literals = [...text.matchAll(/(?:\?\?|\|\|)\s*(\d{4,5})\b/g)].map((m) => m[1]!);
+      for (const literal of literals) {
+        if (['1024', '65535', '1000', '2000', '4096', '8192'].includes(literal)) continue;
+        if (literal !== port) offenders.push(`${file}: ${literal}`);
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  it('never advertises a plaintext address in the settings screen', () => {
+    expect(settingsPage).not.toMatch(/http:\/\//);
+    expect(settingsPage).not.toMatch(/8787/);
+  });
 });

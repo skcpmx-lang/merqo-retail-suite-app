@@ -76,6 +76,14 @@ export interface PairOutcome {
   status: 'pending' | 'approved';
 }
 
+/**
+ * Codes that mean the Main PC no longer accepts this session or this device.
+ *
+ * They are decided by the server, never here — the client only stops pretending it is still
+ * signed in, closes the event stream and asks for a fresh login (which re-opens the stream).
+ */
+const SESSION_LOST_CODES = new Set(['AUTH_REQUIRED', 'SESSION_EXPIRED', 'SESSION_REVOKED', 'DEVICE_REVOKED']);
+
 /** Methods that change business data and therefore must be idempotent and online-only. */
 const WRITE_PREFIXES = [
   'sale.',
@@ -253,6 +261,9 @@ export class V1Terminal {
     const res = await client.rpc<T>(method, args, { idempotencyKey: key });
     if (!res.ok) {
       this.lastError = res.error ?? res.code ?? null;
+      // An expired/revoked session must not look like a transient failure: drop the session
+      // (and the stream) so the UI returns to the login screen instead of retrying forever.
+      if (SESSION_LOST_CODES.has(String(res.code ?? ''))) this.logout();
       if (res.code === 'OFFLINE' || res.code === 'TIMEOUT') {
         throw new OfflineError(res.error ?? undefined);
       }

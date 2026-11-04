@@ -772,6 +772,11 @@ if (!singleInstance) {
         ctx.user = (res.data as typeof ctx.user) ?? null;
       }
       if (method === 'auth.logout') ctx.user = null;
+      // The Main PC is the authority on sessions: when it says the session is gone, this PC
+      // forgets the user instead of showing a signed-in UI that cannot do anything.
+      if (!res.ok && ['AUTH_REQUIRED', 'SESSION_EXPIRED', 'SESSION_REVOKED', 'DEVICE_REVOKED'].includes(String(res.code ?? ''))) {
+        ctx.user = null;
+      }
       return res;
     }
     return invokeRoute(ctx, method, callArgs);
