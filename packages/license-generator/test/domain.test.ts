@@ -71,7 +71,7 @@ function device(overrides: Partial<DeviceRequest> = {}): DeviceRequest {
       { key: 'cpu', hash: '99aabbccddeeff00', weight: 25 },
     ],
     platform: 'win32',
-    app_version: '1.1.1',
+    app_version: '1.1.2',
     business_name: 'রহিম স্টোর',
     ...overrides,
   };
@@ -92,7 +92,7 @@ function issuedStore(store: Store, overrides: Parameters<typeof signLicense>[0][
       ...overrides,
     },
     privateKeyB64: privB64,
-    generatorVersion: '1.1.1',
+    generatorVersion: '1.1.2',
   });
   const customer = createCustomer(store, { name: 'রহিম স্টোর', owner: 'রহিম', phone: '01700000000' });
   const record = recordIssuedLicense(store, { result, customerId: customer.id, filePath: '/tmp/x.sauda' });
@@ -180,7 +180,7 @@ describe('signing and records', () => {
           expiresAt: null,
         },
         privateKeyB64: privB64,
-        generatorVersion: '1.1.1',
+        generatorVersion: '1.1.2',
       }),
     ).toThrow(/এই এডিশনে অনুমোদিত নয়/);
   });
@@ -222,7 +222,7 @@ describe('signing and records', () => {
         expiresAt: null,
       },
       privateKeyB64: privB64,
-      generatorVersion: '1.1.1',
+      generatorVersion: '1.1.2',
     });
     recordIssuedLicense(store, {
       result: second,

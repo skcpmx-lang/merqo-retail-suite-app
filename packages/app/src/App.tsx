@@ -283,7 +283,7 @@ function AppShell({
   const [alerts, setAlerts] = useState<any[]>([]);
   const [alertsOpen, setAlertsOpen] = useState(false);
   const [logoUrl, setLogoUrl] = useState<string | null>(null);
-  const [appVersion, setAppVersion] = useState('1.1.1');
+  const [appVersion, setAppVersion] = useState('1.1.2');
   const [navOpen, setNavOpen] = useState(false);
   const searchRef = useRef<HTMLInputElement | null>(null);
 
@@ -335,7 +335,7 @@ function AppShell({
 
   useEffect(() => {
     void call<{ version: string }>('app.info')
-      .then((info) => setAppVersion(info?.version ?? '1.1.1'))
+      .then((info) => setAppVersion(info?.version ?? '1.1.2'))
       .catch(() => undefined);
   }, []);
 

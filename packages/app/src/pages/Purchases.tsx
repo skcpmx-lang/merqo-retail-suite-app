@@ -405,9 +405,18 @@ function PurchaseEditor({ onClose, onSaved }: { onClose: () => void; onSaved: ()
     };
   }, [input, lines.length]);
 
+  const needsSupplier = (computation?.due ?? 0) > 0 && !supplierId;
+
   const save = async () => {
     if (!lines.length) {
       ui.error('কোনো প্রোডাক্ট নেই', 'অন্তত একটি প্রোডাক্ট যোগ করুন।');
+      return;
+    }
+    if (needsSupplier) {
+      ui.error(
+        'সাপ্লায়ার নির্বাচন করুন',
+        'বাকি থাকা ক্রয়ের পাওনা সাপ্লায়ার খাতে যোগ করতে হয় — নইলে পুরো টাকা পরিশোধ করুন।',
+      );
       return;
     }
     setSaving(true);
@@ -431,7 +440,7 @@ function PurchaseEditor({ onClose, onSaved }: { onClose: () => void; onSaved: ()
       footer={
         <>
           <Button onClick={onClose}>বাতিল</Button>
-          <Button variant="primary" icon="check" loading={saving} onClick={save}>
+          <Button variant="primary" icon="check" loading={saving} disabled={needsSupplier} onClick={save}>
             সংরক্ষণ করুন
           </Button>
         </>
@@ -611,7 +620,8 @@ function PurchaseEditor({ onClose, onSaved }: { onClose: () => void; onSaved: ()
           <Row label="বাকি" value={money(computation?.due ?? 0)} strong />
           {computation?.due > 0 && !supplierId ? (
             <Banner tone="warn" icon="warning">
-              বাকি থাকলে সাপ্লায়ার নির্বাচন করুন — পাওনা তার খাতে যোগ হবে।
+              বাকি থাকলে সাপ্লায়ার নির্বাচন করুন, নইলে পুরো টাকা পরিশোধ করুন — নাহলে পাওনা কারও খাতে
+              যোগ হবে না।
             </Banner>
           ) : null}
         </div>

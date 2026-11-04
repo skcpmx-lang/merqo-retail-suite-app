@@ -1151,7 +1151,8 @@ export function reconcile(db: Db, range: { from?: string; to?: string } = {}): R
     .get(ACCOUNT_CODES.revenue, from, to) as { v: number };
   const salesSubtotal = db
     .prepare(
-      `SELECT COALESCE(SUM(subtotal_paisa),0) AS v FROM sales WHERE sale_date >= ? AND sale_date <= ?`,
+      `SELECT COALESCE(SUM(subtotal_paisa),0) AS v FROM sales
+        WHERE status <> 'voided' AND sale_date >= ? AND sale_date <= ?`,
     )
     .get(from, to) as { v: number };
   push('বিক্রয় আয় বনাম বিক্রয় সাবটোটাল', revenue.v, salesSubtotal.v);
@@ -1165,7 +1166,10 @@ export function reconcile(db: Db, range: { from?: string; to?: string } = {}): R
     )
     .get(ACCOUNT_CODES.cogs, from, to) as { v: number };
   const cost = db
-    .prepare('SELECT COALESCE(SUM(cost_total_paisa),0) AS v FROM sales WHERE sale_date >= ? AND sale_date <= ?')
+    .prepare(
+      `SELECT COALESCE(SUM(cost_total_paisa),0) AS v FROM sales
+        WHERE status <> 'voided' AND sale_date >= ? AND sale_date <= ?`,
+    )
     .get(from, to) as { v: number };
   const returnedCost = db
     .prepare(
@@ -1195,7 +1199,25 @@ export function reconcile(db: Db, range: { from?: string; to?: string } = {}): R
     )
     .get(ACCOUNT_CODES.payable) as { v: number };
   const payable = db.prepare('SELECT COALESCE(SUM(balance_paisa),0) AS v FROM suppliers').get() as { v: number };
-  push('সাপ্লায়ার পাওনা (লেজার বনাম ব্যালেন্স)', ap.v, payable.v);
+  // Legacy credit purchases saved without a supplier still carry a real ledger
+  // liability, so count them here — and flag them separately so the operator can
+  // attach a supplier instead of chasing an unexplained difference forever.
+  const unattributed = db
+    .prepare(
+      `SELECT COALESCE(SUM(due_paisa),0) AS v FROM purchases
+        WHERE supplier_id IS NULL AND status <> 'voided' AND due_paisa <> 0`,
+    )
+    .get() as { v: number };
+  push('সাপ্লায়ার পাওনা (লেজার বনাম ব্যালেন্স)', ap.v, payable.v + unattributed.v);
+  if (unattributed.v !== 0) {
+    results.push({
+      ok: false,
+      check: 'সাপ্লায়ার ছাড়া বাকি ক্রয় — পাওনা কারও খাতে নেই, ঠিক করা দরকার',
+      ledger: unattributed.v,
+      operational: 0,
+      difference: unattributed.v,
+    });
+  }
 
   // 5. Inventory ledger value vs the live stock valuation.
   const invLedger = db

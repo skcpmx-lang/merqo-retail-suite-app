@@ -55,7 +55,7 @@ function deviceRequest(): DeviceRequest {
     fingerprint: real.hash,
     components: real.components.map((c) => ({ key: c.key, hash: c.hash, weight: c.weight })),
     platform: process.platform,
-    app_version: '1.1.1',
+    app_version: '1.1.2',
     business_name: 'ইন্টিগ্রেশন স্টোর',
     created_at: new Date().toISOString(),
   };
@@ -79,7 +79,7 @@ describe('generator → retail app licence compatibility', () => {
         expiresAt: null,
       },
       privateKeyB64: privB64,
-      generatorVersion: '1.1.1',
+      generatorVersion: '1.1.2',
     });
 
     const appView = verifyLicense(result.license, { publicKeyB64: pubB64, device: { version: device.v, hash: device.fingerprint, components: device.components } as ReturnType<typeof getDeviceFingerprint> });
@@ -98,7 +98,7 @@ describe('generator → retail app licence compatibility', () => {
       device,
       issue: { org: 'ফাইল স্টোর', edition: 'standard', maxDevices: 1, features: featuresForEdition('standard'), expiresAt: '2030-12-31' },
       privateKeyB64: privB64,
-      generatorVersion: '1.1.1',
+      generatorVersion: '1.1.2',
     });
     const record = recordIssuedLicense(store, { result, customerId: customer.id, filePath: null });
     const body = toLicenseFile(record, { customer: customer.name });
@@ -131,7 +131,7 @@ describe('generator → retail app licence compatibility', () => {
         expiresAt: '2031-01-01',
       },
       privateKeyB64: privB64,
-      generatorVersion: '1.1.1',
+      generatorVersion: '1.1.2',
     });
 
     const body = toLicenseFile(recordIssuedLicense(emptyStore(), { result, customerId: null, filePath: null }));
@@ -149,7 +149,7 @@ describe('generator → retail app licence compatibility', () => {
       device,
       issue: { org: 'টেম্পার স্টোর', edition: 'standard', maxDevices: 1, features: featuresForEdition('standard'), expiresAt: null },
       privateKeyB64: privB64,
-      generatorVersion: '1.1.1',
+      generatorVersion: '1.1.2',
     });
     const tampered = {
       ...result.license,
@@ -168,7 +168,7 @@ describe('generator → retail app licence compatibility', () => {
       device,
       issue: { org: 'ভুল কী স্টোর', edition: 'standard', maxDevices: 1, features: featuresForEdition('standard'), expiresAt: null },
       privateKeyB64: privB64,
-      generatorVersion: '1.1.1',
+      generatorVersion: '1.1.2',
     });
     const check = verifyLicense(result.license, { publicKeyB64: otherPublic, skipDevice: true });
     expect(check.activated).toBe(false);
@@ -181,7 +181,7 @@ describe('generator → retail app licence compatibility', () => {
       device,
       issue: { org: 'হার্ডওয়্যার স্টোর', edition: 'standard', maxDevices: 1, features: featuresForEdition('standard'), expiresAt: null },
       privateKeyB64: privB64,
-      generatorVersion: '1.1.1',
+      generatorVersion: '1.1.2',
     });
     const otherMachine = getDeviceFingerprint(true);
     const alien = {
@@ -201,7 +201,7 @@ describe('generator → retail app licence compatibility', () => {
       device,
       issue: { org: 'রিভোক স্টোর', edition: 'standard', maxDevices: 1, features: featuresForEdition('standard'), expiresAt: null },
       privateKeyB64: privB64,
-      generatorVersion: '1.1.1',
+      generatorVersion: '1.1.2',
     });
     const body = toLicenseFile(recordIssuedLicense(emptyStore(), { result, customerId: null, filePath: null }));
     const outcome = verifyLicenseFile(body, { publicKeyB64: pubB64, revokedIds: [result.payload.license_id] });
@@ -216,7 +216,7 @@ describe('generator → retail app licence compatibility', () => {
       device: deviceRequest(),
       issue: { org: 'মেয়াদোত্তীর্ণ স্টোর', edition: 'standard', maxDevices: 1, features: ['pos'], expiresAt: '2027-06-30' },
       privateKeyB64: privB64,
-      generatorVersion: '1.1.1',
+      generatorVersion: '1.1.2',
     });
     // Valid today...
     expect(verifyLicense(result.license, { publicKeyB64: pubB64, skipDevice: true }).activated).toBe(true);
@@ -237,7 +237,7 @@ describe('generator → retail app licence compatibility', () => {
       device: deviceRequest(),
       issue: { org: 'রি-ইস্যু স্টোর', edition: 'pro', maxDevices: 1, features: featuresForEdition('pro'), expiresAt: '2030-01-01' },
       privateKeyB64: privB64,
-      generatorVersion: '1.1.1',
+      generatorVersion: '1.1.2',
     });
     const customer = createCustomer(store, { name: 'রি-ইস্যু স্টোর' });
     const oldRecord = recordIssuedLicense(store, { result: first, customerId: customer.id, filePath: null });
@@ -253,7 +253,7 @@ describe('generator → retail app licence compatibility', () => {
         expiresAt: '2030-01-01',
       },
       privateKeyB64: privB64,
-      generatorVersion: '1.1.1',
+      generatorVersion: '1.1.2',
     });
     const newRecord = recordIssuedLicense(store, {
       result: replacement,
@@ -279,7 +279,7 @@ describe('generator → retail app licence compatibility', () => {
       device: deviceRequest(),
       issue: { org: 'রাউন্ডট্রিপ স্টোর', edition: 'standard', maxDevices: 1, features: ['pos'], expiresAt: null },
       privateKeyB64: privB64,
-      generatorVersion: '1.1.1',
+      generatorVersion: '1.1.2',
     });
     const record = recordIssuedLicense(store, { result, customerId: null, filePath: null });
     record.revoked_at = new Date().toISOString();

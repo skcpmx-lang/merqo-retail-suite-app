@@ -112,3 +112,27 @@ GitHub Actions: `CI` ওয়ার্কফ্লো (ubuntu-latest) সবু
 - **Installers are not code-signed**, so SmartScreen may warn on first run.
 - **Windows-only in practice.** Builds and packaging are validated on Windows in
   CI; Linux/macOS are untested for this product.
+
+## v1.1.2 additions (integrity release)
+
+- **Electron runtime not smoke-tested here.** The dependency was raised 38.8.6 →
+  43.8.7 to leave a known high advisory behind, and packaging/typecheck/tests are
+  green, but this build environment has no GUI: first launch, printing and window
+  behaviour on Electron 43 are verified only by the Windows release job and the
+  manual checklist (§2.9). Status: BLOCKED (environment), not "verified".
+- **Builder-toolchain advisories remain.** `npm audit` reports 0 production
+  vulnerabilities and 0 high/critical overall, but 15 moderate findings stay in
+  `electron-builder`'s build-time dependencies (`app-builder-lib`, `dmg-builder`,
+  `ejs`, `glob`, `minimatch`, `rimraf`, `temp`, `extract-zip`). Upstream has not
+  shipped fixes; none of them is bundled into the shipped installers.
+- **Legacy supplier-less credit purchases.** Databases created before v1.1.2 may
+  contain purchases with a due and no supplier. New ones are refused; old ones are
+  reported by `reconcile()` as "সাপ্লায়ার ছাড়া বাকি ক্রয়" until an operator pays
+  them off or attaches a supplier. There is no automatic data rewrite by design.
+- **Renderer tests are render-only (main app too).** `packages/app/test` renders
+  all 24 screens to a string; it catches import/render crashes and empty shells,
+  not click-through behaviour. Interaction remains covered by workflow tests at
+  the service layer plus the manual checklist.
+- **No performance benchmark in CI.** Startup, POS search and large-report timings
+  are measured manually (`docs/FINAL_PERFORMANCE_REPORT.md`); there is no automated
+  regression gate on timing, so a regression would need a human to notice.

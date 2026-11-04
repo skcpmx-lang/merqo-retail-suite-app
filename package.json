@@ -1,6 +1,6 @@
 {
   "name": "sauda-retail-suite",
-  "version": "1.1.1",
+  "version": "1.1.2",
   "private": true,
   "description": "Sauda Retail Suite - offline-first retail POS & business management ecosystem by MERQO",
   "author": "MERQO (Shohan Khan)",
@@ -35,7 +35,7 @@
     "@types/react": "^19.0.2",
     "@types/react-dom": "^19.0.2",
     "better-sqlite3": "13.0.3",
-    "electron": "38.8.6",
+    "electron": "43.8.7",
     "electron-builder": "26.18.0",
     "esbuild": "0.28.2",
     "fflate": "^0.8.2",

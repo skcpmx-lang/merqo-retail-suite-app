@@ -482,6 +482,60 @@ export function consumeGiftCard(
   return { card: after, applied };
 }
 
+/**
+ * Give back every stored-value amount a sale took from a card.
+ *
+ * Used when an invoice is voided: "void" means the document never happened, so
+ * the card the customer paid with must be exactly as it was. Any earlier refund
+ * already recorded for the same sale is subtracted, so calling this twice is a
+ * no-op instead of minting money.
+ */
+export function restoreGiftCardsForSale(
+  db: Db,
+  args: { saleId: number; note?: string | null; userId: number | null },
+): { cards: number; amountPaisa: number } {
+  const rows = db
+    .prepare(
+      `SELECT gift_card_id,
+              COALESCE(SUM(CASE WHEN type = 'redeem' THEN amount_paisa ELSE 0 END),0) AS redeemed,
+              COALESCE(SUM(CASE WHEN type IN ('refund','void') THEN amount_paisa ELSE 0 END),0) AS restored
+         FROM gift_card_transactions WHERE sale_id = ? GROUP BY gift_card_id`,
+    )
+    .all(args.saleId) as { gift_card_id: number; redeemed: number; restored: number }[];
+  let cards = 0;
+  let amountPaisa = 0;
+  for (const row of rows) {
+    const delta = Math.round(row.redeemed - row.restored);
+    if (delta <= 0) continue;
+    // The card may have been voided by hand after the sale; never resurrect it.
+    const upd = db
+      .prepare(
+        `UPDATE gift_cards SET balance_paisa = balance_paisa + ?, status = CASE
+             WHEN status = 'used' THEN 'active' ELSE status END,
+             updated_at = ? WHERE id = ? AND status <> 'void'`,
+      )
+      .run(delta, nowLocal(), row.gift_card_id);
+    if (upd.changes !== 1) continue;
+    const after = getGiftCard(db, row.gift_card_id);
+    if (!after) continue;
+    db.prepare(
+      `INSERT INTO gift_card_transactions (gift_card_id, sale_id, type, amount_paisa, balance_after_paisa, note, user_id, created_at)
+       VALUES (?,?,'void',?,?,?,?,?)`,
+    ).run(
+      after.id,
+      args.saleId,
+      delta,
+      after.balance_paisa,
+      args.note ?? 'ইনভয়েস বাতিল — স্টোরড ভ্যালু ফেরত',
+      args.userId,
+      nowLocal(),
+    );
+    cards += 1;
+    amountPaisa += delta;
+  }
+  return { cards, amountPaisa };
+}
+
 /** Put money back on a card (used when a sale paid by card is voided/returned). */
 export function refundToGiftCard(
   db: Db,

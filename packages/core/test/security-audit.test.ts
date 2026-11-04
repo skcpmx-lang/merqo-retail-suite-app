@@ -347,6 +347,8 @@ describe('users, roles and permissions', () => {
     const p = ctx.db.prepare("SELECT id FROM products WHERE sku = 'X1'").get() as { id: number };
     createPurchase(ctx.db, {
       lines: [{ productId: p.id, unitId: ctx.unitPieceId, qtyMilli: 5_000, unitPricePaisa: 1000 }],
+      paidPaisa: 5000,
+      defaultMethodId: ctx.cashMethodId,
       actor: ctx.actor,
     });
     createSale(ctx.db, {
@@ -375,6 +377,8 @@ describe('destructive operations', () => {
     const p = ctx.db.prepare("SELECT id FROM products WHERE sku = 'DEL-1'").get() as { id: number };
     createPurchase(ctx.db, {
       lines: [{ productId: p.id, unitId: ctx.unitPieceId, qtyMilli: 5_000, unitPricePaisa: 1000 }],
+      paidPaisa: 5000,
+      defaultMethodId: ctx.cashMethodId,
       actor: ctx.actor,
     });
     createSale(ctx.db, {
