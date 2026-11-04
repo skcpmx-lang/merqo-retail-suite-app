@@ -1,5 +1,16 @@
 name: CI
 
+# Every push and pull request runs the full release gate (`npm run verify`) on both supported
+# platforms. Linux is the fast signal; Windows is the platform the installers actually ship on, so
+# the suite must be green there too — a Windows-only failure must be reproducible without pushing
+# a release tag (v1.1.4 shipped a tag whose build failed at `tests: core`, and that failure was
+# invisible because CI only ever ran on ubuntu-latest).
+#
+# Diagnostics are part of the contract: the gate log is captured, failing test names, assertions
+# and stack frames are pushed into the job summary and into check-run annotations, and the log is
+# uploaded as an artifact. Do not remove these when the suite is green — they are how a
+# platform-specific failure gets diagnosed without downloading a runner log.
+
 on:
   push:
     branches: ['**']
@@ -12,7 +23,7 @@ concurrency:
 
 jobs:
   verify:
-    name: Type-check, test and build
+    name: Gate — Linux (ubuntu-latest)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -22,10 +33,86 @@ jobs:
           node-version: '22'
           cache: 'npm'
 
+      - name: Platform facts
+        run: |
+          node -v
+          npm -v
+          git --version
+          git config --get core.autocrlf || echo "core.autocrlf: unset"
+          uname -a
+
       - name: Install dependencies
         env:
           ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
         run: npm ci --no-audit --no-fund
 
       - name: Verify (typecheck + tests + builds + secrets scan)
-        run: npm run verify
+        shell: bash
+        run: |
+          set -o pipefail
+          npm run verify 2>&1 | tee ci-verify.log
+
+      - name: Report failures as annotations and summary
+        if: failure()
+        shell: bash
+        run: node scripts/ci-failure-report.mjs --log ci-verify.log --label linux
+
+      - name: Upload gate log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-gate-log-linux
+          path: ci-verify.log
+          if-no-files-found: ignore
+
+  windows:
+    name: Gate — Windows (windows-latest)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      # Facts that decide several class of Windows-only failure: line endings from the checkout,
+      # the shell the scripts will see, and the toolchain native modules compile against.
+      - name: Platform facts
+        shell: bash
+        run: |
+          node -v
+          npm -v
+          git --version
+          echo "core.autocrlf: $(git config --get core.autocrlf || echo unset)"
+          echo "core.eol: $(git config --get core.eol || echo unset)"
+          echo "--- line endings in tracked sources (sample) ---"
+          git ls-files --eol packages/core/src | head -5
+          git ls-files --eol packages/core/test | head -5
+          echo "--- windows paths ---"
+          node -e "console.log(process.cwd(), process.platform, process.arch)"
+
+      - name: Install dependencies
+        shell: bash
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+        run: npm ci --no-audit --no-fund
+
+      - name: Verify (typecheck + tests + builds + secrets scan)
+        shell: bash
+        run: |
+          set -o pipefail
+          npm run verify 2>&1 | tee ci-verify.log
+
+      - name: Report failures as annotations and summary
+        if: failure()
+        shell: bash
+        run: node scripts/ci-failure-report.mjs --log ci-verify.log --label windows
+
+      - name: Upload gate log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-gate-log-windows
+          path: ci-verify.log
+          if-no-files-found: ignore

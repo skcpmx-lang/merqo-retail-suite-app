@@ -1,6 +1,14 @@
 import { defineConfig } from 'vitest/config';
 import { fileURLToPath } from 'node:url';
 
+/**
+ * On GitHub Actions the plain console reporter is not enough: the runner log is often not
+ * reachable (large logs are served from blob storage) while check-run annotations are. The
+ * `github-actions` reporter turns every failed test into a `::error file=…,line=…` annotation,
+ * so a platform-specific failure can be diagnosed from the API alone.
+ */
+const reporters = process.env.GITHUB_ACTIONS ? ['default', 'github-actions'] : ['default'];
+
 export default defineConfig({
   resolve: {
     alias: {
@@ -18,6 +26,6 @@ export default defineConfig({
     testTimeout: 60_000,
     hookTimeout: 60_000,
     pool: 'forks',
-    reporters: ['default'],
+    reporters,
   },
 });
