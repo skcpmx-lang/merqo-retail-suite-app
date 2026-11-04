@@ -46,8 +46,18 @@ if (offenders.length) {
 // Content scan (v1.1.3): a private key pasted into a normal-looking source file is
 // still a leaked private key, and filename rules alone would miss it.
 const PEM_PRIVATE = /-----BEGIN (?:[A-Z]+ )?PRIVATE KEY-----/;
+// Tests and docs legitimately contain fake keys and mentions of the old override —
+// they are fixtures, not shipped code. Only runtime/source trees are scanned.
+const isFixturePath = (f) =>
+  /(^|\/)docs\//.test(f) ||
+  /(^|\/)test(s)?\//.test(f) ||
+  /\.test\.(ts|tsx|mjs|js)$/i.test(f) ||
+  /(^|\/)CHANGELOG\.md$/.test(f);
 const contentOffenders = [];
-for (const file of tracked.filter((f) => /\.(ts|tsx|js|mjs|cjs|json|html|css|md|yml|yaml|txt)$/i.test(f))) {
+const scanned = tracked.filter(
+  (f) => /\.(ts|tsx|js|mjs|cjs|json|html|css|md|yml|yaml|txt)$/i.test(f) && !isFixturePath(f),
+);
+for (const file of scanned) {
   let text = '';
   try {
     text = fs.readFileSync(path.join(root, file), 'utf8');
