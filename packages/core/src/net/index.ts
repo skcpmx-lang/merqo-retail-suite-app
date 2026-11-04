@@ -7,4 +7,5 @@ export * from './replay-store.js';
 export * from './rotation.js';
 export * from './sse.js';
 export * from './sse-client.js';
+export * from './v1-client.js';
 export * from './api.js';

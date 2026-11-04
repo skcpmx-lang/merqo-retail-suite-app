@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { startRpcHost, type RpcHost, type RpcUser, type RpcResponse } from '@sauda/core';
+import { legacyRpcBindHost, legacyRpcExposedToNetwork } from './lan-policy.js';
 
 /**
  * Background Main Server runtime (v1.1.4, Phase 2).
@@ -200,6 +201,9 @@ export class ServerRuntime {
       }
       this.host = await startRpcHost({
         port: port ?? this.deps.port,
+        // Legacy shop-token tunnel: this PC only unless the operator explicitly
+        // opted into the deprecated LAN mode (see lan-policy.ts).
+        host: legacyRpcBindHost(),
         token,
         version: this.deps.version,
         businessName: this.deps.businessName,
@@ -214,7 +218,13 @@ export class ServerRuntime {
       this.deps.log?.('info', 'server runtime running', {
         port: this.host.port,
         addresses: this.host.addresses,
+        bound_host: this.host.bound_host,
       });
+      if (legacyRpcExposedToNetwork()) {
+        this.deps.log?.('warn', 'legacy /rpc is exposed to the network (deprecated)', {
+          env: 'SAUDA_ALLOW_LEGACY_RPC=lan',
+        });
+      }
       return this.health();
     } catch (err) {
       this.releaseLock();

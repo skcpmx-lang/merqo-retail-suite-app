@@ -41,6 +41,12 @@ export interface RpcResponse {
 export interface RpcHostOptions {
   port: number;
   /**
+   * Interface to bind. Defaults to `0.0.0.0` for compatibility, but v1.1.4's Main
+   * Server passes `127.0.0.1`: the legacy shop-token tunnel is no longer reachable
+   * from the network, only from this machine. See `docs/V1.1.4_PHASE3_MILESTONE_D.md`.
+   */
+  host?: string;
+  /**
    * Optional TLS material (v1.1.4 Phase 3). When present the listener speaks HTTPS
    * and clients pin the certificate fingerprint. The AES-GCM envelope is kept on
    * top, so the payload is protected even if a client is mis-configured.
@@ -62,6 +68,8 @@ export interface RpcHostOptions {
 
 export interface RpcHost {
   port: number;
+  /** Interface actually bound — `127.0.0.1` means "this PC only". */
+  bound_host: string;
   addresses: string[];
   /** `https` when TLS material was supplied. */
   protocol: 'http' | 'https';
@@ -344,12 +352,15 @@ export async function startRpcHost(opts: RpcHostOptions): Promise<RpcHost> {
 
   await new Promise<void>((resolve, reject) => {
     server.once('error', reject);
-    server.listen(opts.port, '0.0.0.0', () => resolve());
+    server.listen(opts.port, opts.host ?? '0.0.0.0', () => resolve());
   });
-  const port = (server.address() as AddressInfo).port;
+  const address = server.address() as AddressInfo;
+  const port = address.port;
 
   return {
     port,
+    /** Interface actually bound — `127.0.0.1` means "this PC only". */
+    bound_host: address.address,
     addresses: lanUrls(port),
     protocol: opts.tls ? 'https' : 'http',
     tls_fingerprint: opts.tls?.fingerprint ?? null,
