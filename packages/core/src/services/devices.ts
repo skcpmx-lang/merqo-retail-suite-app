@@ -23,6 +23,8 @@ export interface StoreIdentity {
   store_id: string;
   server_id: string;
   server_name: string;
+  /** SHA-256 pin of the TLS certificate clients must expect (null until issued). */
+  cert_fingerprint: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -102,6 +104,7 @@ export function getStoreIdentity(db: Db): StoreIdentity {
     store_id: randomId('STORE'),
     server_id: randomId('SRV'),
     server_name: '',
+    cert_fingerprint: null,
     created_at: now,
     updated_at: now,
   };

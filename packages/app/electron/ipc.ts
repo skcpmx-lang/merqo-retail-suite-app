@@ -240,9 +240,20 @@ import {
   type RpcHost,
   type BrandInfo,
   type DocFormat,
+  type DeviceStatus,
 } from '@sauda/core';
 import { appPaths, assertInside, readRecentLogs, writeLog } from './paths.js';
 import { receiptWidth } from '@sauda/core';
+import {
+  approveDeviceFor,
+  capacityFor,
+  identityFor,
+  listDevicesFor,
+  pairingCodeFor,
+  rejectDeviceFor,
+  renameDeviceFor,
+  revokeDeviceFor,
+} from './device-admin.js';
 import { printHtml, listPrinters, htmlToPdf } from './printing.js';
 import { testLanConnection } from './lan.js';
 import { getServerRuntime, serverHealth } from './server.js';
@@ -2096,6 +2107,34 @@ on(
   (ctx, enabled: boolean) => {
     const settings = updateSettings(ctx.db, { server_keep_running: enabled ? 1 : 0 }, ctx.user ?? null);
     return { keep_running: settings.server_keep_running };
+  },
+  'settings.manage',
+);
+
+
+/* ------------------------------------------------------------------ */
+/* Device administration (Phase 3, Milestone E)                        */
+/* ------------------------------------------------------------------ */
+/* The logic lives in `device-admin.ts` (electron-free, unit tested); the registry
+   only adds the permission gate and the argument plumbing. */
+
+on('devices.list', (ctx, status?: DeviceStatus) => listDevicesFor(ctx, status), 'settings.manage');
+on('devices.pending', (ctx) => listDevicesFor(ctx, 'pending'), 'settings.manage');
+on('devices.capacity', (ctx) => capacityFor(ctx), 'settings.manage');
+on('devices.identity', (ctx) => identityFor(ctx), 'settings.manage');
+on('devices.approve', (ctx, deviceId: string, note?: string) => approveDeviceFor(ctx, deviceId, note), 'settings.manage');
+on('devices.reject', (ctx, deviceId: string, note?: string) => rejectDeviceFor(ctx, deviceId, note), 'settings.manage');
+on('devices.revoke', (ctx, deviceId: string, reason: string) => revokeDeviceFor(ctx, deviceId, reason), 'settings.manage');
+on('devices.rename', (ctx, deviceId: string, name: string) => renameDeviceFor(ctx, deviceId, name), 'settings.manage');
+on(
+  'devices.pairingCode',
+  (ctx, opts: { ttlMs?: number } = {}) => {
+    const settings = getSettings(ctx.db);
+    return pairingCodeFor(ctx, {
+      ttlMs: opts.ttlMs,
+      hostUrl: settings.lan_host_url,
+      port: settings.lan_port ?? 4747,
+    });
   },
   'settings.manage',
 );

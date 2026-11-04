@@ -999,6 +999,177 @@ function AppearanceForm({
   );
 }
 
+
+interface DeviceRow {
+  device_id: string;
+  device_name: string;
+  role: string;
+  status: 'pending' | 'approved' | 'rejected' | 'revoked';
+  last_seen: string | null;
+  requested_at: string;
+  license_id: string | null;
+}
+
+const DEVICE_STATUS_LABEL: Record<DeviceRow['status'], string> = {
+  pending: 'অনুমোদনের অপেক্ষায়',
+  approved: 'অনুমোদিত',
+  rejected: 'প্রত্যাখ্যাত',
+  revoked: 'বাতিল',
+};
+
+/**
+ * Device administration (Phase 3, Milestone E).
+ *
+ * Approving a PC is an explicit administrator decision — nothing here is automatic,
+ * and the capacity guard comes from the licence, not from this screen. The pairing
+ * code is single-use and expires; the QR payload carries only the address, the code
+ * and the certificate pin (never a shop token or a password).
+ */
+function DeviceAdminPanel() {
+  const ui = useUI();
+  const [devices, setDevices] = useState<DeviceRow[]>([]);
+  const [capacity, setCapacity] = useState<{ licensed: number; approved: number; available: number } | null>(null);
+  const [identity, setIdentity] = useState<{ store_id: string; server_id: string; short_fingerprint: string | null } | null>(null);
+  const [pairing, setPairing] = useState<{ code: string; expires_at: string } | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const load = async () => {
+    try {
+      const [list, cap, id] = await Promise.all([
+        call('devices.list'),
+        call('devices.capacity'),
+        call('devices.identity'),
+      ]);
+      setDevices(Array.isArray(list) ? (list as DeviceRow[]) : []);
+      setCapacity(cap as typeof capacity);
+      setIdentity(id as typeof identity);
+    } catch {
+      // Not signed in as an administrator, or this build has no device layer yet.
+    }
+  };
+
+  useEffect(() => {
+    void load();
+  }, []);
+
+  const act = async (fn: () => Promise<unknown>, message: string) => {
+    setBusy(true);
+    try {
+      await fn();
+      ui.success(message);
+      await load();
+    } catch (err) {
+      ui.error('ব্যর্থ', (err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const pending = devices.filter((d) => d.status === 'pending');
+
+  return (
+    <div style={{ marginTop: 20 }}>
+      <div className="section-title">ডিভাইস ব্যবস্থাপনা</div>
+      {capacity ? (
+        <div className="small muted">
+          লাইসেন্সে {capacity.licensed}টি ডিভাইস · অনুমোদিত {capacity.approved}টি · খালি {capacity.available}টি
+          {identity?.short_fingerprint ? ` · সার্টিফিকেট পিন ${identity.short_fingerprint}` : ''}
+        </div>
+      ) : null}
+
+      <div className="row" style={{ gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
+        <Button
+          size="sm"
+          variant="ghost"
+          icon="plus"
+          loading={busy}
+          onClick={() =>
+            void act(async () => {
+              const result = (await call('devices.pairingCode', { ttlMs: 10 * 60 * 1000 })) as {
+                code: string;
+                expires_at: string;
+              };
+              setPairing({ code: result.code, expires_at: result.expires_at });
+            }, 'পেয়ারিং কোড তৈরি হয়েছে (১০ মিনিট)')
+          }
+        >
+          পেয়ারিং কোড
+        </Button>
+        <Button size="sm" variant="ghost" icon="refresh" onClick={() => void load()}>
+          রিফ্রেশ
+        </Button>
+      </div>
+
+      {pairing ? (
+        <div className="card" style={{ marginTop: 10, padding: 12 }}>
+          <div className="small muted">একবার ব্যবহারযোগ্য কোড — {dateTime(pairing.expires_at)} পর্যন্ত</div>
+          <code style={{ fontSize: 16, wordBreak: 'break-all' }}>{pairing.code}</code>
+        </div>
+      ) : null}
+
+      {pending.length ? (
+        <div style={{ marginTop: 12 }}>
+          <strong className="small">অনুমোদনের অপেক্ষায় ({pending.length})</strong>
+          {pending.map((device) => (
+            <div key={device.device_id} className="row" style={{ gap: 8, marginTop: 6, flexWrap: 'wrap' }}>
+              <span>{device.device_name}</span>
+              <span className="small muted">{device.device_id}</span>
+              <Button
+                size="sm"
+                icon="check"
+                disabled={busy}
+                onClick={() => void act(() => call('devices.approve', device.device_id), 'ডিভাইস অনুমোদিত হয়েছে')}
+              >
+                অনুমোদন
+              </Button>
+              <Button
+                size="sm"
+                variant="ghost"
+                icon="close"
+                disabled={busy}
+                onClick={() => void act(() => call('devices.reject', device.device_id, 'প্রশাসক প্রত্যাখ্যান করেছেন'), 'ডিভাইস প্রত্যাখ্যাত')}
+              >
+                প্রত্যাখ্যান
+              </Button>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div className="small muted" style={{ marginTop: 10 }}>
+          অনুমোদনের অপেক্ষায় কোনো ডিভাইস নেই।
+        </div>
+      )}
+
+      <div style={{ marginTop: 12 }}>
+        {devices.map((device) => (
+          <div key={device.device_id} className="row" style={{ justifyContent: 'space-between', gap: 8, flexWrap: 'wrap', padding: '4px 0' }}>
+            <span>
+              {device.device_name} <span className="small muted">{device.device_id}</span>
+            </span>
+            <span className="row" style={{ gap: 8 }}>
+              <span className="badge" data-tone={device.status === 'approved' ? 'success' : device.status === 'revoked' ? 'danger' : 'warning'}>
+                {DEVICE_STATUS_LABEL[device.status]}
+              </span>
+              <span className="small muted">{device.last_seen ? dateTime(device.last_seen) : 'কখনো সংযুক্ত হয়নি'}</span>
+              {device.status === 'approved' || device.status === 'pending' ? (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  icon="close"
+                  disabled={busy}
+                  onClick={() => void act(() => call('devices.revoke', device.device_id, 'প্রশাসক বাতিল করেছেন'), 'ডিভাইস বাতিল হয়েছে')}
+                >
+                  বাতিল
+                </Button>
+              ) : null}
+            </span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function NetworkForm({
   settings,
   patch,
@@ -1151,6 +1322,8 @@ function NetworkForm({
           সার্ভার তথ্য পাওয়া যায়নি — অ্যাপ রিস্টার্ট করুন।
         </div>
       )}
+
+      <DeviceAdminPanel />
 
       <div className="section-title" style={{ marginTop: 20 }}>
         কাস্টমার ডিসপ্লে
