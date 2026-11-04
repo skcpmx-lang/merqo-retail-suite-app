@@ -55,6 +55,10 @@ export interface SaleInput {
   actor: { id: number; username: string };
   /** Set true by an authorised user to override the configured negative stock rule. */
   overrideNegativeStock?: boolean;
+  /** Set by an authorised user (pos.price_edit) to sell under the price floor. */
+  allowBelowMinPrice?: boolean;
+  /** Set by an authorised user (pos.discount) to exceed a product's max discount. */
+  allowDiscountOverride?: boolean;
 }
 
 export interface SaleComputation {
@@ -128,8 +132,25 @@ export function computeSale(
       const perBase = breakdown.final / primaryFactor;
       unitPrice = Math.max(0, Math.round(perBase * unit.factor_milli));
     }
+    // Price floor and per-product discount cap are enforced here so no caller
+    // (POS screen, import, script) can bypass them.
+    const minSale = Math.max(0, Number((product as any).min_sale_price ?? 0));
+    if (minSale > 0 && unitPrice < minSale && !input.allowBelowMinPrice) {
+      throw new Error(
+        `"${product.name}" এর সর্বনিম্ন বিক্রয়মূল্য ${(minSale / 100).toFixed(2)} টাকা — এর কম দামে বিক্রয়ের অনুমতি নেই।`,
+      );
+    }
     const gross = lineValuePaisa(qtyMilli, unitPrice);
     let discount = Math.round(line.discountPaisa ?? 0);
+    const maxPct = (product as any).max_discount_percent_x100;
+    if (maxPct != null && maxPct >= 0 && !input.allowDiscountOverride) {
+      const cap = Math.floor((gross * maxPct) / 10_000);
+      if (discount > cap) {
+        throw new Error(
+          `"${product.name}" এ সর্বোচ্চ ${(maxPct / 100).toFixed(2)}% ডিসকাউন্ট অনুমোদিত — অনুমতি ছাড়া বেশি দেওয়া যাবে না।`,
+        );
+      }
+    }
     if (discount < 0) throw new Error('লাইন ডিসকাউন্ট ঋণাত্মক হতে পারবে না।');
     if (discount > gross) discount = gross;
     const lineTotal = gross - discount;
@@ -294,6 +315,13 @@ export function createSale(db: Db, input: SaleInput): CreateSaleResult {
         line.costMicro,
         line.costTotal,
       );
+      const soldProduct = db
+        .prepare('SELECT is_service FROM products WHERE id = ?')
+        .get(line.productId) as { is_service: number } | undefined;
+      if (soldProduct?.is_service === 1) {
+        // Services have no inventory: nothing to deduct, nothing to consume.
+        continue;
+      }
       applyMovement(db, {
         productId: line.productId,
         type: 'sale',

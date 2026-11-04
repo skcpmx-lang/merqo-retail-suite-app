@@ -13,8 +13,8 @@ Live log so a new session can resume exactly here. Update at the end of every st
 | S3 inventory | **DONE (core)** | locations/godown, stock transfers (mirror-only, total untouched), physical count with posting, reorder + suggested qty with stated reason, WAC valuation, dead stock, serial/IMEI register + sell-once, bundles with value-preserving assembly; 11 tests |
 | S4 POS | **DONE (core + UI)** | hold/resume/cancel cart (F3/F4), quick-pick favourites (right-click to pin), split payment rows, credit note, exchange (walk-in + credit), permission-checked discounts/price edits, cash session + difference reporting |
 | S5 CRM | **DONE (core + UI)** | loyalty earn/redeem/reverse/expire/adjust with ledger, credit-limit enforcement in the write path, groups, price levels, CSV import/export, POS redemption; 11 tests |
-| S6 products | IN PROGRESS | |
-| S7 licensing | PENDING | |
+| S6 products | **DONE** | service/non-stock items (no stock movement), price floor + per-product discount cap enforced in the write path, variants with inherited pricing and own stock, multiple barcodes (string or object input), reorder quantity, price history; 6 tests |
+| S7 licensing | IN PROGRESS | |
 | S8 UI | PENDING | |
 | S9 reports | PENDING | |
 | S10 docs + release | PENDING | |

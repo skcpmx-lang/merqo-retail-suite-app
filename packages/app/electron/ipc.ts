@@ -79,6 +79,8 @@ import {
   createExpenseCategory,
   createPaymentMethod,
   createProduct,
+  createVariant,
+  listVariants,
   createPurchase,
   createPurchaseReturn,
   computePurchase,
@@ -431,6 +433,13 @@ on(
 
 on('products.list', (ctx, filter) => listProducts(ctx.db, filter), 'product.view');
 on('products.get', (ctx, id: number) => getProduct(ctx.db, id), 'product.view');
+on('products.variants', (ctx, id: number) => listVariants(ctx.db, id), 'product.view');
+on(
+  'products.createVariant',
+  (ctx, parentId: number, input) =>
+    createVariant(ctx.db, parentId, input, ctx.user ? { id: ctx.user.id, username: ctx.user.username } : null),
+  'product.manage',
+);
 on('products.byCode', (ctx, code: string) => findCodeAnywhere(ctx.db, code), 'product.view');
 on('products.priceHistory', (ctx, id: number) => listPriceHistory(ctx.db, id), 'product.view');
 on('products.counts', (ctx) => {
@@ -647,7 +656,13 @@ on(
     if (input.lines?.some((l: any) => l.unitPricePaisa) && !hasPermission(ctx.user, 'pos.price_edit')) {
       throw new Error('বিক্রয়ের সময় দাম পরিবর্তনের অনুমতি আপনার নেই।');
     }
-    const result = createSale(ctx.db, { ...input, actor: { id: ctx.user!.id, username: ctx.user!.username } });
+    const result = createSale(ctx.db, {
+      ...input,
+      // Overrides are granted by permission, never by the request itself.
+      allowBelowMinPrice: hasPermission(ctx.user, 'pos.price_edit'),
+      allowDiscountOverride: hasPermission(ctx.user, 'pos.discount'),
+      actor: { id: ctx.user!.id, username: ctx.user!.username },
+    });
     return { ...result, sale: getSale(ctx.db, result.saleId) };
   },
   'pos.sell',
