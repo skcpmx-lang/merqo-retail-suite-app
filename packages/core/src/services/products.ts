@@ -11,6 +11,8 @@ import { bengaliSortKey, foldForSearch, normalizeText } from '../domain/text.js'
 import type { DiscountType, Paged, Product, ProductWithMeta } from '../domain/types.js';
 import { audit } from './audit.js';
 import { applyMovement } from './inventory.js';
+import { isPostingEnabled, postOpeningBalance } from './accounting.js';
+import { costValuePaisa } from '../domain/money.js';
 
 type Actor = { id: number; username: string } | null | undefined;
 
@@ -140,10 +142,16 @@ export function findByCode(db: Db, code: string): ProductWithMeta | null {
   return loose ? decoratePrice(loose) : null;
 }
 
-export interface BarcodeInput {
-  code: string;
-  kind?: 'barcode' | 'qr';
-  isPrimary?: boolean;
+/** A barcode entry; a plain string is also accepted and treated as a barcode. */
+export type BarcodeInput = string | { code: string; kind?: 'barcode' | 'qr'; isPrimary?: boolean };
+
+function normalizeBarcodeInput(b: BarcodeInput): { code: string; kind: 'barcode' | 'qr'; isPrimary: boolean } {
+  const raw = typeof b === 'string' ? { code: b } : b;
+  return {
+    code: normalizeText(raw.code ?? ''),
+    kind: raw.kind === 'qr' ? 'qr' : 'barcode',
+    isPrimary: Boolean((raw as any).isPrimary),
+  };
 }
 
 export interface ProductInput {
@@ -174,6 +182,14 @@ export interface ProductInput {
   variantAttributes?: Record<string, string> | null;
   barcodes?: BarcodeInput[];
   isActive?: boolean;
+  /** Service / non-stock item: never touches inventory. */
+  isService?: boolean;
+  /** How much to buy when the reorder level is hit (base milli). */
+  reorderQtyMilli?: number;
+  /** Hard price floor for POS overrides (paisa, per primary unit). */
+  minSalePricePaisa?: number | null;
+  /** Maximum line discount % (×100) allowed without an admin override. */
+  maxDiscountPercentX100?: number | null;
 }
 
 function validateProductInput(db: Db, input: ProductInput, id?: number): void {
@@ -209,14 +225,14 @@ function validateProductInput(db: Db, input: ProductInput, id?: number): void {
       .get(normalizeText(input.productCode), id ?? null);
     if (dup) throw new Error('এই প্রোডাক্ট কোড আগেই ব্যবহৃত হয়েছে।');
   }
-  for (const bc of input.barcodes ?? []) {
-    const code = normalizeText(bc.code);
+  for (const raw of input.barcodes ?? []) {
+    const bc = normalizeBarcodeInput(raw);
+    const code = bc.code;
     if (!code) continue;
     const dup = db
       .prepare('SELECT product_id FROM product_barcodes WHERE code = ? AND product_id IS NOT ?')
       .get(code, id ?? null) as { product_id: number } | undefined;
     if (dup) throw new Error(`বারকোড "${code}" অন্য প্রোডাক্টে ব্যবহৃত হচ্ছে।`);
-    if (bc.kind && bc.kind === 'qr' && !code) throw new Error('QR ডাটা খালি হতে পারবে না।');
   }
 }
 
@@ -241,7 +257,8 @@ function buildSearchText(db: Db, input: ProductInput, barcodes: string[]): strin
 
 function saveBarcodes(db: Db, productId: number, barcodes: BarcodeInput[]): void {
   const clean = barcodes
-    .map((b) => ({ code: normalizeText(b.code), kind: b.kind ?? 'barcode', isPrimary: b.isPrimary ? 1 : 0 }))
+    .map(normalizeBarcodeInput)
+    .map((b) => ({ code: b.code, kind: b.kind, isPrimary: b.isPrimary ? 1 : 0 }))
     .filter((b) => b.code);
   const seen = new Set<string>();
   for (const b of clean) {
@@ -264,7 +281,7 @@ export function createProduct(db: Db, input: ProductInput, actor?: Actor): Produ
   const unitId = input.unitId ?? null;
   if (!unitId) throw new Error('স্টক ইউনিট নির্বাচন করতে হবে।');
   const primaryUnitId = input.primaryUnitId ?? unitId;
-  const search = buildSearchText(db, input, (input.barcodes ?? []).map((b) => b.code));
+  const search = buildSearchText(db, input, (input.barcodes ?? []).map((b) => normalizeBarcodeInput(b).code));
 
   const create = db.transaction(() => {
     const res = db
@@ -274,8 +291,8 @@ export function createProduct(db: Db, input: ProductInput, actor?: Actor): Produ
           purchase_price, sale_price, wholesale_price, retail_price, special_price, discount_type, discount_value,
           stock_base_milli, min_stock_base_milli, opening_stock_base_milli, opening_cost_micro, avg_cost_micro,
           vat_percent_x100, description, image_path, batch_tracked, expiry_tracked, variant_parent_id, variant_attributes,
-          is_active, created_at, updated_at)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?,?,?,?,?,?,?,?,?,?,?,1,?,?)`,
+          is_active, is_service, reorder_qty_base_milli, min_sale_price, max_discount_percent_x100, created_at, updated_at)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?,?,?,?,?,?,?,?,?,?,?,1,?,?,?,?,?,?)`,
       )
       .run(
         normalizeText(input.name),
@@ -306,6 +323,10 @@ export function createProduct(db: Db, input: ProductInput, actor?: Actor): Produ
         input.expiryTracked ? 1 : 0,
         input.variantParentId ?? null,
         input.variantAttributes ? JSON.stringify(input.variantAttributes) : null,
+        input.isService ? 1 : 0,
+        assertSafeInt(input.reorderQtyMilli ?? 0),
+        input.minSalePricePaisa ?? null,
+        input.maxDiscountPercentX100 ?? null,
         now,
         now,
       );
@@ -320,6 +341,16 @@ export function createProduct(db: Db, input: ProductInput, actor?: Actor): Produ
         userId: actor?.id ?? null,
         incomingCostMicro: input.openingCostMicro ?? 0,
       });
+      if (isPostingEnabled(db)) {
+        const value = costValuePaisa(input.openingStockMilli!, Math.max(0, input.openingCostMicro ?? 0));
+        postOpeningBalance(db, {
+          source: 'opening_stock',
+          sourceId: id,
+          amount: value,
+          kind: 'asset',
+          memo: `ওপেনিং স্টক: ${input.name}`,
+        });
+      }
     }
     return id;
   });
@@ -340,7 +371,7 @@ export function updateProduct(db: Db, id: number, input: ProductInput, actor?: A
   if (!existing) throw new Error('প্রোডাক্ট পাওয়া যায়নি।');
   validateProductInput(db, input, id);
   const now = nowLocal();
-  const search = buildSearchText(db, input, (input.barcodes ?? []).map((b) => b.code));
+  const search = buildSearchText(db, input, (input.barcodes ?? []).map((b) => normalizeBarcodeInput(b).code));
   const priceFields: { field: keyof Product; label: string }[] = [
     { field: 'purchase_price', label: 'purchase_price' },
     { field: 'sale_price', label: 'sale_price' },
@@ -363,7 +394,8 @@ export function updateProduct(db: Db, id: number, input: ProductInput, actor?: A
          brand_id = ?, unit_id = ?, primary_unit_id = ?, purchase_price = ?, sale_price = ?, wholesale_price = ?,
          retail_price = ?, special_price = ?, discount_type = ?, discount_value = ?, min_stock_base_milli = ?,
          vat_percent_x100 = ?, description = ?, image_path = ?, batch_tracked = ?, expiry_tracked = ?,
-         variant_parent_id = ?, variant_attributes = ?, is_active = ?, updated_at = ?
+         variant_parent_id = ?, variant_attributes = ?, is_active = ?, is_service = ?,
+         reorder_qty_base_milli = ?, min_sale_price = ?, max_discount_percent_x100 = ?, updated_at = ?
        WHERE id = ?`,
     ).run(
       normalizeText(input.name),
@@ -392,6 +424,12 @@ export function updateProduct(db: Db, id: number, input: ProductInput, actor?: A
       input.variantParentId ?? null,
       input.variantAttributes ? JSON.stringify(input.variantAttributes) : null,
       input.isActive === false ? 0 : 1,
+      input.isService ? 1 : 0,
+      assertSafeInt(input.reorderQtyMilli ?? (existing as any).reorder_qty_base_milli ?? 0),
+      input.minSalePricePaisa === undefined ? ((existing as any).min_sale_price ?? null) : input.minSalePricePaisa,
+      input.maxDiscountPercentX100 === undefined
+        ? ((existing as any).max_discount_percent_x100 ?? null)
+        : input.maxDiscountPercentX100,
       now,
       id,
     );
@@ -589,4 +627,52 @@ export function listProductLabels(db: Db, ids: number[]): ProductLabel[] {
     code: row.barcode ?? row.sku ?? row.product_code ?? null,
     qr_code: row.qr ?? `SAUDA:${row.id}`,
   }));
+}
+
+/* ------------------------------------------------------------------ *
+ * Variants (size / colour / pack of the same parent product)
+ * ------------------------------------------------------------------ */
+
+export function listVariants(db: Db, parentId: number): ProductWithMeta[] {
+  return db
+    .prepare('SELECT * FROM products WHERE variant_parent_id = ? ORDER BY name_sort')
+    .all(parentId)
+    .map((r) => decoratePrice(r as ProductWithMeta));
+}
+
+/**
+ * Create a variant of an existing product. Everything (unit, category, brand,
+ * price levels) is inherited unless overridden, and the parent's stock is NOT
+ * copied — a variant tracks its own inventory.
+ */
+export function createVariant(
+  db: Db,
+  parentId: number,
+  input: Partial<ProductInput> & { attributes?: Record<string, string> },
+  actor?: Actor,
+): ProductWithMeta {
+  const parent = getProduct(db, parentId);
+  if (!parent) throw new Error('মূল প্রোডাক্ট পাওয়া যায়নি।');
+  if (parent.variant_parent_id) throw new Error('একটি ভ্যারিয়েন্টের আবার ভ্যারিয়েন্ট তৈরি করা যাবে না।');
+  const attributeText = Object.entries(input.attributes ?? {})
+    .map(([k, v]) => `${k}: ${v}`)
+    .join(', ');
+  return createProduct(
+    db,
+    {
+      ...input,
+      name: input.name ?? `${parent.name} — ${attributeText || 'ভ্যারিয়েন্ট'}`,
+      unitId: input.unitId ?? parent.unit_id,
+      primaryUnitId: input.primaryUnitId ?? parent.primary_unit_id ?? parent.unit_id,
+      categoryId: input.categoryId ?? parent.category_id,
+      subcategoryId: input.subcategoryId ?? parent.subcategory_id,
+      brandId: input.brandId ?? parent.brand_id,
+      purchasePrice: input.purchasePrice ?? parent.purchase_price,
+      salePrice: input.salePrice ?? parent.sale_price,
+      variantParentId: parentId,
+      variantAttributes: input.attributes ?? null,
+      isService: input.isService ?? (parent as any).is_service === 1,
+    },
+    actor,
+  );
 }

@@ -23,7 +23,7 @@ interface ReportMeta {
   id: string;
   title: string;
   description: string;
-  group: 'sales' | 'profit' | 'purchase' | 'expense' | 'party' | 'stock' | 'cash' | 'return';
+  group: 'sales' | 'profit' | 'purchase' | 'expense' | 'party' | 'stock' | 'cash' | 'return' | 'accounting' | 'crm' | 'ops';
   needsRange: boolean;
 }
 
@@ -37,6 +37,9 @@ const GROUPS: { id: string; label: string; icon: string }[] = [
   { id: 'stock', label: 'স্টক', icon: 'stock' },
   { id: 'cash', label: 'ক্যাশ ও পেমেন্ট', icon: 'cash' },
   { id: 'return', label: 'রিটার্ন', icon: 'return' },
+  { id: 'accounting', label: 'হিসাব (লেজার)', icon: 'shield' },
+  { id: 'crm', label: 'CRM ও লয়্যালটি', icon: 'users' },
+  { id: 'ops', label: 'স্টক অপারেশন', icon: 'box' },
 ];
 
 const PRESETS = [

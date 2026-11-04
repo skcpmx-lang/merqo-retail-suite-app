@@ -53,6 +53,10 @@ interface EditorState {
   batchTracked: boolean;
   expiryTracked: boolean;
   isActive: boolean;
+  isService: boolean;
+  minSalePricePaisa: number;
+  maxDiscountPercentX100: number | '';
+  reorderQtyMilli: number;
 }
 
 const EMPTY_EDITOR: EditorState = {
@@ -80,6 +84,10 @@ const EMPTY_EDITOR: EditorState = {
   batchTracked: false,
   expiryTracked: false,
   isActive: true,
+  isService: false,
+  minSalePricePaisa: 0,
+  maxDiscountPercentX100: '',
+  reorderQtyMilli: 0,
 };
 
 export function ProductsPage({ can }: { can: (perm?: string) => boolean }) {
@@ -189,6 +197,11 @@ export function ProductsPage({ can }: { can: (perm?: string) => boolean }) {
         batchTracked: full.batch_tracked === 1,
         expiryTracked: full.expiry_tracked === 1,
         isActive: full.is_active === 1,
+        isService: (full as any).is_service === 1,
+        minSalePricePaisa: (full as any).min_sale_price ?? 0,
+        maxDiscountPercentX100:
+          (full as any).max_discount_percent_x100 == null ? '' : Number((full as any).max_discount_percent_x100) / 100,
+        reorderQtyMilli: (full as any).reorder_qty_base_milli ?? 0,
       });
     } catch (err) {
       ui.error('প্রোডাক্ট লোড ব্যর্থ', (err as Error).message);
@@ -225,6 +238,10 @@ export function ProductsPage({ can }: { can: (perm?: string) => boolean }) {
         batchTracked: editor.batchTracked,
         expiryTracked: editor.expiryTracked,
         isActive: editor.isActive,
+        isService: editor.isService,
+        reorderQtyMilli: editor.reorderQtyMilli,
+        minSalePricePaisa: editor.minSalePricePaisa > 0 ? editor.minSalePricePaisa : null,
+        maxDiscountPercentX100: editor.maxDiscountPercentX100 === '' ? null : Number(editor.maxDiscountPercentX100) * 100,
       };
       if (editor.id) {
         await call('products.update', editor.id, payload);
@@ -583,6 +600,25 @@ function ProductEditor({
 }) {
   const [tab, setTab] = useState<'basic' | 'price' | 'stock' | 'extra'>('basic');
   const set = (patch: Partial<EditorState>) => setEditor({ ...editor, ...patch });
+  const [variants, setVariants] = useState<any[]>([]);
+  const [variantOpen, setVariantOpen] = useState(false);
+  const [variantName, setVariantName] = useState('');
+  const [variantAttr, setVariantAttr] = useState('');
+  const [variantPrice, setVariantPrice] = useState(0);
+  const [variantStock, setVariantStock] = useState(0);
+
+  const loadVariants = async (id: number) => {
+    try {
+      setVariants(await call<any[]>('products.variants', id));
+    } catch {
+      setVariants([]);
+    }
+  };
+
+  useEffect(() => {
+    if (editor.id) void loadVariants(editor.id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editor.id]);
   const margin =
     editor.purchasePrice > 0 && editor.salePrice > 0
       ? ((editor.salePrice - editor.purchasePrice) / editor.salePrice) * 100
@@ -596,6 +632,11 @@ function ProductEditor({
       onClose={onClose}
       footer={
         <>
+          {editor.id ? (
+            <Button icon="grid" onClick={() => setVariantOpen(true)}>
+              ভ্যারিয়েন্ট ({variants.length})
+            </Button>
+          ) : null}
           <Button onClick={onClose}>বাতিল</Button>
           <Button variant="primary" loading={saving} onClick={onSave} icon="check">
             সংরক্ষণ
@@ -747,18 +788,115 @@ function ProductEditor({
           <Field label="সর্বনিম্ন স্টক (অ্যালার্ট)">
             <QtyInput value={editor.minStockMilli} onChange={(v) => set({ minStockMilli: v })} />
           </Field>
+          <Field label="রিঅর্ডার পরিমাণ" hint="স্টক কমলে কত কিনতে হবে (প্রাইমারি ইউনিট)">
+            <QtyInput value={editor.reorderQtyMilli} onChange={(v) => set({ reorderQtyMilli: v })} />
+          </Field>
           <div className="span-2">
-            <div className="row" style={{ gap: 18 }}>
+            <div className="row" style={{ gap: 18, flexWrap: 'wrap' }}>
               <Switch checked={editor.batchTracked} onChange={(v) => set({ batchTracked: v })} label="ব্যাচ ট্র্যাকিং" />
               <Switch checked={editor.expiryTracked} onChange={(v) => set({ expiryTracked: v })} label="মেয়াদ ট্র্যাকিং" />
+              <Switch checked={editor.isService} onChange={(v) => set({ isService: v })} label="সেবা / নন-স্টক" />
               <Switch checked={editor.isActive} onChange={(v) => set({ isActive: v })} label="সক্রিয়" />
             </div>
+            {editor.isService ? (
+              <div className="tiny muted" style={{ marginTop: 4 }}>
+                সেবার ক্ষেত্রে স্টক গণনা হবে না — যেমন ডেলিভারি চার্জ, সার্ভিসিং ফি।
+              </div>
+            ) : null}
           </div>
         </div>
       ) : null}
 
+      {variantOpen && editor.id ? (
+        <Modal
+          title={`ভ্যারিয়েন্ট — ${editor.name}`}
+          sub="সাইজ/কালার/প্যাক অনুযায়ী আলাদা স্টক ও দাম"
+          size="md"
+          onClose={() => setVariantOpen(false)}
+          footer={<Button onClick={() => setVariantOpen(false)}>বন্ধ</Button>}
+        >
+          <div className="stack" style={{ gap: 10 }}>
+            {variants.length === 0 ? (
+              <span className="small muted">এই প্রোডাক্টের কোনো ভ্যারিয়েন্ট নেই।</span>
+            ) : (
+              variants.map((v) => (
+                <div key={v.id} className="row" style={{ justifyContent: 'space-between' }}>
+                  <span>{v.name}</span>
+                  <span className="num small">
+                    {money(v.sale_price)} • স্টক {qty(v.stock_base_milli)}
+                  </span>
+                </div>
+              ))
+            )}
+            <div className="form-grid">
+              <Field label="ভ্যারিয়েন্ট নাম" span={2}>
+                <TextInput value={variantName} onChange={setVariantName} placeholder="যেমন: টি-শার্ট (L)" />
+              </Field>
+              <Field label="অ্যাট্রিবিউট" span={2}>
+                <TextInput value={variantAttr} onChange={setVariantAttr} placeholder="যেমন: সাইজ=L, কালার=নীল" />
+              </Field>
+              <Field label="বিক্রয়মূল্য">
+                <MoneyInput value={variantPrice} onChange={setVariantPrice} />
+              </Field>
+              <Field label="ওপেনিং স্টক">
+                <QtyInput value={variantStock} onChange={setVariantStock} />
+              </Field>
+              <div className="span-2">
+                <Button
+                  variant="primary"
+                  size="sm"
+                  disabled={!variantName.trim()}
+                  onClick={async () => {
+                    try {
+                      const attributes: Record<string, string> = {};
+                      variantAttr
+                        .split(',')
+                        .map((x) => x.trim())
+                        .filter(Boolean)
+                        .forEach((pair) => {
+                          const [k, ...rest] = pair.split('=');
+                          if (k && rest.length) attributes[k.trim()] = rest.join('=').trim();
+                        });
+                      await call('products.createVariant', editor.id, {
+                        name: variantName.trim(),
+                        attributes,
+                        salePrice: variantPrice || editor.salePrice,
+                        openingStockMilli: variantStock,
+                        openingCostMicro: editor.purchasePrice,
+                      });
+                      setVariantName('');
+                      setVariantAttr('');
+                      setVariantPrice(0);
+                      setVariantStock(0);
+                      await loadVariants(editor.id!);
+                    } catch (err) {
+                      window.alert((err as Error).message);
+                    }
+                  }}
+                >
+                  ভ্যারিয়েন্ট যোগ করুন
+                </Button>
+              </div>
+            </div>
+          </div>
+        </Modal>
+      ) : null}
+
       {tab === 'extra' ? (
         <div className="form-grid">
+          <Field label="সর্বনিম্ন বিক্রয়মূল্য" hint="এর কম দামে বিক্রি করতে অনুমতি লাগবে (০ = সীমা নেই)">
+            <MoneyInput value={editor.minSalePricePaisa} onChange={(v) => set({ minSalePricePaisa: v })} />
+          </Field>
+          <Field label="সর্বোচ্চ ডিসকাউন্ট (%)" hint="খালি রাখলে কোনো সীমা নেই">
+            <TextInput
+              value={editor.maxDiscountPercentX100}
+              onChange={(v) => {
+                const n = Number(v.replace(/[^\d.]/g, ''));
+                set({ maxDiscountPercentX100: v === '' ? '' : Number.isFinite(n) ? n : '' });
+              }}
+              placeholder="যেমন: 10"
+            />
+          </Field>
           <Field label="বারকোড (কমা দিয়ে একাধিক)" span={2} hint="স্ক্যানারে ব্যবহারযোগ্য কোড">
             <TextInput value={editor.barcodes} onChange={(v) => set({ barcodes: v })} placeholder="8901234567890, 123456" />
           </Field>

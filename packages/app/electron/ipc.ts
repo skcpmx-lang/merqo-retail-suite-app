@@ -3,11 +3,71 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {
   ALL_PERMISSIONS,
+  assembleBundle,
+  balanceSheet,
+  bundleCapacity,
+  cancelHeldSale,
+  cashBook,
+  createAccount,
+  createCreditNote,
+  createExchange,
+  createLocation,
+  createStockCount,
+  createTransfer,
+  dayBook,
+  deadStock,
+  generalLedger,
+  getBundle,
+  getHeldSale,
+  holdSale,
+  inventoryValuation,
+  journalEntries,
+  listAccounts,
+  listFavourites,
+  listHeldSales,
+  listLocations,
+  listSerials,
+  listStockCounts,
+  listTransfers,
+  locationStock,
+  markSerialsSold,
+  posQuickPicks,
+  profitAndLoss,
+  postStockCount,
+  reconcile,
+  registerSerials,
+  reorderSuggestions,
+  resumeHeldSale,
+  setBundle,
+  setCountedQty,
+  stockCountItems,
+  toggleFavourite,
+  transferItems,
+  trialBalance,
+  unbalancedEntries,
+  updateAccount,
+  updateLocation,
+  voidStockCount,
+  postManualEntry,
   escapeHtml,
   formatPaisa,
   activate,
   adjustStock,
   appInfo,
+  adjustLoyaltyPoints,
+  assignCustomerGroup,
+  creditCheck,
+  customerPriceLevel,
+  customersToCsv,
+  earnLoyaltyForSale,
+  expireLoyaltyPoints,
+  importCustomersCsv,
+  listCustomerGroups,
+  loyaltyHistory,
+  loyaltySummary,
+  redeemLoyalty,
+  setCreditLimit,
+  setCustomerPriceLevel,
   changeOwnPassword,
   closeCashSession,
   commitImport,
@@ -19,6 +79,8 @@ import {
   createExpenseCategory,
   createPaymentMethod,
   createProduct,
+  createVariant,
+  listVariants,
   createPurchase,
   createPurchaseReturn,
   computePurchase,
@@ -371,6 +433,13 @@ on(
 
 on('products.list', (ctx, filter) => listProducts(ctx.db, filter), 'product.view');
 on('products.get', (ctx, id: number) => getProduct(ctx.db, id), 'product.view');
+on('products.variants', (ctx, id: number) => listVariants(ctx.db, id), 'product.view');
+on(
+  'products.createVariant',
+  (ctx, parentId: number, input) =>
+    createVariant(ctx.db, parentId, input, ctx.user ? { id: ctx.user.id, username: ctx.user.username } : null),
+  'product.manage',
+);
 on('products.byCode', (ctx, code: string) => findCodeAnywhere(ctx.db, code), 'product.view');
 on('products.priceHistory', (ctx, id: number) => listPriceHistory(ctx.db, id), 'product.view');
 on('products.counts', (ctx) => {
@@ -406,6 +475,142 @@ on('inventory.low', (ctx, limit?: number) => lowStockProducts(ctx.db, limit ?? 5
 on('inventory.out', (ctx, limit?: number) => outOfStockProducts(ctx.db, limit ?? 50), 'product.view');
 on('inventory.expiring', (ctx, days?: number) => expiringBatches(ctx.db, days ?? 60), 'product.view');
 on('inventory.stockValue', (ctx) => stockValuePaisa(ctx.db), 'product.view');
+
+/* ------------------------------------------------------------------ */
+/* Locations, transfers, counts, valuation (v1.0.1)                   */
+/* ------------------------------------------------------------------ */
+
+on('locations.list', (ctx) => listLocations(ctx.db), 'product.view');
+on(
+  'locations.create',
+  (ctx, input) => createLocation(ctx.db, input, ctx.user ? { id: ctx.user.id, username: ctx.user.username } : null),
+  'stock.adjust',
+);
+on(
+  'locations.update',
+  (ctx, id: number, input) =>
+    updateLocation(ctx.db, id, input, ctx.user ? { id: ctx.user.id, username: ctx.user.username } : null),
+  'stock.adjust',
+);
+on('locations.stock', (ctx, productId: number) => locationStock(ctx.db, productId), 'product.view');
+
+on('stock.transfers', (ctx, filter) => listTransfers(ctx.db, filter), 'product.view');
+on('stock.transferItems', (ctx, id: number) => transferItems(ctx.db, id), 'product.view');
+on(
+  'stock.transfer',
+  (ctx, input) =>
+    createTransfer(ctx.db, { ...input, actor: ctx.user ? { id: ctx.user.id, username: ctx.user.username } : null }),
+  'stock.transfer',
+);
+
+on('stock.counts', (ctx, filter) => listStockCounts(ctx.db, filter), 'product.view');
+on('stock.countItems', (ctx, id: number) => stockCountItems(ctx.db, id), 'product.view');
+on(
+  'stock.countCreate',
+  (ctx, input) =>
+    createStockCount(ctx.db, { ...input, actor: ctx.user ? { id: ctx.user.id, username: ctx.user.username } : null }),
+  'stock.count',
+);
+on('stock.countSetQty', (ctx, countId: number, productId: number, qty: number) => {
+  setCountedQty(ctx.db, countId, productId, qty);
+  return true;
+}, 'stock.count');
+on(
+  'stock.countPost',
+  (ctx, id: number) => postStockCount(ctx.db, id, ctx.user ? { id: ctx.user.id, username: ctx.user.username } : null),
+  'stock.count',
+);
+on(
+  'stock.countVoid',
+  (ctx, id: number) => {
+    voidStockCount(ctx.db, id, ctx.user ? { id: ctx.user.id, username: ctx.user.username } : null);
+    return true;
+  },
+  'stock.count',
+);
+
+on('stock.reorder', (ctx, opts) => reorderSuggestions(ctx.db, opts ?? {}), 'product.view');
+on('stock.valuation', (ctx, filter) => inventoryValuation(ctx.db, filter ?? {}), 'product.view');
+on('stock.dead', (ctx, days?: number) => deadStock(ctx.db, days ?? 60), 'product.view');
+
+on('serials.list', (ctx, filter) => listSerials(ctx.db, filter), 'product.view');
+on(
+  'serials.register',
+  (ctx, input) =>
+    registerSerials(ctx.db, { ...input, actor: ctx.user ? { id: ctx.user.id, username: ctx.user.username } : null }),
+  'product.manage',
+);
+on(
+  'serials.markSold',
+  (ctx, serials: string[], saleId: number) =>
+    markSerialsSold(ctx.db, serials, saleId, ctx.user ? { id: ctx.user.id, username: ctx.user.username } : null),
+  'pos.sell',
+);
+
+on('bundles.get', (ctx, parentId: number) => ({ lines: getBundle(ctx.db, parentId), capacity: bundleCapacity(ctx.db, parentId) }), 'product.view');
+on(
+  'bundles.set',
+  (ctx, parentId: number, lines) =>
+    setBundle(ctx.db, parentId, lines, ctx.user ? { id: ctx.user.id, username: ctx.user.username } : null),
+  'product.manage',
+);
+on(
+  'bundles.assemble',
+  (ctx, input) =>
+    assembleBundle(ctx.db, { ...input, actor: ctx.user ? { id: ctx.user.id, username: ctx.user.username } : null }),
+  'stock.adjust',
+);
+
+/* ------------------------------------------------------------------ */
+/* Double-entry accounting (v1.0.1)                                   */
+/* ------------------------------------------------------------------ */
+
+on('accounting.accounts', (ctx, opts) => listAccounts(ctx.db, opts ?? {}), 'accounting.view');
+on(
+  'accounting.createAccount',
+  (ctx, input) =>
+    createAccount(ctx.db, input, ctx.user ? { id: ctx.user.id, username: ctx.user.username } : null),
+  'accounting.manage',
+);
+on(
+  'accounting.updateAccount',
+  (ctx, id: number, input) =>
+    updateAccount(ctx.db, id, input, ctx.user ? { id: ctx.user.id, username: ctx.user.username } : null),
+  'accounting.manage',
+);
+on('accounting.trialBalance', (ctx, from?: string, to?: string) => trialBalance(ctx.db, { from, to }), 'accounting.view');
+on('accounting.profitAndLoss', (ctx, from: string, to: string) => profitAndLoss(ctx.db, { from, to }), 'accounting.view');
+on('accounting.balanceSheet', (ctx, asOf?: string) => balanceSheet(ctx.db, asOf ?? new Date().toISOString().slice(0, 10)), 'accounting.view');
+on('accounting.ledger', (ctx, accountId: number, from?: string, to?: string) => generalLedger(ctx.db, accountId, { from, to }), 'accounting.view');
+on('accounting.journal', (ctx, filter) => journalEntries(ctx.db, filter), 'accounting.view');
+on('accounting.dayBook', (ctx, date?: string) => dayBook(ctx.db, date ?? new Date().toISOString().slice(0, 10)), 'accounting.view');
+on('accounting.cashBook', (ctx, from: string, to: string) => cashBook(ctx.db, { from, to }), 'accounting.view');
+on('accounting.reconcile', (ctx, from?: string, to?: string) => reconcile(ctx.db, { from, to }), 'accounting.view');
+on('accounting.unbalanced', (ctx) => unbalancedEntries(ctx.db), 'accounting.view');
+on(
+  'accounting.manualEntry',
+  (ctx, input) =>
+    postManualEntry(ctx.db, { ...input, actor: ctx.user ? { id: ctx.user.id, username: ctx.user.username } : null }),
+  'accounting.manage',
+);
+
+/* ------------------------------------------------------------------ */
+/* POS extras: hold/resume, favourites, credit note, exchange         */
+/* ------------------------------------------------------------------ */
+
+on('pos.hold', (ctx, input) => holdSale(ctx.db, { ...input, actor: { id: ctx.user!.id, username: ctx.user!.username } }), 'pos.sell');
+on('pos.held', (ctx, status) => listHeldSales(ctx.db, status ?? 'held'), 'pos.sell');
+on('pos.heldOne', (ctx, id: number) => getHeldSale(ctx.db, id), 'pos.sell');
+on('pos.resume', (ctx, id: number) => resumeHeldSale(ctx.db, id, { id: ctx.user!.id, username: ctx.user!.username }), 'pos.sell');
+on('pos.cancelHold', (ctx, id: number, reason: string) => {
+  cancelHeldSale(ctx.db, id, reason, { id: ctx.user!.id, username: ctx.user!.username });
+  return true;
+}, 'pos.sell');
+on('pos.quickPicks', (ctx, limit?: number) => posQuickPicks(ctx.db, limit ?? 24), 'pos.sell');
+on('pos.favourites', (ctx) => listFavourites(ctx.db), 'pos.sell');
+on('pos.toggleFavourite', (ctx, productId: number) => toggleFavourite(ctx.db, productId), 'pos.sell');
+on('pos.creditNote', (ctx, input) => createCreditNote(ctx.db, { ...input, actor: { id: ctx.user!.id, username: ctx.user!.username } }), 'return.manage');
+on('pos.exchange', (ctx, input) => createExchange(ctx.db, { ...input, actor: { id: ctx.user!.id, username: ctx.user!.username } }), 'return.manage');
 on(
   'inventory.adjust',
   (ctx, input) =>
@@ -451,7 +656,13 @@ on(
     if (input.lines?.some((l: any) => l.unitPricePaisa) && !hasPermission(ctx.user, 'pos.price_edit')) {
       throw new Error('বিক্রয়ের সময় দাম পরিবর্তনের অনুমতি আপনার নেই।');
     }
-    const result = createSale(ctx.db, { ...input, actor: { id: ctx.user!.id, username: ctx.user!.username } });
+    const result = createSale(ctx.db, {
+      ...input,
+      // Overrides are granted by permission, never by the request itself.
+      allowBelowMinPrice: hasPermission(ctx.user, 'pos.price_edit'),
+      allowDiscountOverride: hasPermission(ctx.user, 'pos.discount'),
+      actor: { id: ctx.user!.id, username: ctx.user!.username },
+    });
     return { ...result, sale: getSale(ctx.db, result.saleId) };
   },
   'pos.sell',
@@ -589,6 +800,57 @@ on(
   'customers.receivePayment',
   (ctx, input) => receiveCustomerPayment(ctx.db, input, { id: ctx.user!.id, username: ctx.user!.username }),
   'customer.manage',
+);
+
+/* ------------------------------------------------------------------ */
+/* CRM: credit limits, groups, price levels, loyalty, CSV              */
+/* ------------------------------------------------------------------ */
+
+on('customers.creditCheck', (ctx, id: number, addingPaisa: number) => creditCheck(ctx.db, id, addingPaisa), 'customer.manage');
+on(
+  'customers.setCreditLimit',
+  (ctx, id: number, limitPaisa: number) =>
+    setCreditLimit(ctx.db, id, limitPaisa, ctx.user ? { id: ctx.user.id, username: ctx.user.username } : null),
+  'customer.manage',
+);
+on(
+  'customers.setGroup',
+  (ctx, id: number, group: string | null) =>
+    assignCustomerGroup(ctx.db, id, group, ctx.user ? { id: ctx.user.id, username: ctx.user.username } : null),
+  'customer.manage',
+);
+on('customers.groups', (ctx) => listCustomerGroups(ctx.db), 'customer.manage');
+on(
+  'customers.setPriceLevel',
+  (ctx, id: number, level: 'retail' | 'wholesale' | 'special') =>
+    setCustomerPriceLevel(ctx.db, id, level, ctx.user ? { id: ctx.user.id, username: ctx.user.username } : null),
+  'customer.manage',
+);
+on('customers.priceLevel', (ctx, id: number) => customerPriceLevel(ctx.db, id), 'customer.manage');
+on('customers.exportCsv', (ctx) => customersToCsv(ctx.db), 'customer.manage');
+on(
+  'customers.importCsv',
+  (ctx, csv: string) =>
+    importCustomersCsv(ctx.db, csv, ctx.user ? { id: ctx.user.id, username: ctx.user.username } : null),
+  'customer.manage',
+);
+on('loyalty.summary', (ctx, id: number) => loyaltySummary(ctx.db, id), 'customer.manage');
+on('loyalty.history', (ctx, id: number, limit?: number) => loyaltyHistory(ctx.db, id, limit ?? 200), 'customer.manage');
+on(
+  'loyalty.redeem',
+  (ctx, input) => redeemLoyalty(ctx.db, { ...input, actor: { id: ctx.user!.id, username: ctx.user!.username } }),
+  'loyalty.manage',
+);
+on(
+  'loyalty.adjust',
+  (ctx, input) => adjustLoyaltyPoints(ctx.db, { ...input, actor: { id: ctx.user!.id, username: ctx.user!.username } }),
+  'loyalty.manage',
+);
+on(
+  'loyalty.expire',
+  (ctx, days?: number) =>
+    expireLoyaltyPoints(ctx.db, days ?? 365, ctx.user ? { id: ctx.user.id, username: ctx.user.username } : null),
+  'loyalty.manage',
 );
 
 on('suppliers.list', (ctx, filter) => listSuppliers(ctx.db, filter), 'supplier.manage');

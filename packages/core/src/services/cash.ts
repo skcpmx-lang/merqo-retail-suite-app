@@ -2,6 +2,7 @@ import type { Db } from '../db/connection.js';
 import { nowLocal } from '../domain/datetime.js';
 import type { CashMovement, CashSession } from '../domain/types.js';
 import { audit } from './audit.js';
+import { isPostingEnabled, postCashMovement } from './accounting.js';
 
 type Actor = { id: number; username: string } | null | undefined;
 
@@ -99,19 +100,22 @@ export function addCashMovement(
 ): void {
   if (input.amount <= 0) return;
   const session = ensureOpenSession(db, input.userId);
-  db.prepare(
-    `INSERT INTO cash_movements (session_id, direction, amount_paisa, source, source_id, note, user_id, created_at)
-     VALUES (?,?,?,?,?,?,?,?)`,
-  ).run(
+  const res = db
+    .prepare(
+      `INSERT INTO cash_movements (session_id, direction, amount_paisa, source, source_id, note, user_id, created_at)
+       VALUES (?,?,?,?,?,?,?,?)`,
+    )
+    .run(
     session.id,
     input.direction,
     Math.round(input.amount),
     input.source,
     input.sourceId ?? null,
-    input.note ?? null,
-    input.userId,
-    nowLocal(),
-  );
+      input.note ?? null,
+      input.userId,
+      nowLocal(),
+    );
+  if (isPostingEnabled(db) && res.lastInsertRowid) postCashMovement(db, Number(res.lastInsertRowid));
 }
 
 export function closeCashSession(

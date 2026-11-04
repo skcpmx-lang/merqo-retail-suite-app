@@ -3,6 +3,7 @@ import { nowLocal } from '../domain/datetime.js';
 import type { Payment } from '../domain/types.js';
 import { audit } from './audit.js';
 import { addCashMovement } from './cash.js';
+import { isPostingEnabled, postPayment, reverseDocument } from './accounting.js';
 
 export interface InsertPaymentInput {
   kind: string;
@@ -67,6 +68,7 @@ export function insertPayment(db: Db, input: InsertPaymentInput): number {
       nowLocal(),
     );
   const paymentId = Number(res.lastInsertRowid);
+  if (isPostingEnabled(db) && !input.reversesId) postPayment(db, paymentId);
 
   if (input.affectsBalance) {
     if (input.partyType === 'customer' && input.customerId) {
@@ -165,6 +167,12 @@ export function reversePayment(
         source: 'manual_out',
         sourceId: reversalId,
         note: `পেমেন্ট বাতিল #${paymentId}`,
+      });
+    }
+    if (isPostingEnabled(db)) {
+      reverseDocument(db, p.direction === 'in' ? 'payment_in' : 'payment_out', paymentId, {
+        userId: actor.id,
+        memo: `পেমেন্ট বাতিল: ${reason}`,
       });
     }
     return reversalId;

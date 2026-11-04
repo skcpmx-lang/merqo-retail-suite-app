@@ -5,6 +5,7 @@ import type { Product, Purchase, PurchaseItem } from '../domain/types.js';
 import { audit } from './audit.js';
 import { ensureOpenSession } from './cash.js';
 import { applyMovement } from './inventory.js';
+import { isPostingEnabled, postPurchase, reverseDocument } from './accounting.js';
 import { nextDocumentNumber } from './invoice.js';
 import { insertPayment } from './payments.js';
 import { getSettings } from './settings.js';
@@ -252,6 +253,8 @@ export function createPurchase(db: Db, input: PurchaseInput): { purchaseId: numb
       entityId: purchaseId,
       details: { purchaseNo, total: computation.total, paid: computation.paid, due: computation.due },
     });
+    if (isPostingEnabled(db)) postPurchase(db, purchaseId);
+
     return { purchaseId, purchaseNo, computation };
   });
   return run();
@@ -365,6 +368,9 @@ export function voidPurchase(db: Db, purchaseId: number, reason: string, actor: 
     }
     db.prepare("UPDATE payments SET status = 'reversed' WHERE purchase_id = ? AND status = 'active'").run(purchaseId);
     db.prepare("UPDATE purchases SET status = 'voided' WHERE id = ?").run(purchaseId);
+    if (isPostingEnabled(db)) {
+      reverseDocument(db, 'purchase', purchaseId, { userId: actor.id, memo: `বাতিল: ${purchase.purchase_no} — ${reason}` });
+    }
     audit(db, {
       userId: actor.id,
       username: actor.username,

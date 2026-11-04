@@ -108,7 +108,30 @@
 
         <div class="card">
           <div class="card-head">
-            <h2>৪. ফলাফল</h2>
+            <h2>৪. ইস্যু ইতিহাস</h2>
+            <span id="history-count" class="tiny muted"></span>
+          </div>
+          <div class="card-body">
+            <p class="hint">
+              এই মেশিন থেকে যেসব লাইসেন্স দেওয়া হয়েছে তার তালিকা। রিভোক শুধু এখানে রেকর্ড হয় — গ্রাহকের অ্যাপ
+              অফলাইনে চলে, তাই পুরোনো ফাইল বাতিল করতে নতুন লাইসেন্স পাঠিয়ে দিতে হবে।
+            </p>
+            <div class="row">
+              <button id="btn-refresh-history" class="btn ghost sm">রিফ্রেশ</button>
+              <button id="btn-open-ledger" class="btn ghost sm">লেজার ফাইল দেখুন</button>
+            </div>
+            <div id="history" class="history-list"></div>
+            <div class="row" style="margin-top: 10px">
+              <input id="revoke-reason" type="text" placeholder="রিভোক / রি-ইস্যুর কারণ" />
+              <button id="btn-reissue" class="btn sm" disabled>রি-ইস্যু</button>
+              <button id="btn-revoke" class="btn danger sm" disabled>রিভোক</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <h2>৫. ফলাফল</h2>
             <span id="issue-status" class="tiny muted"></span>
           </div>
           <div class="card-body">

@@ -170,6 +170,14 @@ export interface Customer {
   is_active: 0 | 1;
   created_at: ISO;
   updated_at: ISO;
+  /** v1.0.1 fields (added by migration v2; 0 when not set). */
+  credit_limit_paisa?: number;
+  group_name?: string | null;
+  price_level?: 'retail' | 'wholesale' | 'special';
+  loyalty_points?: number;
+  birthday?: string | null;
+  visit_count?: number;
+  total_spent_paisa?: number;
 }
 
 export interface Supplier {
@@ -495,7 +503,30 @@ export type ReportId =
   | 'inventory_adjustment'
   | 'sales_detail'
   | 'purchase_detail'
-  | 'expense_detail';
+  | 'expense_detail'
+  /* v1.0.1 accounting */
+  | 'trial_balance'
+  | 'ledger_pl'
+  | 'balance_sheet'
+  | 'cash_flow'
+  | 'day_book'
+  | 'journal_list'
+  | 'account_balances'
+  /* v1.0.1 CRM */
+  | 'loyalty_report'
+  | 'credit_limit_report'
+  | 'customer_aging'
+  | 'supplier_aging'
+  /* v1.0.1 stock ops */
+  | 'stock_transfers'
+  | 'stock_count_variance'
+  | 'reorder_report'
+  | 'dead_stock'
+  | 'serial_register'
+  /* v1.0.1 sales analytics */
+  | 'hourly_sales'
+  | 'discount_report'
+  | 'tax_summary';
 
 export interface ReportFilter {
   from?: string;
@@ -563,6 +594,16 @@ export interface AppSettings {
   scan_increment_qty: 0 | 1;
   session_timeout_minutes: number;
   low_margin_warn_percent_x100: number;
+  // v1.0.1
+  loyalty_enabled: number;
+  loyalty_points_per_100: number;
+  loyalty_redeem_value_paisa: number;
+  loyalty_min_redeem_points: number;
+  credit_limit_enforced: number;
+  theme: string;
+  duplicate_sale_guard_seconds: number;
+  tax_register_enabled: number;
+  accounting_enabled: number;
 }
 
 export interface AppInfo {

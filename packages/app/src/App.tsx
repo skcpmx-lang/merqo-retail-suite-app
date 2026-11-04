@@ -11,6 +11,8 @@ import { DashboardPage } from './pages/Dashboard.js';
 import { POSPage } from './pages/POS.js';
 import { ProductsPage } from './pages/Products.js';
 import { InventoryPage } from './pages/Inventory.js';
+import { StockOpsPage } from './pages/StockOps.js';
+import { AccountingPage } from './pages/Accounting.js';
 import { PurchasesPage } from './pages/Purchases.js';
 import { SalesPage } from './pages/Sales.js';
 import { ReturnsPage } from './pages/Returns.js';
@@ -27,6 +29,8 @@ export type PageId =
   | 'pos'
   | 'products'
   | 'inventory'
+  | 'stockops'
+  | 'accounting'
   | 'purchases'
   | 'sales'
   | 'returns'
@@ -54,12 +58,14 @@ const NAV: NavEntry[] = [
   { id: 'sales', label: 'সেলস ও ইনভয়েস', icon: 'cart', group: 'প্রধান', perm: 'report.view', shortcut: 'Ctrl+2' },
   { id: 'products', label: 'প্রোডাক্ট', icon: 'product', group: 'ইনভেন্টরি', perm: 'product.view', shortcut: 'F3' },
   { id: 'inventory', label: 'স্টক ও সমন্বয়', icon: 'stock', group: 'ইনভেন্টরি', perm: 'product.view' },
+  { id: 'stockops', label: 'স্টক অপারেশন', icon: 'box', group: 'ইনভেন্টরি', perm: 'product.view' },
   { id: 'purchases', label: 'পারচেজ', icon: 'purchase', group: 'ইনভেন্টরি', perm: 'purchase.manage', shortcut: 'F4' },
   { id: 'returns', label: 'রিটার্ন ও রিফান্ড', icon: 'return', group: 'ইনভেন্টরি', perm: 'return.manage' },
   { id: 'customers', label: 'কাস্টমার ও বাকি', icon: 'users', group: 'পক্ষ', perm: 'customer.manage', shortcut: 'F5' },
   { id: 'suppliers', label: 'সাপ্লায়ার', icon: 'supplier', group: 'পক্ষ', perm: 'supplier.manage' },
   { id: 'expenses', label: 'এক্সপেন্স', icon: 'expense', group: 'হিসাব', perm: 'expense.manage' },
   { id: 'cash', label: 'ক্যাশ রেজিস্টার', icon: 'cash', group: 'হিসাব', perm: 'cash.manage' },
+  { id: 'accounting', label: 'হিসাব (ডাবল-এন্ট্রি)', icon: 'shield', group: 'হিসাব', perm: 'accounting.view' },
   { id: 'reports', label: 'রিপোর্ট', icon: 'report', group: 'হিসাব', perm: 'report.view', shortcut: 'F9' },
   { id: 'settings', label: 'সেটিংস', icon: 'settings', group: 'সিস্টেম', perm: 'settings.manage' },
   { id: 'backup', label: 'ব্যাকআপ ও রিস্টোর', icon: 'backup', group: 'সিস্টেম', perm: 'backup.manage' },
@@ -70,6 +76,8 @@ const PAGE_TITLES: Record<PageId, string> = {
   dashboard: 'ড্যাশবোর্ড',
   pos: 'বিক্রয় কাউন্টার (POS)',
   products: 'প্রোডাক্ট ব্যবস্থাপনা',
+  stockops: 'স্টক অপারেশন',
+  accounting: 'হিসাব (ডাবল-এন্ট্রি)',
   inventory: 'স্টক ও ইনভেন্টরি',
   purchases: 'পারচেজ ব্যবস্থাপনা',
   sales: 'সেলস ও ইনভয়েস',
@@ -364,6 +372,10 @@ function AppShell({
         return <ProductsPage can={can} />;
       case 'inventory':
         return <InventoryPage can={can} />;
+      case 'stockops':
+        return <StockOpsPage can={can} />;
+      case 'accounting':
+        return <AccountingPage can={can} />;
       case 'purchases':
         return <PurchasesPage can={can} />;
       case 'sales':

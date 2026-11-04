@@ -11,8 +11,11 @@ import type { Product, Sale, SaleItem } from '../domain/types.js';
 import { audit } from './audit.js';
 import { addCashMovement, ensureOpenSession } from './cash.js';
 import { applyMovement } from './inventory.js';
+import { isPostingEnabled, postSale, reverseDocument } from './accounting.js';
 import { nextDocumentNumber } from './invoice.js';
 import { insertPayment } from './payments.js';
+import { markSerialsSold } from './stock-ops.js';
+import { assertCreditLimit, customerPriceLevel, earnLoyaltyForSale, reverseLoyaltyForSale } from './crm.js';
 import { getSettings } from './settings.js';
 import { productPriceBreakdown, type PriceLevel } from './products.js';
 
@@ -26,6 +29,8 @@ export interface SaleLineInput {
   /** Line-level discount in poisa. */
   discountPaisa?: number | null;
   priceLevel?: PriceLevel;
+  /** Serial/IMEI numbers sold on this line (optional). */
+  serials?: string[];
 }
 
 export interface SalePaymentInput {
@@ -50,6 +55,10 @@ export interface SaleInput {
   actor: { id: number; username: string };
   /** Set true by an authorised user to override the configured negative stock rule. */
   overrideNegativeStock?: boolean;
+  /** Set by an authorised user (pos.price_edit) to sell under the price floor. */
+  allowBelowMinPrice?: boolean;
+  /** Set by an authorised user (pos.discount) to exceed a product's max discount. */
+  allowDiscountOverride?: boolean;
 }
 
 export interface SaleComputation {
@@ -92,6 +101,9 @@ export function computeSale(
   const lines: SaleComputation['lines'] = [];
   let subtotal = 0;
   let costTotal = 0;
+  // A customer's agreed price level (wholesale/special) applies unless the
+  // cashier explicitly picks a level per line.
+  const salePriceLevel = customerPriceLevel(db, input.customerId);
 
   for (const line of input.lines) {
     const product = db.prepare('SELECT * FROM products WHERE id = ?').get(line.productId) as Product | undefined;
@@ -112,7 +124,7 @@ export function computeSale(
     if (line.unitPricePaisa != null && line.unitPricePaisa > 0) {
       unitPrice = Math.round(line.unitPricePaisa);
     } else {
-      const breakdown = productPriceBreakdown(product, line.priceLevel ?? 'retail');
+      const breakdown = productPriceBreakdown(product, line.priceLevel ?? salePriceLevel);
       // product-level price is per primary unit; convert to the chosen unit
       const primaryFactor = (db
         .prepare('SELECT factor_milli FROM units WHERE id = ?')
@@ -120,8 +132,25 @@ export function computeSale(
       const perBase = breakdown.final / primaryFactor;
       unitPrice = Math.max(0, Math.round(perBase * unit.factor_milli));
     }
+    // Price floor and per-product discount cap are enforced here so no caller
+    // (POS screen, import, script) can bypass them.
+    const minSale = Math.max(0, Number((product as any).min_sale_price ?? 0));
+    if (minSale > 0 && unitPrice < minSale && !input.allowBelowMinPrice) {
+      throw new Error(
+        `"${product.name}" এর সর্বনিম্ন বিক্রয়মূল্য ${(minSale / 100).toFixed(2)} টাকা — এর কম দামে বিক্রয়ের অনুমতি নেই।`,
+      );
+    }
     const gross = lineValuePaisa(qtyMilli, unitPrice);
     let discount = Math.round(line.discountPaisa ?? 0);
+    const maxPct = (product as any).max_discount_percent_x100;
+    if (maxPct != null && maxPct >= 0 && !input.allowDiscountOverride) {
+      const cap = Math.floor((gross * maxPct) / 10_000);
+      if (discount > cap) {
+        throw new Error(
+          `"${product.name}" এ সর্বোচ্চ ${(maxPct / 100).toFixed(2)}% ডিসকাউন্ট অনুমোদিত — অনুমতি ছাড়া বেশি দেওয়া যাবে না।`,
+        );
+      }
+    }
     if (discount < 0) throw new Error('লাইন ডিসকাউন্ট ঋণাত্মক হতে পারবে না।');
     if (discount > gross) discount = gross;
     const lineTotal = gross - discount;
@@ -208,6 +237,8 @@ export function createSale(db: Db, input: SaleInput): CreateSaleResult {
       | undefined;
     if (!customer) throw new Error('কাস্টমার পাওয়া যায়নি।');
     if (customer.is_walkin) throw new Error('ওয়াক-ইন কাস্টমারের নামে বাকি বিক্রয় করা যাবে না।');
+    // Credit limit is enforced here (not in the UI) so every caller is covered.
+    assertCreditLimit(db, input.customerId, computation.due);
   }
 
   const payments = (input.payments ?? []).filter((p) => Math.round(p.amount) > 0);
@@ -284,6 +315,13 @@ export function createSale(db: Db, input: SaleInput): CreateSaleResult {
         line.costMicro,
         line.costTotal,
       );
+      const soldProduct = db
+        .prepare('SELECT is_service FROM products WHERE id = ?')
+        .get(line.productId) as { is_service: number } | undefined;
+      if (soldProduct?.is_service === 1) {
+        // Services have no inventory: nothing to deduct, nothing to consume.
+        continue;
+      }
       applyMovement(db, {
         productId: line.productId,
         type: 'sale',
@@ -297,6 +335,20 @@ export function createSale(db: Db, input: SaleInput): CreateSaleResult {
         allowNegative,
       });
       consumeBatches(db, line.productId, line.qtyBaseMilli);
+    }
+
+    // Serial/IMEI tracking: every supplied serial must be available, and a line
+    // cannot hand out more serials than the quantity actually sold.
+    let serialCursor = 0;
+    for (const line of input.lines) {
+      const serials = (line.serials ?? []).map((x) => String(x).trim()).filter(Boolean);
+      if (serials.length === 0) continue;
+      const soldLine = computation.lines[serialCursor];
+      serialCursor++;
+      if (soldLine && serials.length > Math.ceil(soldLine.qtyMilli / 1000)) {
+        throw new Error(`"${soldLine.productName}" — বিক্রির পরিমাণের চেয়ে বেশি সিরিয়াল দেওয়া হয়েছে।`);
+      }
+      markSerialsSold(db, serials, saleId, input.actor);
     }
 
     if (computation.due !== 0 && input.customerId) {
@@ -340,6 +392,9 @@ export function createSale(db: Db, input: SaleInput): CreateSaleResult {
         items: computation.lines.length,
       },
     });
+    if (isPostingEnabled(db)) postSale(db, saleId);
+    earnLoyaltyForSale(db, saleId, input.actor);
+
     return { saleId, invoiceNo, computation };
   });
 
@@ -500,6 +555,11 @@ export function voidSale(db: Db, saleId: number, reason: string, actor: { id: nu
       }
     }
     db.prepare("UPDATE sales SET status = 'voided' WHERE id = ?").run(saleId);
+    // Points earned on a voided invoice are taken back (audited in the ledger).
+    reverseLoyaltyForSale(db, saleId, `ইনভয়েস বাতিল: ${sale.invoice_no}`, actor);
+    if (isPostingEnabled(db)) {
+      reverseDocument(db, 'sale', saleId, { userId: actor.id, memo: `বাতিল: ${sale.invoice_no} — ${reason}` });
+    }
     audit(db, {
       userId: actor.id,
       username: actor.username,

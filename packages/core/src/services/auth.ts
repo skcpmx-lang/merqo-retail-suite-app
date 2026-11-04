@@ -25,6 +25,11 @@ export const ALL_PERMISSIONS = [
   'backup.manage',
   'license.manage',
   'audit.view',
+  'accounting.view',
+  'accounting.manage',
+  'stock.transfer',
+  'stock.count',
+  'loyalty.manage',
 ] as const;
 
 export type Permission = (typeof ALL_PERMISSIONS)[number];
@@ -49,6 +54,11 @@ export const PERMISSION_LABELS: Record<Permission, string> = {
   'backup.manage': 'ব্যাকআপ ও রিস্টোর',
   'license.manage': 'লাইসেন্স ব্যবস্থাপনা',
   'audit.view': 'অডিট লগ দেখা',
+  'accounting.view': 'হিসাব ও রিপোর্ট দেখা (ডাবল-এন্ট্রি)',
+  'accounting.manage': 'হিসাব এন্ট্রি ও কোহা পরিচালনা',
+  'stock.transfer': 'স্টক ট্রান্সফার',
+  'stock.count': 'স্টক গণনা (ফিজিক্যাল কাউন্ট)',
+  'loyalty.manage': 'লয়্যালটি পয়েন্ট ব্যবস্থাপনা',
 };
 
 export const ROLE_LABELS: Record<UserRole, string> = {
@@ -75,6 +85,10 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<UserRole, Permission[]> = {
     'report.view',
     'backup.manage',
     'audit.view',
+    'accounting.view',
+    'stock.transfer',
+    'stock.count',
+    'loyalty.manage',
   ],
   cashier: ['pos.sell', 'pos.discount', 'product.view', 'customer.manage', 'cash.manage'],
 };

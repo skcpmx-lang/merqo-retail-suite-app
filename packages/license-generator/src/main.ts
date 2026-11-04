@@ -14,6 +14,7 @@ import {
   type DeviceFingerprint,
   type LicensePayload,
 } from '@sauda/core';
+import { appendLedger, isRevoked, ledgerFile, listLedger, revokedIds } from './ledger.js';
 
 interface AppConfig {
   keyPath: string | null;
@@ -240,6 +241,20 @@ const routes: Record<string, (...args: any[]) => any | Promise<any>> = {
     };
     fs.writeFileSync(res.filePath, JSON.stringify(body, null, 2), 'utf8');
     writeConfig({ lastDir: path.dirname(res.filePath) });
+    appendLedger({
+      license_id: payload.license_id,
+      org: payload.org,
+      owner: payload.owner ?? null,
+      edition: payload.edition,
+      expires_at: payload.expires_at ?? null,
+      max_devices: payload.max_devices,
+      device_hash: fingerprint || null,
+      key_id: currentKey()?.keyId ?? 'unknown',
+      action: 'issued',
+      replaces: null,
+      reason: null,
+      file: res.filePath,
+    });
     return res.filePath;
   },
 
@@ -261,6 +276,79 @@ const routes: Record<string, (...args: any[]) => any | Promise<any>> = {
       payload: parsed.license.payload,
       keyText: parsed.license ? encodeLicenseKey(parsed.license) : null,
     };
+  },
+
+  'history.list': () => ({ entries: listLedger(), revoked: revokedIds(), file: ledgerFile() }),
+
+  'history.reveal': async () => {
+    const file = ledgerFile();
+    if (!fs.existsSync(file)) throw new Error('এখনো কোনো লাইসেন্স ইস্যু হয়নি।');
+    shell.showItemInFolder(file);
+    return true;
+  },
+
+  'license.revoke': (_e: unknown, payload: LicensePayload, reason: string) => {
+    if (!payload?.license_id) throw new Error('লাইসেন্স আইডি পাওয়া যায়নি।');
+    const note = String(reason ?? '').trim();
+    if (!note) throw new Error('রিভোক করার কারণ লিখতে হবে — এটা ইতিহাসে সংরক্ষিত হবে।');
+    const entry = appendLedger({
+      license_id: payload.license_id,
+      org: payload.org,
+      owner: payload.owner ?? null,
+      edition: payload.edition,
+      expires_at: payload.expires_at ?? null,
+      max_devices: payload.max_devices,
+      device_hash: null,
+      key_id: currentKey()?.keyId ?? 'unknown',
+      action: 'revoked',
+      replaces: null,
+      reason: note,
+      file: null,
+    });
+    return { revoked: true, entry, already: isRevoked(payload.license_id) };
+  },
+
+  'license.reissue': (_e: unknown, request: DeviceRequest, previous: LicensePayload, input: any) => {
+    const key = currentKey();
+    if (!key) throw new Error('সাইনিং কী লোড করা হয়নি। আগে প্রাইভেট কী ফাইল লোড করুন।');
+    if (!previous?.license_id) throw new Error('আগের লাইসেন্স পাওয়া যায়নি।');
+    const reason = String(input?.reason ?? '').trim();
+    if (!reason) throw new Error('রি-ইস্যুর কারণ লিখতে হবে।');
+    // Old licence is revoked first so the ledger always shows the reason.
+    appendLedger({
+      license_id: previous.license_id,
+      org: previous.org,
+      owner: previous.owner ?? null,
+      edition: previous.edition,
+      expires_at: previous.expires_at ?? null,
+      max_devices: previous.max_devices,
+      device_hash: null,
+      key_id: currentKey()?.keyId ?? 'unknown',
+      action: 'revoked',
+      replaces: null,
+      reason: `রি-ইস্যু: ${reason}`,
+      file: null,
+    });
+    const { license, key: licenseKey } = issueLicense(
+      {
+        org: previous.org,
+        owner: previous.owner ?? undefined,
+        phone: previous.phone ?? undefined,
+        email: previous.email ?? undefined,
+        address: previous.address ?? undefined,
+        edition: previous.edition,
+        expiresAt: previous.expires_at ?? null,
+        maxDevices: previous.max_devices,
+        features: previous.features,
+        note: `রি-ইস্যু (${previous.license_id.slice(-6)}): ${reason}`,
+        generator: `Sauda License Generator ${app.getVersion()}`,
+        device: deviceFingerprint(request),
+      },
+      key.b64,
+    );
+    const check = verifyLicense(license, { device: deviceFingerprint(request), publicKeyB64: key.publicKeyB64 });
+    if (!check.activated) throw new Error(`নিজস্ব যাচাই ব্যর্থ: ${check.message}`);
+    return { license, key: licenseKey, payload: license.payload, check, replaces: previous.license_id };
   },
 
   'reveal': async (_e: unknown, target: string) => {

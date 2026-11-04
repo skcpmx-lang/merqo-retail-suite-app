@@ -46,6 +46,16 @@ export const DEFAULT_SETTINGS: AppSettings = {
   scan_increment_qty: 1,
   session_timeout_minutes: 0,
   low_margin_warn_percent_x100: 500,
+  // v1.0.1
+  loyalty_enabled: 1,
+  loyalty_points_per_100: 1,
+  loyalty_redeem_value_paisa: 100,
+  loyalty_min_redeem_points: 100,
+  credit_limit_enforced: 1,
+  theme: 'light',
+  duplicate_sale_guard_seconds: 30,
+  tax_register_enabled: 0,
+  accounting_enabled: 1,
 };
 
 interface UnitSeed {

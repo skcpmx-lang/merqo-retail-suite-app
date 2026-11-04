@@ -198,8 +198,86 @@ $('btn-check-license').addEventListener('click', async () => {
   }
 });
 
+/* ---------------- issue history ---------------- */
+let selectedHistory = null;
+
+async function loadHistory() {
+  try {
+    const res = await api.call('history.list');
+    const list = $('history');
+    const entries = res.entries ?? [];
+    $('history-count').textContent = entries.length ? `${entries.length} টি এন্ট্রি` : '';
+    list.innerHTML = '';
+    if (!entries.length) {
+      list.textContent = 'এখনো কোনো লাইসেন্স ইস্যু হয়নি।';
+      return;
+    }
+    entries.slice(0, 50).forEach((entry) => {
+      const row = document.createElement('button');
+      row.className = 'history-row';
+      row.type = 'button';
+      const revoked = (res.revoked ?? []).includes(entry.license_id);
+      row.innerHTML = `
+        <span class="hist-org">${entry.org}</span>
+        <span class="hist-meta mono">${entry.license_id.slice(-8)} • ${entry.edition} • ${entry.expires_at ? entry.expires_at.slice(0, 10) : 'লাইফটাইম'}</span>
+        <span class="hist-action ${entry.action}">${entry.action === 'revoked' ? 'রিভোক' : entry.action === 'reissued' ? 'রি-ইস্যু' : 'ইস্যু'}${revoked ? ' • বাতিল' : ''}</span>
+      `;
+      row.addEventListener('click', () => {
+        selectedHistory = entry;
+        document.querySelectorAll('.history-row.active').forEach((el) => el.classList.remove('active'));
+        row.classList.add('active');
+        $('revoke-reason').value = '';
+        $('btn-revoke').disabled = entry.action === 'revoked';
+        $('btn-reissue').disabled = entry.action === 'revoked' || !deviceRequest;
+      });
+      list.appendChild(row);
+    });
+  } catch (err) {
+    toast(err.message, 'err');
+  }
+}
+
+$('btn-refresh-history').addEventListener('click', loadHistory);
+$('btn-open-ledger').addEventListener('click', async () => {
+  try {
+    await api.call('history.reveal');
+  } catch (err) {
+    toast(err.message, 'err');
+  }
+});
+
+$('btn-revoke').addEventListener('click', async () => {
+  if (!selectedHistory) return;
+  try {
+    const reason = $('revoke-reason').value;
+    await api.call('license.revoke', selectedHistory, reason);
+    toast('রিভোক রেকর্ড হয়েছে — গ্রাহককে নতুন ফাইল পাঠান।', 'ok');
+    await loadHistory();
+  } catch (err) {
+    toast(err.message, 'err');
+  }
+});
+
+$('btn-reissue').addEventListener('click', async () => {
+  if (!selectedHistory || !deviceRequest) return;
+  try {
+    const reason = $('revoke-reason').value;
+    const result = await api.call('license.reissue', deviceRequest, selectedHistory, { reason });
+    issued = result;
+    $('license-key').value = result.key;
+    $('payload').textContent = JSON.stringify(result.payload, null, 2);
+    $('btn-save').disabled = false;
+    $('btn-copy-key').disabled = false;
+    $('issue-status').textContent = `রি-ইস্যু হয়েছে • ${result.payload.license_id}`;
+    toast('নতুন লাইসেন্স তৈরি হয়েছে — ফাইল সংরক্ষণ করুন।', 'ok');
+    await loadHistory();
+  } catch (err) {
+    toast(err.message, 'err');
+  }
+});
+
 document.addEventListener('keydown', (e) => {
   if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') $('btn-issue').click();
 });
 
-boot();
+boot().then(() => loadHistory());

@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { SCHEMA_V1, SCHEMA_VERSION } from './schema.js';
 import { seedReferenceData } from './seed.js';
+import { migrateToV2 } from './migration-v2.js';
 
 export type Db = SqliteDb;
 
@@ -116,6 +117,13 @@ export const MIGRATIONS: Migration[] = [
     name: 'initial_schema',
     up: (db) => {
       db.exec(SCHEMA_V1);
+    },
+  },
+  {
+    version: 2,
+    name: 'advanced_retail_and_accounting',
+    up: (db) => {
+      migrateToV2(db);
     },
   },
 ];
