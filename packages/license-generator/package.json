@@ -1,0 +1,15 @@
+{
+  "name": "sauda-license-generator",
+  "productName": "Sauda License Generator",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Sauda Retail Suite - private license generator (MERQO internal tool)",
+  "author": {
+    "name": "MERQO",
+    "email": "merqoonline@gmail.com"
+  },
+  "main": "dist/main/main.js",
+  "dependencies": {
+    "better-sqlite3": "13.0.3"
+  }
+}

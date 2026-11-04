@@ -1,0 +1,49 @@
+{
+  "name": "sauda-retail-suite",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Sauda Retail Suite - offline-first retail POS & business management ecosystem by MERQO",
+  "author": "MERQO (Shohan Khan)",
+  "license": "SEE LICENSE IN LICENSE.md",
+  "workspaces": [
+    "packages/core",
+    "packages/app",
+    "packages/license-generator"
+  ],
+  "engines": {
+    "node": ">=20.19.0"
+  },
+  "scripts": {
+    "typecheck": "tsc -b packages/core packages/app packages/license-generator --pretty",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "build:core": "node scripts/build-core.mjs",
+    "build:app": "node scripts/build-app.mjs",
+    "build:license-generator": "node scripts/build-license-generator.mjs",
+    "build": "npm run build:app && npm run build:license-generator",
+    "icons": "node scripts/make-icons.mjs",
+    "dist:app": "npm run build:app && node scripts/package-app.mjs",
+    "dist:license-generator": "npm run build:license-generator && node scripts/package-license-generator.mjs",
+    "keys:generate": "node scripts/generate-signing-keys.mjs",
+    "verify": "node scripts/verify.mjs"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^22.10.2",
+    "@types/qrcode": "^1.5.5",
+    "@types/react": "^19.0.2",
+    "@types/react-dom": "^19.0.2",
+    "better-sqlite3": "13.0.3",
+    "electron": "38.8.6",
+    "electron-builder": "26.18.0",
+    "esbuild": "0.28.2",
+    "fflate": "^0.8.2",
+    "jsbarcode": "^3.12.1",
+    "qrcode": "^1.5.4",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "typescript": "5.9.3",
+    "vite": "7.3.7",
+    "vitest": "^5.1.0"
+  }
+}

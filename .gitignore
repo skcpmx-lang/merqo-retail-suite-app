@@ -1,0 +1,15 @@
+node_modules/
+dist/
+out/
+release/
+build/icon-*.png
+packages/*/dist/
+*.log
+.DS_Store
+secrets/
+*.saudabak
+*.saudabak.json
+.env
+.env.*
+coverage/
+.vite/

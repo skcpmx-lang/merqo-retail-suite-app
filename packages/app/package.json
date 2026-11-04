@@ -1,0 +1,16 @@
+{
+  "name": "sauda-pos",
+  "productName": "Sauda Retail Suite",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Sauda Retail Suite - offline retail POS & business management for Bangladesh",
+  "author": {
+    "name": "MERQO",
+    "email": "merqoonline@gmail.com"
+  },
+  "main": "dist/main/main.js",
+  "dependencies": {
+    "better-sqlite3": "13.0.3",
+    "qrcode-generator": "1.4.4"
+  }
+}
