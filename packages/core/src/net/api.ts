@@ -4,10 +4,12 @@ import type { AddressInfo } from 'node:net';
 import type { Db } from '../db/connection.js';
 import {
   DeviceError,
+  MAX_LICENSED_DEVICES,
   consumePairingToken,
   createDeviceSession,
   enrolDevice,
   getDevice,
+  validateClaimRole,
   validateDeviceSession,
   type DeviceRole,
   type Terminal,
@@ -325,10 +327,11 @@ export async function startLanApi(opts: LanApiOptions): Promise<LanApi> {
       const terminal = enrolDevice(opts.db, {
         device_id: deviceId,
         device_name: String(parsed.device_name ?? 'নতুন ডিভাইস'),
-        role: String(parsed.role ?? 'CLIENT_POS') as DeviceRole,
+        // A claim may never install itself as the server: that role owns the licensed capacity.
+        role: validateClaimRole(parsed.role),
         license_id: String(licence.license_id ?? ''),
         store_id: String(licence.store_id ?? ''),
-        capacity: Number(licence.capacity ?? 1),
+        capacity: Math.max(1, Math.min(MAX_LICENSED_DEVICES, Math.trunc(Number(licence.capacity) || 1))),
         issued_at: String(licence.issued_at ?? new Date().toISOString()),
         expires_at: (licence.expires_at as string | null) ?? null,
         payload: licence.payload ?? {},
