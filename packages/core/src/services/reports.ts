@@ -1,12 +1,15 @@
 import type { Db } from '../db/connection.js';
 import { addDays, nowLocal, startOfMonth, todayLocal } from '../domain/datetime.js';
 import type { ReportColumn, ReportFilter, ReportId, ReportResult, SeriesPoint } from '../domain/types.js';
+import { balanceSheet, dayBook, journalEntries, profitAndLoss, trialBalance } from './accounting.js';
+import { reorderSuggestions } from './stock-ops.js';
+import { deadStock } from './stock-ops.js';
 
 export interface ReportMeta {
   id: ReportId;
   title: string;
   description: string;
-  group: 'sales' | 'profit' | 'purchase' | 'expense' | 'party' | 'stock' | 'cash' | 'return';
+  group: 'sales' | 'profit' | 'purchase' | 'expense' | 'party' | 'stock' | 'cash' | 'return' | 'accounting' | 'crm' | 'ops';
   needsRange: boolean;
 }
 
@@ -38,6 +41,26 @@ export const REPORT_CATALOG: ReportMeta[] = [
   { id: 'cash_register', title: 'ক্যাশ রেজিস্টার রিপোর্ট', description: 'ক্যাশ সেশন ও ক্যাশ মুভমেন্ট', group: 'cash', needsRange: true },
   { id: 'payment_collection', title: 'পেমেন্ট কালেকশন রিপোর্ট', description: 'সব পেমেন্ট আদায় ও পরিশোধ', group: 'cash', needsRange: true },
   { id: 'returns', title: 'রিটার্ন ও রিফান্ড রিপোর্ট', description: 'সেলস ও পারচেজ রিটার্ন', group: 'return', needsRange: true },
+  /* ---------------- v1.0.1 ---------------- */
+  { id: 'trial_balance', title: 'ট্রায়াল ব্যালান্স', description: 'সব হিসাব খাতের ডেবিট-ক্রেডিট সমন্বয়', group: 'accounting', needsRange: true },
+  { id: 'ledger_pl', title: 'লাভ-ক্ষতি (লেজার)', description: 'ডাবল-এন্ট্রি লেজার থেকে আয়, ক্রয়মূল্য ও ব্যয়', group: 'accounting', needsRange: true },
+  { id: 'balance_sheet', title: 'ব্যালান্স শিট', description: 'সম্পদ, দায় ও মূলধনের স্থিতি', group: 'accounting', needsRange: false },
+  { id: 'cash_flow', title: 'ক্যাশ ফ্লো', description: 'নগদ ও ব্যাংকে টাকার প্রবাহ', group: 'accounting', needsRange: true },
+  { id: 'day_book', title: 'দিনের বই (ডে বুক)', description: 'একদিনের সব জার্নাল এন্ট্রি', group: 'accounting', needsRange: true },
+  { id: 'journal_list', title: 'জার্নাল এন্ট্রি তালিকা', description: 'স্বয়ংক্রিয় ও ম্যানুয়াল ভাউচার', group: 'accounting', needsRange: true },
+  { id: 'account_balances', title: 'হিসাব খাতের ব্যালান্স', description: 'প্রতিটি খাতের খোলা ও বর্তমান ব্যালান্স', group: 'accounting', needsRange: true },
+  { id: 'loyalty_report', title: 'লয়্যালটি পয়েন্ট রিপোর্ট', description: 'কাস্টমারভিত্তিক পয়েন্ট ও লেনদেন', group: 'crm', needsRange: true },
+  { id: 'credit_limit_report', title: 'বাকির সীমা রিপোর্ট', description: 'সীমা ছাড়ানো ও কাছাকাছি কাস্টমার', group: 'crm', needsRange: false },
+  { id: 'customer_aging', title: 'কাস্টমার বাকির বয়স বিশ্লেষণ', description: '০-৩০ / ৩১-৬০ / ৬১-৯০ / ৯০+ দিন', group: 'crm', needsRange: false },
+  { id: 'supplier_aging', title: 'সাপ্লায়ার পাওনার বয়স বিশ্লেষণ', description: 'কবে থেকে কত পাওনা', group: 'crm', needsRange: false },
+  { id: 'stock_transfers', title: 'স্টক ট্রান্সফার রিপোর্ট', description: 'লোকেশন থেকে লোকেশনে পাঠানো মাল', group: 'ops', needsRange: true },
+  { id: 'stock_count_variance', title: 'স্টক গণনার পার্থক্য', description: 'সিস্টেম বনাম গণনা করা স্টক', group: 'ops', needsRange: false },
+  { id: 'reorder_report', title: 'রিঅর্ডার প্রস্তাব', description: 'কী কিনতে হবে ও কেন', group: 'ops', needsRange: false },
+  { id: 'dead_stock', title: 'মৃত স্টক রিপোর্ট', description: '৬০ দিনে বিক্রি হয়নি এমন পণ্য', group: 'ops', needsRange: false },
+  { id: 'serial_register', title: 'সিরিয়াল / IMEI রেজিস্টার', description: 'সিরিয়ালভিত্তিক স্টক ও বিক্রয়', group: 'ops', needsRange: false },
+  { id: 'hourly_sales', title: 'ঘণ্টাভিত্তিক বিক্রয়', description: 'কোন সময়ে বেশি বিক্রি হয়', group: 'sales', needsRange: true },
+  { id: 'discount_report', title: 'ডিসকাউন্ট রিপোর্ট', description: 'লাইন ও ইনভয়েস ডিসকাউন্টের হিসাব', group: 'sales', needsRange: true },
+  { id: 'tax_summary', title: 'ভ্যাট / ট্যাক্স সারাংশ', description: 'কনফিগার করা হারে ধরা ভ্যাট (কোনো আইনি দাবি নয়)', group: 'sales', needsRange: true },
 ];
 
 function resolveRange(f: ReportFilter): { from: string; to: string } {
@@ -815,6 +838,335 @@ export function runReport(db: Db, id: ReportId, filter: ReportFilter = {}): Repo
         COLS.text('status', 'স্ট্যাটাস'),
       ];
       base.rows = rows.map((r) => ({ ...r, kind: r.kind === 'sale' ? 'সেলস রিটার্ন' : 'পারচেজ রিটার্ন' }));
+      base.totals = numericTotals(base.columns, rows);
+      break;
+    }
+
+    /* ================= v1.0.1 accounting reports ================= */
+    case 'trial_balance': {
+      const tb = trialBalance(db, { from, to });
+      base.columns = [
+        COLS.text('code', 'কোড'),
+        COLS.text('name', 'খাত'),
+        COLS.text('type', 'ধরন'),
+        COLS.money('debit', 'ডেবিট'),
+        COLS.money('credit', 'ক্রেডিট'),
+      ];
+      base.rows = tb.rows as any;
+      base.totals = { debit: tb.totalDebit, credit: tb.totalCredit };
+      break;
+    }
+    case 'ledger_pl': {
+      const pl = profitAndLoss(db, { from, to });
+      base.columns = [COLS.text('code', 'কোড'), COLS.text('name', 'খাত'), COLS.text('group', 'শ্রেণি'), COLS.money('amount', 'অঙ্ক')];
+      base.rows = [
+        ...pl.income.map((r) => ({ ...r, group: 'আয়' })),
+        ...pl.expenses.map((r) => ({ ...r, group: 'ব্যয়' })),
+      ];
+      base.totals = { income: pl.totalIncome, expense: pl.totalExpense, grossProfit: pl.grossProfit, netProfit: pl.netProfit };
+      break;
+    }
+    case 'balance_sheet': {
+      const bs = balanceSheet(db, to);
+      base.subtitle = `${to} তারিখে`;
+      base.columns = [COLS.text('code', 'কোড'), COLS.text('name', 'খাত'), COLS.text('group', 'শ্রেণি'), COLS.money('amount', 'ব্যালান্স')];
+      base.rows = [
+        ...bs.assets.map((r: any) => ({ ...r, group: 'সম্পদ' })),
+        ...bs.liabilities.map((r: any) => ({ ...r, group: 'দায়' })),
+        ...bs.equity.map((r: any) => ({ ...r, group: 'মূলধন' })),
+      ];
+      base.totals = {
+        totalAssets: bs.totalAssets,
+        totalLiabilities: bs.totalLiabilities,
+        totalEquity: bs.totalEquity,
+        balanced: bs.balanced ? 1 : 0,
+      };
+      break;
+    }
+    case 'cash_flow': {
+      const rows = db
+        .prepare(
+          `SELECT j.entry_no, j.entry_date AS date, j.source, j.memo,
+                  SUM(l.debit_paisa) AS inflow, SUM(l.credit_paisa) AS outflow
+             FROM journal_lines l
+             JOIN journal_entries j ON j.id = l.entry_id
+             JOIN accounts a ON a.id = l.account_id
+            WHERE (a.is_cash = 1 OR a.is_bank = 1) AND date(j.entry_date) BETWEEN date(?) AND date(?)
+            GROUP BY j.id ORDER BY j.entry_date, j.id`,
+        )
+        .all(from, to) as Record<string, any>[];
+      const inflow = rows.reduce((s, r) => s + money(r.inflow), 0);
+      const outflow = rows.reduce((s, r) => s + money(r.outflow), 0);
+      base.columns = [
+        COLS.date,
+        COLS.text('entry_no', 'ভাউচার'),
+        COLS.text('source', 'উৎস'),
+        COLS.text('memo', 'বিবরণ'),
+        COLS.money('inflow', 'প্রবেশ'),
+        COLS.money('outflow', 'বহির্গমন'),
+      ];
+      base.rows = rows;
+      base.totals = { inflow, outflow, net: inflow - outflow };
+      break;
+    }
+    case 'day_book': {
+      const day = dayBook(db, from);
+      base.subtitle = `${from} তারিখের সব এন্ট্রি`;
+      base.columns = [
+        COLS.text('entry_no', 'ভাউচার'),
+        COLS.text('source', 'উৎস'),
+        COLS.text('memo', 'বিবরণ'),
+        COLS.money('debit', 'ডেবিট'),
+        COLS.money('credit', 'ক্রেডিট'),
+      ];
+      base.rows = ((day as any).rows ?? []) as any;
+      base.totals = numericTotals(base.columns, base.rows);
+      break;
+    }
+    case 'journal_list': {
+      const res = journalEntries(db, { from, to, limit: 2000 });
+      base.columns = [
+        COLS.date,
+        COLS.text('entry_no', 'ভাউচার'),
+        COLS.text('source', 'উৎস'),
+        COLS.text('memo', 'বিবরণ'),
+        COLS.money('amount', 'অঙ্ক'),
+      ];
+      base.rows = res as any;
+      base.totals = numericTotals(base.columns, base.rows);
+      break;
+    }
+    case 'account_balances': {
+      const rows = db
+        .prepare(
+          `SELECT a.code, a.name, a.type, a.is_active,
+                  COALESCE(SUM(l.debit_paisa),0) AS debit, COALESCE(SUM(l.credit_paisa),0) AS credit,
+                  COALESCE(SUM(l.debit_paisa - l.credit_paisa),0) AS balance
+             FROM accounts a
+             LEFT JOIN journal_lines l ON l.account_id = a.id
+             LEFT JOIN journal_entries j ON j.id = l.entry_id AND date(j.entry_date) <= date(?)
+            WHERE l.id IS NULL OR j.id IS NOT NULL
+            GROUP BY a.id ORDER BY a.code`,
+        )
+        .all(to) as Record<string, any>[];
+      base.columns = [
+        COLS.text('code', 'কোড'),
+        COLS.text('name', 'খাত'),
+        COLS.money('debit', 'ডেবিট'),
+        COLS.money('credit', 'ক্রেডিট'),
+        COLS.money('balance', 'ব্যালান্স'),
+      ];
+      base.rows = rows;
+      base.totals = { debit: rows.reduce((s, r) => s + money(r.debit), 0), credit: rows.reduce((s, r) => s + money(r.credit), 0) };
+      break;
+    }
+    /* ================= v1.0.1 CRM reports ================= */
+    case 'loyalty_report': {
+      const rows = db
+        .prepare(
+          `SELECT c.name AS customer_name, c.phone, c.loyalty_points,
+                  COALESCE(SUM(CASE WHEN l.type = 'earn' THEN l.points END),0) AS earned,
+                  COALESCE(-SUM(CASE WHEN l.type = 'redeem' THEN l.points END),0) AS redeemed,
+                  COALESCE(-SUM(CASE WHEN l.type IN ('reverse','expire') THEN l.points END),0) AS removed,
+                  MAX(l.created_at) AS last_activity
+             FROM customers c LEFT JOIN loyalty_ledger l ON l.customer_id = c.id
+            WHERE c.is_walkin = 0 AND (l.created_at IS NULL OR date(l.created_at) BETWEEN date(?) AND date(?))
+            GROUP BY c.id HAVING COALESCE(SUM(l.points),0) <> 0 OR c.loyalty_points <> 0
+            ORDER BY c.loyalty_points DESC`,
+        )
+        .all(from, to) as Record<string, any>[];
+      base.columns = [
+        COLS.text('customer_name', 'কাস্টমার'),
+        COLS.text('phone', 'মোবাইল'),
+        { key: 'loyalty_points', label: 'পয়েন্ট', format: 'int', align: 'right' },
+        { key: 'earned', label: 'অর্জিত', format: 'int', align: 'right' },
+        { key: 'redeemed', label: 'রিডিম', format: 'int', align: 'right' },
+        { key: 'removed', label: 'বাতিল/মেয়াদ', format: 'int', align: 'right' },
+        { key: 'last_activity', label: 'সর্বশেষ', format: 'text' },
+      ];
+      base.rows = rows;
+      base.totals = { points: rows.reduce((s, r) => s + money(r.loyalty_points), 0) };
+      break;
+    }
+    case 'credit_limit_report': {
+      const rows = db
+        .prepare(
+          `SELECT name, phone, balance_paisa, credit_limit_paisa,
+                  (credit_limit_paisa - balance_paisa) AS remaining_paisa,
+                  CASE WHEN balance_paisa > credit_limit_paisa THEN 'সীমা ছাড়িয়েছে'
+                       WHEN balance_paisa >= credit_limit_paisa * 0.9 THEN 'সীমার কাছাকাছি'
+                       ELSE 'স্বাভাবিক' END AS status
+             FROM customers
+            WHERE is_walkin = 0 AND is_active = 1 AND credit_limit_paisa > 0
+            ORDER BY (CAST(balance_paisa AS REAL) / credit_limit_paisa) DESC`,
+        )
+        .all() as Record<string, any>[];
+      base.columns = [
+        COLS.text('name', 'কাস্টমার'),
+        COLS.text('phone', 'মোবাইল'),
+        COLS.money('credit_limit_paisa', 'সীমা'),
+        COLS.money('balance_paisa', 'বর্তমান বাকি'),
+        COLS.money('remaining_paisa', 'অবশিষ্ট'),
+        COLS.text('status', 'অবস্থা'),
+      ];
+      base.rows = rows;
+      base.totals = { limit: rows.reduce((s, r) => s + money(r.credit_limit_paisa), 0), due: rows.reduce((s, r) => s + money(r.balance_paisa), 0) };
+      break;
+    }
+    case 'customer_aging':
+    case 'supplier_aging': {
+      const isCustomer = id === 'customer_aging';
+      const table = isCustomer ? 'customers' : 'suppliers';
+      const balanceCol = 'balance_paisa';
+      const rows = db
+        .prepare(
+          `SELECT name, phone, ${balanceCol} AS balance_paisa,
+                  COALESCE((SELECT SUM(s.due_paisa) FROM ${isCustomer ? 'sales' : 'purchases'} s
+                             WHERE s.${isCustomer ? 'customer_id' : 'supplier_id'} = t.id
+                               AND julianday('now','localtime') - julianday(s.${isCustomer ? 'sale_date' : 'purchase_date'}) BETWEEN 0 AND 30),0) AS d0_30,
+                  COALESCE((SELECT SUM(s.due_paisa) FROM ${isCustomer ? 'sales' : 'purchases'} s
+                             WHERE s.${isCustomer ? 'customer_id' : 'supplier_id'} = t.id
+                               AND julianday('now','localtime') - julianday(s.${isCustomer ? 'sale_date' : 'purchase_date'}) BETWEEN 31 AND 60),0) AS d31_60,
+                  COALESCE((SELECT SUM(s.due_paisa) FROM ${isCustomer ? 'sales' : 'purchases'} s
+                             WHERE s.${isCustomer ? 'customer_id' : 'supplier_id'} = t.id
+                               AND julianday('now','localtime') - julianday(s.${isCustomer ? 'sale_date' : 'purchase_date'}) BETWEEN 61 AND 90),0) AS d61_90,
+                  COALESCE((SELECT SUM(s.due_paisa) FROM ${isCustomer ? 'sales' : 'purchases'} s
+                             WHERE s.${isCustomer ? 'customer_id' : 'supplier_id'} = t.id
+                               AND julianday('now','localtime') - julianday(s.${isCustomer ? 'sale_date' : 'purchase_date'}) > 90),0) AS d90_plus
+             FROM ${table} t
+            WHERE is_active = 1 ${isCustomer ? 'AND is_walkin = 0' : ''} AND balance_paisa > 0
+            ORDER BY balance_paisa DESC`,
+        )
+        .all() as Record<string, any>[];
+      base.columns = [
+        COLS.text('name', isCustomer ? 'কাস্টমার' : 'সাপ্লায়ার'),
+        COLS.text('phone', 'মোবাইল'),
+        COLS.money('balance_paisa', 'মোট বাকি'),
+        COLS.money('d0_30', '০-৩০ দিন'),
+        COLS.money('d31_60', '৩১-৬০ দিন'),
+        COLS.money('d61_90', '৬১-৯০ দিন'),
+        COLS.money('d90_plus', '৯০+ দিন'),
+      ];
+      base.rows = rows;
+      base.totals = numericTotals(base.columns, rows);
+      break;
+    }
+    /* ================= v1.0.1 stock-ops reports ================= */
+    case 'stock_transfers': {
+      const rows = db
+        .prepare(
+          `SELECT t.transfer_no, date(t.transfer_date) AS date, lf.name AS from_name, lt.name AS to_name,
+                  (SELECT COUNT(*) FROM stock_transfer_items i WHERE i.transfer_id = t.id) AS item_count,
+                  (SELECT COALESCE(SUM(i.qty_base_milli),0) FROM stock_transfer_items i WHERE i.transfer_id = t.id) AS qty_base_milli
+             FROM stock_transfers t
+             JOIN locations lf ON lf.id = t.from_location
+             JOIN locations lt ON lt.id = t.to_location
+            WHERE date(t.transfer_date) BETWEEN date(?) AND date(?) ORDER BY t.id DESC`,
+        )
+        .all(from, to) as Record<string, any>[];
+      base.columns = [COLS.date, COLS.text('transfer_no', 'ট্রান্সফার'), COLS.text('from_name', 'থেকে'), COLS.text('to_name', 'গন্তব্য'), COLS.qtyCol('qty_base_milli', 'পরিমাণ'), { key: 'item_count', label: 'আইটেম', format: 'int', align: 'right' }];
+      base.rows = rows;
+      base.totals = { qty: rows.reduce((s, r) => s + money(r.qty_base_milli), 0) };
+      break;
+    }
+    case 'stock_count_variance': {
+      const rows = db
+        .prepare(
+          `SELECT c.count_no, date(c.created_at) AS date, l.name AS location_name, c.status,
+                  p.name AS product_name, i.system_qty_milli, i.counted_qty_milli,
+                  (i.counted_qty_milli - i.system_qty_milli) AS diff_milli
+             FROM stock_count_items i
+             JOIN stock_counts c ON c.id = i.count_id
+             JOIN locations l ON l.id = c.location_id
+             JOIN products p ON p.id = i.product_id
+            WHERE i.counted_qty_milli <> i.system_qty_milli
+            ORDER BY c.id DESC, p.name_sort`,
+        )
+        .all() as Record<string, any>[];
+      base.columns = [COLS.date, COLS.text('count_no', 'গণনা'), COLS.text('location_name', 'লোকেশন'), COLS.text('product_name', 'পণ্য'), COLS.qtyCol('system_qty_milli', 'সিস্টেম'), COLS.qtyCol('counted_qty_milli', 'গণনা'), COLS.qtyCol('diff_milli', 'পার্থক্য')];
+      base.rows = rows;
+      base.totals = { variance: rows.reduce((s, r) => s + money(r.diff_milli), 0) };
+      break;
+    }
+    case 'reorder_report': {
+      const rows = reorderSuggestions(db, { leadDays: 7 });
+      base.columns = [COLS.text('name', 'পণ্য'), COLS.qtyCol('stock_base_milli', 'স্টক'), COLS.qtyCol('min_stock_base_milli', 'ন্যূনতম'), COLS.qtyCol('suggested_base_milli', 'প্রস্তাবিত ক্রয়'), COLS.money('estimated_value_paisa', 'আনুমানিক খরচ'), COLS.text('reason', 'কারণ')];
+      base.rows = rows;
+      base.totals = { value: rows.reduce((s: number, r: any) => s + money(r.estimated_value_paisa), 0) };
+      break;
+    }
+    case 'dead_stock': {
+      const rows = deadStock(db, 60);
+      base.columns = [COLS.text('name', 'পণ্য'), COLS.qtyCol('stock_base_milli', 'স্টক'), COLS.money('value_paisa', 'মূল্য'), COLS.text('last_sold_on', 'সর্বশেষ বিক্রি')];
+      base.rows = rows;
+      base.totals = { value: rows.reduce((s: number, r: any) => s + money(r.value_paisa), 0) };
+      break;
+    }
+    case 'serial_register': {
+      const rows = db
+        .prepare(
+          `SELECT s.serial, p.name AS product_name, s.status, l.name AS location_name,
+                  sa.invoice_no, date(s.updated_at) AS date
+             FROM serial_numbers s JOIN products p ON p.id = s.product_id
+             LEFT JOIN locations l ON l.id = s.location_id
+             LEFT JOIN sales sa ON sa.id = s.sale_id
+            ORDER BY s.updated_at DESC LIMIT 5000`,
+        )
+        .all() as Record<string, any>[];
+      base.columns = [COLS.text('serial', 'সিরিয়াল'), COLS.text('product_name', 'পণ্য'), COLS.text('status', 'অবস্থা'), COLS.text('location_name', 'লোকেশন'), COLS.text('invoice_no', 'ইনভয়েস'), COLS.date];
+      base.rows = rows;
+      base.totals = { count: rows.length };
+      break;
+    }
+    /* ================= v1.0.1 sales analytics ================= */
+    case 'hourly_sales': {
+      const rows = db
+        .prepare(
+          `SELECT CAST(strftime('%H', created_at) AS INTEGER) AS hour,
+                  COUNT(*) AS invoice_count, SUM(total_paisa) AS total_paisa, SUM(profit_paisa) AS profit_paisa
+             FROM sales WHERE status = 'completed' AND date(sale_date) BETWEEN date(?) AND date(?)
+            GROUP BY hour ORDER BY hour`,
+        )
+        .all(from, to) as Record<string, any>[];
+      base.columns = [
+        { key: 'hour', label: 'ঘণ্টা', format: 'text' },
+        { key: 'invoice_count', label: 'ইনভয়েস', format: 'int', align: 'right' },
+        COLS.money('total_paisa', 'বিক্রয়'),
+        COLS.money('profit_paisa', 'প্রফিট'),
+      ];
+      base.rows = rows.map((r) => ({ ...r, hour: `${String(r.hour).padStart(2, '0')}:00` }));
+      base.totals = numericTotals(base.columns, base.rows);
+      break;
+    }
+    case 'discount_report': {
+      const rows = db
+        .prepare(
+          `SELECT date(s.sale_date) AS date, s.invoice_no, COALESCE(c.name,'ওয়াক-ইন') AS customer_name,
+                  s.subtotal_paisa, s.discount_paisa,
+                  COALESCE((SELECT SUM(si.discount_paisa) FROM sale_items si WHERE si.sale_id = s.id),0) AS line_discount_paisa,
+                  s.total_paisa
+             FROM sales s LEFT JOIN customers c ON c.id = s.customer_id
+            WHERE s.status = 'completed' AND date(s.sale_date) BETWEEN date(?) AND date(?)
+              AND (s.discount_paisa > 0 OR EXISTS (SELECT 1 FROM sale_items si WHERE si.sale_id = s.id AND si.discount_paisa > 0))
+            ORDER BY s.id DESC`,
+        )
+        .all(from, to) as Record<string, any>[];
+      base.columns = [COLS.date, COLS.invoice, COLS.customer, COLS.money('subtotal_paisa', 'সাবটোটাল'), COLS.money('line_discount_paisa', 'লাইন ডিসকাউন্ট'), COLS.money('discount_paisa', 'ইনভয়েস ডিসকাউন্ট'), COLS.money('total_paisa', 'মোট')];
+      base.rows = rows;
+      base.totals = numericTotals(base.columns, rows);
+      break;
+    }
+    case 'tax_summary': {
+      const rows = db
+        .prepare(
+          `SELECT date(sale_date) AS date, COUNT(*) AS invoice_count, SUM(subtotal_paisa) AS subtotal_paisa,
+                  SUM(tax_paisa) AS tax_paisa, SUM(total_paisa) AS total_paisa
+             FROM sales WHERE status = 'completed' AND date(sale_date) BETWEEN date(?) AND date(?)
+            GROUP BY date(sale_date) ORDER BY date`,
+        )
+        .all(from, to) as Record<string, any>[];
+      base.columns = [COLS.date, { key: 'invoice_count', label: 'ইনভয়েস', format: 'int', align: 'right' }, COLS.money('subtotal_paisa', 'নিট বিক্রয়'), COLS.money('tax_paisa', 'ধরা ভ্যাট'), COLS.money('total_paisa', 'সর্বমোট')];
+      base.rows = rows;
       base.totals = numericTotals(base.columns, rows);
       break;
     }

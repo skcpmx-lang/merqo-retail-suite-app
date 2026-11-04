@@ -197,3 +197,17 @@ pre {
 @media (max-width: 1050px) {
   .layout { grid-template-columns: 1fr; }
 }
+
+.history-list { display: flex; flex-direction: column; gap: 4px; max-height: 220px; overflow: auto; margin-top: 8px; }
+.history-row {
+  display: grid; grid-template-columns: 1.4fr 1.6fr auto; gap: 8px; align-items: center;
+  padding: 6px 8px; border: 1px solid var(--line, #e2e8f0); border-radius: 8px;
+  background: transparent; text-align: left; cursor: pointer; font: inherit; color: inherit;
+}
+.history-row:hover { background: rgba(0,0,0,0.03); }
+.history-row.active { border-color: #2563eb; box-shadow: 0 0 0 1px #2563eb inset; }
+.hist-org { font-weight: 600; }
+.hist-meta { font-size: 11px; opacity: 0.75; }
+.hist-action { font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; }
+.hist-action.revoked { color: #b91c1c; }
+.hist-action.issued, .hist-action.reissued { color: #047857; }

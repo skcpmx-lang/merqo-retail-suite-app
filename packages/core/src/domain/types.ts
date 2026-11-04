@@ -503,7 +503,30 @@ export type ReportId =
   | 'inventory_adjustment'
   | 'sales_detail'
   | 'purchase_detail'
-  | 'expense_detail';
+  | 'expense_detail'
+  /* v1.0.1 accounting */
+  | 'trial_balance'
+  | 'ledger_pl'
+  | 'balance_sheet'
+  | 'cash_flow'
+  | 'day_book'
+  | 'journal_list'
+  | 'account_balances'
+  /* v1.0.1 CRM */
+  | 'loyalty_report'
+  | 'credit_limit_report'
+  | 'customer_aging'
+  | 'supplier_aging'
+  /* v1.0.1 stock ops */
+  | 'stock_transfers'
+  | 'stock_count_variance'
+  | 'reorder_report'
+  | 'dead_stock'
+  | 'serial_register'
+  /* v1.0.1 sales analytics */
+  | 'hourly_sales'
+  | 'discount_report'
+  | 'tax_summary';
 
 export interface ReportFilter {
   from?: string;

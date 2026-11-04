@@ -14,9 +14,9 @@ Live log so a new session can resume exactly here. Update at the end of every st
 | S4 POS | **DONE (core + UI)** | hold/resume/cancel cart (F3/F4), quick-pick favourites (right-click to pin), split payment rows, credit note, exchange (walk-in + credit), permission-checked discounts/price edits, cash session + difference reporting |
 | S5 CRM | **DONE (core + UI)** | loyalty earn/redeem/reverse/expire/adjust with ledger, credit-limit enforcement in the write path, groups, price levels, CSV import/export, POS redemption; 11 tests |
 | S6 products | **DONE** | service/non-stock items (no stock movement), price floor + per-product discount cap enforced in the write path, variants with inherited pricing and own stock, multiple barcodes (string or object input), reorder quantity, price history; 6 tests |
-| S7 licensing | IN PROGRESS | |
-| S8 UI | PENDING | |
-| S9 reports | PENDING | |
+| S7 licensing | **DONE (core + generator)** | Ed25519 signing (already in v1.0.0), hardware fingerprint + weighted match, generator issue ledger (JSONL), revoke with reason, re-issue (revokes old + signs new), history UI; limitation documented: offline apps never learn about a revocation |
+| S8 UI | DONE | accounting/stock-op/CRM screens, POS hold+split+favourites, report groups |
+| S9 reports | **DONE** | 46 reports (19 new: trial balance, ledger P&L, balance sheet, cash flow, day book, journal, account balances, loyalty, credit limits, AR/AP aging, transfers, count variance, reorder, dead stock, serial register, hourly, discount, tax) + CSV/Excel/PDF export |
 | S10 docs + release | PENDING | |
 
 ## Environment notes for a fresh session
