@@ -11,7 +11,9 @@ export interface AuditInput {
   details?: unknown;
 }
 
-const SENSITIVE_KEYS = /pass(word)?|salt|token|secret|private|key_material|signature/i;
+// `session`/`cookie`/`credential` matter as much as a password: a session id is a bearer
+// credential, and an audit row is one of the places an attacker reads after a breach.
+const SENSITIVE_KEYS = /pass(word)?|salt|token|secret|private|key_material|signature|session|cookie|credential|nonce|api_?key|licen[cs]e_?key/i;
 
 function scrub(value: unknown, depth = 0): unknown {
   if (depth > 4) return '[deep]';
