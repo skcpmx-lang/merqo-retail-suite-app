@@ -17,13 +17,28 @@ Live log so a new session can resume exactly here. Update at the end of every st
 | S7 licensing | **DONE (core + generator)** | Ed25519 signing (already in v1.0.0), hardware fingerprint + weighted match, generator issue ledger (JSONL), revoke with reason, re-issue (revokes old + signs new), history UI; limitation documented: offline apps never learn about a revocation |
 | S8 UI | DONE | accounting/stock-op/CRM screens, POS hold+split+favourites, report groups |
 | S9 reports | **DONE** | 46 reports (19 new: trial balance, ledger P&L, balance sheet, cash flow, day book, journal, account balances, loyalty, credit limits, AR/AP aging, transfers, count variance, reorder, dead stock, serial register, hourly, discount, tax) + CSV/Excel/PDF export |
-| S10 docs + release | PENDING | |
+| S10 docs + release | **DONE** | `docs/14-RELEASE-NOTES-V101.md`, CHANGELOG, এই লগ, ভার্সন ১.০.১, PR → CI → ট্যাগ `v1.0.1` → ইনস্টলার বিল্ড |
 
 ## Environment notes for a fresh session
 
 ```bash
 cd /home/user/merqo-retail-suite-app
 ELECTRON_SKIP_BINARY_DOWNLOAD=1 npm_config_nodedir=/usr/local npm_config_build_from_source=true npm ci
-npx vitest run          # 99 tests at v1.0.0 baseline
+npx vitest run          # 164 tests (14 files) at the v1.0.1 baseline
 node scripts/verify.mjs # full gate
 ```
+
+## v1.0.1 final state (this session)
+
+- **Tests**: 164/164 in 14 files. New files: `accounting`, `stock-ops`, `pos`, `crm`,
+  `products-advanced`, `reports-v101`, `workflows-v101`, `migration-v2`.
+- **Type-check**: clean for `packages/core`, `packages/app`, `packages/license-generator`.
+- **Gates**: `node scripts/verify.mjs` ✔ (build + tests + ui wiring + secret scan),
+  `node scripts/audit-ui.mjs` ✔ (191 IPC routes / 151 call sites).
+- **Reports**: 46 (19 new). Every catalog id is executed by a test.
+- **Accounting invariants**: debit = credit, ledger vs operational reconcile, no re-post,
+  reversal-only corrections, `accounting_enabled=0` disables posting without touching data.
+- **Known limits (unchanged honesty)**: thermal/label printing + cash drawer are BLOCKED
+  (no hardware here), licence revocation is PARTIAL (offline), signed installers and a
+  two-week pilot are BLOCKED. Deferred to v1.1: PO + partial receiving, coupons/vouchers/gift
+  cards, one-screen exchange, LAN multi-terminal, Bangla⇄English toggle, customer display.
