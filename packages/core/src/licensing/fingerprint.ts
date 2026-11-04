@@ -6,7 +6,7 @@ import type { DeviceFingerprint, DeviceFingerprintComponent } from '../domain/ty
 import { canonicalJson, sha256Hex } from './crypto.js';
 
 /**
- * Device fingerprint strategy (documented in docs/LICENSING_ARCHITECTURE.md).
+ * Device fingerprint strategy (documented in docs/04-licensing.md).
  *
  * We deliberately DO NOT use: computer name, Windows user account, Windows
  * installation id, MAC address alone, or any registry value that changes on a

@@ -13,10 +13,11 @@ npm run verify
 1. `tsc -p packages/core` — টাইপচেক
 2. `tsc -p packages/app` — Electron main + ১৭টি রেন্ডারার পেজ
 3. `tsc -p packages/license-generator`
-4. `vitest run` — **৫৩টি টেস্ট**
-5. `scripts/make-icons.mjs` — আইকন
-6. `esbuild` + `vite` — দুই অ্যাপের আসল বিল্ড
-7. সিক্রেট স্ক্যান — `git ls-files`-এ কোনো কী/`.pem`/`secrets/` নেই কিনা
+4. `vitest run` — **৯৯টি টেস্ট** (৬ ফাইল)
+5. `scripts/audit-ui.mjs` — আইকন/CSS ক্লাস/IPC রুটের তার সামঞ্জস্য
+6. `scripts/make-icons.mjs` — আইকন
+7. `esbuild` + `vite` — দুই অ্যাপের আসল বিল্ড (প্রোডাকশন CSP কঠোর করা হয়)
+8. সিক্রেট স্ক্যান — `git ls-files`-এ কোনো কী/`.pem`/`secrets/` নেই কিনা
 
 শেষ সফল রান (এই রিপোজিটরির বর্তমান অবস্থা):
 
@@ -24,11 +25,13 @@ npm run verify
 ✔ typecheck: core
 ✔ typecheck: app
 ✔ typecheck: license generator
-✔ tests: core (53 passed)
+✔ tests: core (99 passed / 6 files)
+✔ ui wiring (26 files, 48 icons, 187 classes, 131 routes, 105 call sites)
 ✔ icons
-✔ build: app      → dist/main (450 kB), dist/renderer (465 kB js, 29 kB css)
+✔ build: app      → dist/main, dist/renderer (465.58 kB js / 125.29 kB gzip, 29.94 kB css)
 ✔ build: license generator
 ✔ no key material tracked by git
+✔ verify passed
 ```
 
 ## ২. টেস্ট কভারেজ (কী কী আছে)
@@ -63,7 +66,30 @@ npm run verify
 - CSV ইমপোর্ট প্রিভিউ/কমিট (সঠিক ও ভুল সারি)
 - UTF-8/বাংলা সার্চ ফোল্ডিং ও সর্ট
 
-## ৩. ম্যানুয়াল যাচাই যা ডেভেলপারকে করতে হবে
+`packages/core/test/audit.test.ts` — আর্থিক অডিট (১১টি):
+রিফান্ড ক্ল্যাম্প, বাকির সাথে রিটার্ন মেলানো, কাস্টমার স্টেটমেন্ট বনাম ব্যালেন্স, ক্যাশ মিলকরণ,
+বড় ইনভয়েসে ড্রিফট না হওয়া, প্রতিটি রিপোর্ট বনাম লেজার।
+
+`packages/core/test/security-audit.test.ts` — নিরাপত্তা (২১টি):
+লাইসেন্স নেগেটিভ (ভুল ভার্সন/এডিশন/ফরম্যাট/ডিভাইস/ক্লক রোলব্যাক), IPC লাইসেন্স গেট,
+ব্যাকআপ টেম্পারিং ও নতুন স্কিমা প্রত্যাখ্যান, রিস্টোর + সেফটি কপি, ভূমিকা/অনুমতি,
+ডিলিট গার্ড, সেটিংস ভ্যালিডেশন, SQL ইনজেকশন স্মোক।
+
+`packages/core/test/schema-audit.test.ts` — স্কিমা ও ডেটা (১৪টি):
+WAL/`synchronous`/FK/`busy_timeout`/`temp_store`/`cache_size` প্রকৃতপক্ষে প্রয়োগ হয়েছে কিনা,
+প্রতিটি টেবিলে PK, FK অখণ্ডতা, পুরোনো DB মাইগ্রেশন (ডেটা + ৩৭ সেটিংস অক্ষত), নতুন ভার্সন প্রত্যাখ্যান,
+বারকোড ডুপ্লিকেট, CSV ইমপোর্ট রেজিলিয়েন্স, পেজিনেশন, রিটার্ন বনাম বিক্রীত পরিমাণ।
+
+## ৩. পারফরম্যান্স পরিমাপ
+
+```bash
+node scripts/bench.mjs --products 1000  --sales 2000
+node scripts/bench.mjs --products 50000 --customers 2000 --sales 50000
+```
+
+মাপা ফলাফল (হার্ডওয়্যার ও ডেটাসেটসহ) — [`FINAL_PERFORMANCE_REPORT.md`](FINAL_PERFORMANCE_REPORT.md)।
+
+## ৪. ম্যানুয়াল যাচাই যা ডেভেলপারকে করতে হবে
 
 | আইটেম | কেন স্বয়ংক্রিয় নয় |
 |---|---|
@@ -78,15 +104,16 @@ npm run verify
 **নীতি:** যাচাই না হওয়া পর্যন্ত কোনো ইনস্টলার বা প্রিন্টিং “কাজ করছে” বলে দাবি করা হয় না।
 Windows CI বিল্ড আর্টিফ্যাক্ট আসল প্রমাণ; `docs/09-known-limits.md`-এ অবস্থা লেখা থাকে।
 
-## ৪. রিগ্রেশন প্রতিরোধ
+## ৫. রিগ্রেশন প্রতিরোধ
 
 - সব আর্থিক হিসাব এক ফাংশন (`computeSale`, `computePurchase`) দিয়ে — UI-তে আলাদা সূত্র নেই।
 - রেন্ডারারে কোনো `* 100` / `/ 100` টাকার গুণভাগ নেই; শুধু `money()` ফরম্যাটার।
 - `void` টেস্ট নিশ্চিত করে ডকুমেন্ট মুছে না গিয়ে অবস্থা বদলায়।
 - প্রতিটি IPC রুটে অনুমতি — নতুন রুট যোগ করলে `perm` না দিলে টাইপ এরর (Route ইন্টারফেস)।
+- `scripts/audit-ui.mjs` — নাম বদলানো আইকন/ক্লাস/রুট সাথে সাথে ধরা পড়ে।
 - সিক্রেট স্ক্যান CI-তে বাধ্যতামূলক।
 
-## ৫. নতুন টেস্ট লেখার নিয়ম
+## ৬. নতুন টেস্ট লেখার নিয়ম
 
 ```ts
 import { createTestDb, /* helpers */ } from './helpers.js';

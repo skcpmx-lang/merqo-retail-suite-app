@@ -1,6 +1,6 @@
 # ডাটাবেজ স্কিমা
 
-**SQLite 3** (WAL মোড), `SCHEMA_VERSION = 1`, ৩০ টেবিল, ৪৩ ইনডেক্স।
+**SQLite 3** (WAL মোড), `SCHEMA_VERSION = 1`, ৩১ টেবিল, ৪৩ ইনডেক্স।
 স্কিমা: `packages/core/src/db/schema.ts`; খোলা/মাইগ্রেশন/লেনদেন: `connection.ts`।
 
 ## একক নিয়ম

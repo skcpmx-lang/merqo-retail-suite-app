@@ -28,7 +28,7 @@ ELECTRON_SKIP_BINARY_DOWNLOAD=1 npm ci
 | কমান্ড | কী করে |
 |---|---|
 | `npm run typecheck` | তিন প্যাকেজের টাইপচেক |
-| `npm test` | ৫৩টি core টেস্ট |
+| `npm test` | ৯৯টি core টেস্ট |
 | `npm run build:core` | core-এর `.d.ts` ইমিট |
 | `npm run dev:app` | (ঐচ্ছিক) vite dev সার্ভার + Electron |
 | `npm run build:app` | main/preload (esbuild) + renderer (vite) |

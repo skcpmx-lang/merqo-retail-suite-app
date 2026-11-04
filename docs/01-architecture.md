@@ -8,7 +8,7 @@
 │                                                              │
 │  ┌────────────────────────┐      ┌─────────────────────────┐ │
 │  │ Renderer (React 19)    │      │ Main process            │ │
-│  │ বাংলা UI, কোন হিসাব নয়│─────▶│ IPC রাউটার (১৩৫+)      │ │
+│  │ বাংলা UI, কোন হিসাব নয়│─────▶│ IPC রাউটার (১৩১)      │ │
 │  │ শুধু display + input   │◀─────│ permission guard        │ │
 │  └────────────────────────┘      │ printing / dialogs      │ │
 │            ▲                     └───────────┬─────────────┘ │
@@ -53,7 +53,7 @@
 
 ### ২. `db/` — স্কিমা, মাইগ্রেশন, লেনদেন
 
-- `schema.ts` — ৩০ টেবিল, ৪৩ ইনডেক্স, সব `IF NOT EXISTS` (idempotent)।
+- `schema.ts` — ৩১ টেবিল, ৪৩ ইনডেক্স, সব `IF NOT EXISTS` (idempotent)।
 - `connection.ts` — `openDatabase()` (WAL, `foreign_keys=ON`, busy timeout), `migrate()` (versioned),
   `tx()` helper, `nextCounter()` (ইনভয়েস নম্বর), `integrityCheck()`, `repairDatabase()` (REINDEX+VACUUM)।
 - `seed.ts` — ডিফল্ট সেটিংস, ইউনিট (পিস/কেজি/গ্রাম/লিটার/মিলি/ডজন), পেমেন্ট মাধ্যম (নগদ, bKash, Nagad, কার্ড, বাকি)।
@@ -87,7 +87,7 @@
 | ফাইল | দায়িত্ব |
 |---|---|
 | `main.ts` | single-instance lock, DB bootstrap + integrity, বাংলা মেনু, উইন্ডো হার্ডেনিং, auto backup, `before-quit` |
-| `ipc.ts` | `invokeRoute()` — ১৩৫+ রুট, প্রতিটিতে `perm`, ব্যর্থতা লগ + বাংলা মেসেজ, নেটিভ ডায়ালগ |
+| `ipc.ts` | `invokeRoute()` — ১৩১ রুট, প্রতিটিতে `perm`, ব্যর্থতা লগ + বাংলা মেসেজ, নেটিভ ডায়ালগ |
 | `printing.ts` | নির্জন `BrowserWindow` → `getPrintersAsync`, `print({silent:true, pageSize: microns})`, `printToPDF` |
 | `receipt.ts` | ৫৮/৮০ মিমি রিসিট HTML (প্রিভিউ ও প্রিন্ট একই HTML) |
 | `barcode.ts` | CODE128-B (নিজস্ব, নির্ভরতা-মুক্ত) ও QR (qrcode-generator) SVG |

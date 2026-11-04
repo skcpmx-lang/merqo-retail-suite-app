@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, Menu, shell, dialog } from 'electron';
+import { app, BrowserWindow, ipcMain, Menu, session, shell, dialog } from 'electron';
 import path from 'node:path';
 import fs from 'node:fs';
 import {
@@ -80,6 +80,16 @@ function runAutoBackup(): void {
   } catch (err) {
     writeLog('warn', 'auto backup failed', err);
   }
+}
+
+/**
+ * The UI needs no device permissions at all (no camera, microphone, geolocation,
+ * notifications, clipboard-read or USB/HID). Denying them centrally means a
+ * compromised renderer cannot even ask.
+ */
+function lockDownPermissions(): void {
+  session.defaultSession.setPermissionRequestHandler((_wc, _permission, callback) => callback(false));
+  session.defaultSession.setPermissionCheckHandler(() => false);
 }
 
 function createWindow(): void {
@@ -194,6 +204,7 @@ if (!singleInstance) {
   });
 
   app.whenReady().then(() => {
+    lockDownPermissions();
     bootstrapDatabase();
     buildMenu();
     createWindow();

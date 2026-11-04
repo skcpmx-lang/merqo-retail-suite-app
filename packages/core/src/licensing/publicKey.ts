@@ -3,7 +3,7 @@
  *
  * The matching PRIVATE key is never present in this repository. It is only used
  * by the private License Generator on the vendor's own machine (see
- * docs/LICENSING_ARCHITECTURE.md and the `npm run keys:generate` script).
+ * docs/04-licensing.md and the `npm run keys:generate` script).
  *
  * To rotate the key: regenerate a key pair, replace the value below, rebuild and
  * re-release the application. Existing licences signed with the old key will be

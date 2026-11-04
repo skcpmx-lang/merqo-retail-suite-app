@@ -36,7 +36,7 @@
 
 ```bash
 npm ci            # better-sqlite3 লোকালি কম্পাইল হয়
-npm run verify    # টাইপচেক (৩ প্যাকেজ) + ৫৩ টেস্ট + দুই অ্যাপের বিল্ড + সিক্রেট স্ক্যান
+npm run verify    # টাইপচেক (৩ প্যাকেজ) + ৯৯ টেস্ট + দুই অ্যাপের বিল্ড + সিক্রেট স্ক্যান
 npm run build     # two apps → packages/*/dist
 ```
 
@@ -58,8 +58,25 @@ node scripts/build-license-generator.mjs && node scripts/package-license-generat
 - [`docs/05-build-and-release.md`](docs/05-build-and-release.md) — বিল্ড পাইপলাইন ও রিলিজ চেকলিস্ট
 - [`docs/06-testing-and-verification.md`](docs/06-testing-and-verification.md) — কী যাচাই হয়েছে, কী বাকি
 - [`docs/07-requirements-traceability.md`](docs/07-requirements-traceability.md) — প্রতিটি রিকোয়্যারমেন্ট → কোড → যাচাই
-- [`docs/08-database-schema.md`](docs/08-database-schema.md) — ২৭ টেবিল, ইনডেক্স, মাইগ্রেশন
+- [`docs/08-database-schema.md`](docs/08-database-schema.md) — ৩১ টেবিল, ইনডেক্স, মাইগ্রেশন
 - [`docs/09-known-limits.md`](docs/09-known-limits.md) — সীমাবদ্ধতা ও পরবর্তী কাজ
+
+### চূড়ান্ত অডিট (২০২৬-১১-০৪)
+
+| ডকুমেন্ট | বিষয় |
+|---|---|
+| [`FINAL_AUDIT_BASELINE.md`](docs/FINAL_AUDIT_BASELINE.md) | কী, কোথায়, কীভাবে যাচাই হয়েছে (L1–L5) |
+| [`FINAL_REQUIREMENT_AUDIT.md`](docs/FINAL_REQUIREMENT_AUDIT.md) | ৮৪টি রিকোয়্যারমেন্টের অবস্থা |
+| [`FINAL_CODE_AUDIT.md`](docs/FINAL_CODE_AUDIT.md) | আর্কিটেকচার, টাইপ-সেফটি, ডেড কোড, বিল্ড |
+| [`FINAL_DATABASE_AUDIT.md`](docs/FINAL_DATABASE_AUDIT.md) | ৩১ টেবিল, ৪৩ ইনডেক্স, WAL, মাইগ্রেশন, কুয়েরি প্ল্যান |
+| [`FINAL_SECURITY_AUDIT.md`](docs/FINAL_SECURITY_AUDIT.md) | থ্রেট মডেল, RBAC, CSP, গৃহীত ঝুঁকি |
+| [`FINAL_LICENSE_AUDIT.md`](docs/FINAL_LICENSE_AUDIT.md) | Ed25519, ফিঙ্গারপ্রিন্ট, কী আলাদা রাখা |
+| [`FINAL_WORKFLOW_AUDIT.md`](docs/FINAL_WORKFLOW_AUDIT.md) | বিক্রয়/রিটার্ন/ক্রয়/ক্যাশের ইনভ্যারিয়েন্ট |
+| [`FINAL_BUG_AND_WARNING_REGISTER.md`](docs/FINAL_BUG_AND_WARNING_REGISTER.md) | সব বাগ, সতর্কতা, খোলা আইটেম |
+| [`FINAL_PERFORMANCE_REPORT.md`](docs/FINAL_PERFORMANCE_REPORT.md) | মাপা পারফরম্যান্স (হার্ডওয়্যারসহ) |
+| [`FINAL_COMMERCIAL_READINESS.md`](docs/FINAL_COMMERCIAL_READINESS.md) | **ভার্ডিক্ট B** ও শর্ত |
+| [`FINAL_RELEASE_VERIFICATION.md`](docs/FINAL_RELEASE_VERIFICATION.md) | Windows প্যাকেজিং প্রমাণ |
+| [`FINAL_QA_CHECKLIST.md`](docs/FINAL_QA_CHECKLIST.md) | ম্যানুয়াল/হার্ডওয়্যার চেকলিস্ট |
 
 ## লাইসেন্স
 
