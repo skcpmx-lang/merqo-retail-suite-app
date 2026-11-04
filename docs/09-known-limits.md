@@ -91,3 +91,24 @@ GitHub Actions: `CI` ওয়ার্কফ্লো (ubuntu-latest) সবু
   token-only styling, not by pixel diffs.
 - **LAN is single-host.** No replication, no queued offline sales; a disconnected
   terminal refuses to sell rather than creating invoices that would conflict.
+
+## v1.1.1 additions (License Generator)
+
+- **The generator has no user accounts.** It runs under the Windows account that
+  launches it; there is no operator list, role model or audit of "who" beyond the
+  machine. Multi-operator use needs OS accounts (or a future admin PIN).
+- **Private key protection is OS-level only.** The app never stores, displays or
+  exports the private key — the operator points it at a file for the session — but
+  it cannot stop someone with file access to that machine from reading the file.
+- **Revocation stays PARTIAL.** A revoked `.sauda` still verifies
+  cryptographically on an offline client; the revocation list lives in the
+  generator's ledger and is surfaced on the generator's verify screen.
+- **Re-issue does not invalidate the previous file.** The old record becomes
+  `superseded`; the old file remains technically valid until the client replaces
+  it or its device binding stops matching.
+- **Renderer tests are render-only.** They are server-side render smoke tests
+  (module loading, first paint, no key leakage). Click-through, focus order and
+  appearance are covered only by the manual Windows checklist (§2.9).
+- **Installers are not code-signed**, so SmartScreen may warn on first run.
+- **Windows-only in practice.** Builds and packaging are validated on Windows in
+  CI; Linux/macOS are untested for this product.
