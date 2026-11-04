@@ -5,9 +5,13 @@ export * from './domain/text.js';
 
 export * from './db/connection.js';
 export * from './db/schema.js';
+export * from './db/schema-v5.js';
 export * from './db/seed.js';
 
 export * from './services/accounting.js';
+export * from './services/devices.js';
+export * from './services/events.js';
+export * from './services/idempotency.js';
 export * from './services/audit.js';
 export * from './services/auth.js';
 export * from './services/settings.js';

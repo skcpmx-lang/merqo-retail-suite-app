@@ -7,6 +7,7 @@ import { seedReferenceData } from './seed.js';
 import { migrateToV2 } from './migration-v2.js';
 import { migrateToV3 } from './migration-v3.js';
 import { migrateToV4 } from './migration-v4.js';
+import { migrateToV5 } from './migration-v5.js';
 
 export type Db = SqliteDb;
 
@@ -140,6 +141,13 @@ export const MIGRATIONS: Migration[] = [
     name: 'login_attempt_protection',
     up: (db) => {
       migrateToV4(db);
+    },
+  },
+  {
+    version: 5,
+    name: 'multi_pc_devices_sessions_events',
+    up: (db) => {
+      migrateToV5(db);
     },
   },
 ];

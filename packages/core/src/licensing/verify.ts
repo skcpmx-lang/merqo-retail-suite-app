@@ -71,6 +71,47 @@ export function validatePayloadSchema(payload: LicensePayload): string | null {
   return null;
 }
 
+/**
+ * Multi-PC binding check (v1.1.4).
+ *
+ * A licence that carries `store_id` / `device_id` may only be used for that store
+ * and that PC. A v1 licence (no such fields) stays valid for a standalone POS, so
+ * existing customers are not broken by the upgrade.
+ */
+export interface BindingCheck {
+  ok: boolean;
+  code?: 'STORE_MISMATCH' | 'DEVICE_MISMATCH' | 'ROLE_MISMATCH';
+  message?: string;
+}
+
+export function checkDeviceBinding(
+  payload: LicensePayload,
+  expected: { storeId?: string; deviceId?: string; role?: string },
+): BindingCheck {
+  if (payload.store_id && expected.storeId && payload.store_id !== expected.storeId) {
+    return {
+      ok: false,
+      code: 'STORE_MISMATCH',
+      message: `লাইসেন্সটি অন্য দোকানের (${payload.store_id}) — এই সার্ভারের Store ID ${expected.storeId}।`,
+    };
+  }
+  if (payload.device_id && expected.deviceId && payload.device_id !== expected.deviceId) {
+    return {
+      ok: false,
+      code: 'DEVICE_MISMATCH',
+      message: 'লাইসেন্সটি অন্য কম্পিউটারের জন্য ইস্যু করা হয়েছে।',
+    };
+  }
+  if (payload.device_role && expected.role && payload.device_role !== expected.role) {
+    return {
+      ok: false,
+      code: 'ROLE_MISMATCH',
+      message: `এই ডিভাইস ${expected.role} হিসেবে যোগ হচ্ছে, কিন্তু লাইসেন্সটি ${payload.device_role}।`,
+    };
+  }
+  return { ok: true };
+}
+
 export interface VerifyOptions {
   /** Override the collected fingerprint (used by tests / rebinding flows). */
   device?: DeviceFingerprint;

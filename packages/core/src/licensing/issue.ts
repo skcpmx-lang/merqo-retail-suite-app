@@ -24,6 +24,11 @@ export interface IssueInput {
   issuedAt?: string;
   generator?: string;
   device: DeviceFingerprint;
+  /** v1.1.4 multi-PC fields (optional; omitted for a standalone licence). */
+  storeId?: string;
+  deviceId?: string;
+  deviceRole?: 'SERVER_POS' | 'CLIENT_POS' | 'CLIENT_MANAGEMENT';
+  deviceCapacity?: number;
 }
 
 export const DEFAULT_FEATURES = [
@@ -71,6 +76,12 @@ export function buildPayload(input: IssueInput): LicensePayload {
     features: input.features ?? DEFAULT_FEATURES,
     note: input.note?.trim() || undefined,
     generator: input.generator ?? `Sauda License Generator ${LICENSE_KEY_ID}`,
+    ...(input.storeId ? { store_id: input.storeId.trim() } : {}),
+    ...(input.deviceId ? { device_id: input.deviceId.trim() } : {}),
+    ...(input.deviceRole ? { device_role: input.deviceRole } : {}),
+    ...(input.deviceCapacity !== undefined
+      ? { device_capacity: Math.max(1, Math.trunc(Number(input.deviceCapacity) || 1)) }
+      : {}),
   };
 }
 
