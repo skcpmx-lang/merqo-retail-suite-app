@@ -9,6 +9,7 @@ import { describe, expect, it } from 'vitest';
 import {
   I386_MACHINE,
   X64_MACHINE,
+  classifyPayloadBinary,
   evaluateInstaller,
   evaluatePayload,
   findForbiddenMarkers,
@@ -76,34 +77,61 @@ describe('PE architecture', () => {
 });
 
 describe('packaged payload architecture', () => {
-  const x64 = { path: 'packages/app/release/win-unpacked/Sauda Retail Suite.exe', machine: X64_MACHINE };
-  const x64Native = {
-    path: 'packages/app/release/win-unpacked/resources/app.asar.unpacked/node_modules/better-sqlite3/build/Release/better_sqlite3.node',
+  const exe = { path: 'packages/app/release/win-unpacked/Sauda Retail Suite.exe', machine: X64_MACHINE };
+  const sqliteX64 = {
+    path: 'packages/app/release/win-unpacked/resources/app.asar.unpacked/node_modules/better-sqlite3/prebuilds/win32-x64.node',
     machine: X64_MACHINE,
   };
+  const foreign = {
+    path: 'packages/app/release/win-unpacked/resources/app.asar.unpacked/node_modules/better-sqlite3/prebuilds/linux-x64.node',
+    machine: null,
+  };
 
-  it('accepts an x64 application with an x64 native module', () => {
+  it('classifies the payload files it cares about', () => {
+    expect(classifyPayloadBinary(exe.path)).toBe('app-executable');
+    expect(classifyPayloadBinary(sqliteX64.path)).toBe('win-x64-module');
+    expect(classifyPayloadBinary('x/prebuilds/win32-arm64.node')).toBe('win-other-module');
+    expect(classifyPayloadBinary('x/prebuilds/darwin-arm64.node')).toBe('foreign-prebuild');
+    expect(classifyPayloadBinary('x/build/Release/better_sqlite3.node')).toBe('compiled-module');
+    expect(classifyPayloadBinary('marketserv.exe'.replace('.exe', '.txt'))).toBe('other');
+  });
+
+  it('accepts an x64 application with the Windows x64 native module', () => {
     const verdict = evaluatePayload({
       name: 'Sauda-Retail-Suite-Setup-1.1.4.exe',
-      binaries: [x64, x64Native],
+      binaries: [exe, sqliteX64],
     });
     expect(verdict.failures).toEqual([]);
   });
 
-  it('fails when the application or the native module is 32-bit', () => {
+  // Regression: better-sqlite3 ships a prebuild for every platform, and the first version of this
+  // gate demanded x64 of all of them, refusing the v1.1.4 installers for files never loaded on
+  // Windows. Foreign prebuilds are now a warning, not a failure.
+  it('does not fail on foreign-platform prebuilds, but reports them', () => {
     const verdict = evaluatePayload({
       name: 'Sauda-Retail-Suite-Setup-1.1.4.exe',
-      binaries: [x64, { ...x64Native, machine: I386_MACHINE }],
+      binaries: [exe, sqliteX64, foreign, { ...foreign, path: 'x/prebuilds/darwin-arm64.node' }],
     });
-    expect(verdict.failures.join(' ')).toMatch(/better_sqlite3\.node is 014C/);
+    expect(verdict.failures).toEqual([]);
+    expect(verdict.warnings.join(' ')).toMatch(/2 foreign-platform prebuild/);
   });
 
-  it('fails when the payload has no native module at all', () => {
+  it('fails when the application executable is not x64', () => {
     const verdict = evaluatePayload({
       name: 'Sauda-Retail-Suite-Setup-1.1.4.exe',
-      binaries: [x64],
+      binaries: [{ ...exe, machine: I386_MACHINE }, sqliteX64],
     });
-    expect(verdict.failures.join(' ')).toMatch(/no native module/);
+    expect(verdict.failures.join(' ')).toMatch(/application executable .* is 014C/);
+  });
+
+  it('fails when the Windows x64 native module is missing or not x64', () => {
+    expect(
+      evaluatePayload({ name: 'x.exe', binaries: [exe, { ...sqliteX64, path: 'x/prebuilds/win32-arm64.node', machine: 0xaa64 }] })
+        .failures.join(' '),
+    ).toMatch(/no Windows x64 native module/);
+    expect(
+      evaluatePayload({ name: 'x.exe', binaries: [exe, { ...sqliteX64, machine: I386_MACHINE }] }).failures.join(' '),
+    ).toMatch(/native module .* is 014C/);
   });
 
   it('fails when nothing could be inspected instead of passing silently', () => {

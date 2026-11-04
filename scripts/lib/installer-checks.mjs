@@ -199,13 +199,42 @@ export function evaluateInstaller(input) {
 }
 
 /**
- * Verifies the payload a Windows user actually runs: the application executables and the native
- * SQLite module inside `win-unpacked`. These must be x64 (`8664`) — a 32-bit application or an
- * arm64 native module would install fine and then fail to start.
+ * Classifies one file inside the packaged payload.
+ *
+ * better-sqlite3 v13 ships a prebuild for **every** platform in `prebuilds/` (linux, linuxmusl,
+ * darwin, win32 — arm64 and x64) and `node-gyp-build` loads only the one matching the running
+ * platform at runtime. So a Windows installer legitimately contains foreign-platform native modules;
+ * demanding "every .node file is a PE x64 image" rejected the v1.1.4 installers for shipping files
+ * that are never loaded. What must be true is narrower and checkable:
+ *
+ *  - the application executable must be x64;
+ *  - the Windows x64 native module (`prebuilds/win32-x64.node`, or a compiled
+ *    `build/Release/*.node`) must exist and must be x64;
+ *  - everything else is reported, not failed on.
+ */
+export function classifyPayloadBinary(filePath) {
+  const normalised = String(filePath ?? '').replace(/\\/g, '/').toLowerCase();
+  const name = normalised.split('/').pop() ?? '';
+  if (name.endsWith('.exe')) return 'app-executable';
+  if (!name.endsWith('.node')) return 'other';
+  const prebuild = /prebuilds\/([a-z0-9]+)-([a-z0-9]+)\.node$/.exec(normalised);
+  if (prebuild) {
+    const [, platform, arch] = prebuild;
+    if (platform === 'win32' && arch === 'x64') return 'win-x64-module';
+    if (platform === 'win32') return 'win-other-module';
+    return 'foreign-prebuild';
+  }
+  if (/\/build\/release\//.test(normalised)) return 'compiled-module';
+  return 'other-module';
+}
+
+/**
+ * Verifies the payload a Windows user actually runs: the application executable and the Windows x64
+ * SQLite native module inside `win-unpacked`.
  *
  * @param {object} input
  * @param {string} input.name             installer file name (for messages)
- * @param {Array<{path: string, machine: number|null, kind?: string}>} input.binaries
+ * @param {Array<{path: string, machine: number|null}>} input.binaries
  * @returns {{failures: string[], warnings: string[]}}
  */
 export function evaluatePayload(input) {
@@ -220,18 +249,44 @@ export function evaluatePayload(input) {
     return { failures, warnings };
   }
 
-  for (const binary of binaries) {
+  const classified = binaries.map((binary) => ({
+    ...binary,
+    kind: classifyPayloadBinary(binary.path),
+  }));
+
+  const executables = classified.filter((binary) => binary.kind === 'app-executable');
+  if (!executables.length) {
+    failures.push(`${name}: no application executable found in the packaged payload`);
+  }
+  for (const binary of executables) {
     if (binary.machine !== X64_MACHINE) {
-      failures.push(
-        `${name}: packaged binary ${binary.path} is ${machineLabel(binary.machine)} (expected 8664 = x64)`,
-      );
+      failures.push(`${name}: application executable ${binary.path} is ${machineLabel(binary.machine)} (expected 8664 = x64)`);
     }
   }
 
-  if (!binaries.some((binary) => String(binary.path).toLowerCase().endsWith('.node'))) {
-    failures.push(`${name}: no native module (.node) found in the packaged payload — SQLite would be missing`);
-  } else if (!binaries.some((binary) => String(binary.path).toLowerCase().endsWith('better_sqlite3.node'))) {
-    warnings.push(`${name}: expected native module better_sqlite3.node was not found in the payload`);
+  const windowsModules = classified.filter(
+    (binary) => binary.kind === 'win-x64-module' || binary.kind === 'compiled-module',
+  );
+  if (!windowsModules.length) {
+    failures.push(
+      `${name}: no Windows x64 native module (prebuilds/win32-x64.node or build/Release/*.node) in the payload — SQLite would be missing at runtime`,
+    );
+  }
+  for (const binary of windowsModules) {
+    if (binary.machine !== X64_MACHINE) {
+      failures.push(`${name}: native module ${binary.path} is ${machineLabel(binary.machine)} (expected 8664 = x64)`);
+    }
+  }
+
+  const winOther = classified.filter((binary) => binary.kind === 'win-other-module');
+  for (const binary of winOther) {
+    warnings.push(`${name}: payload ships a non-x64 Windows native module (${binary.path}) — not used by this build`);
+  }
+  const foreign = classified.filter((binary) => binary.kind === 'foreign-prebuild');
+  if (foreign.length) {
+    warnings.push(
+      `${name}: payload ships ${foreign.length} foreign-platform prebuild(s) from better-sqlite3 (never loaded on Windows; candidate for a size reduction in a later release)`,
+    );
   }
 
   return { failures, warnings };
