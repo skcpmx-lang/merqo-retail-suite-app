@@ -156,6 +156,43 @@ const missing = missingArtifacts(present, version);
 if (missing.length) fail(`missing expected artefact(s): ${missing.join(', ')}`);
 if (!present.length) fail(`no .exe files in ${targetDir}`);
 
+/** The unpacked application directory that produced the installer with this name. */
+function unpackedFor(installerName) {
+  const releaseRoot = installerName.includes('License-Generator')
+    ? path.join(root, 'packages', 'license-generator', 'release')
+    : path.join(root, 'packages', 'app', 'release');
+  const unpacked = path.join(releaseRoot, 'win-unpacked');
+  return fs.existsSync(unpacked) ? unpacked : null;
+}
+
+/** The x64 binaries a Windows user actually runs: the app executable and the native SQLite module. */
+function packagedBinaries(unpacked) {
+  const found = [];
+  for (const entry of fs.readdirSync(unpacked)) {
+    const full = path.join(unpacked, entry);
+    if (entry.toLowerCase().endsWith('.exe') && fs.statSync(full).isFile()) found.push(full);
+  }
+  const resources = path.join(unpacked, 'resources');
+  if (fs.existsSync(resources)) {
+    for (const entry of fs.readdirSync(resources)) {
+      const full = path.join(resources, entry);
+      if (entry.toLowerCase().endsWith('.node') && fs.statSync(full).isFile()) found.push(full);
+    }
+    const unpackedResources = path.join(resources, 'app.asar.unpacked');
+    if (fs.existsSync(unpackedResources)) {
+      const walk = (dir) => {
+        for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+          const full = path.join(dir, entry.name);
+          if (entry.isDirectory()) walk(full);
+          else if (entry.name.toLowerCase().endsWith('.node')) found.push(full);
+        }
+      };
+      walk(unpackedResources);
+    }
+  }
+  return found.sort();
+}
+
 const sums = [];
 for (const name of present) {
   const file = path.join(targetDir, name);
@@ -192,8 +229,22 @@ for (const name of present) {
   const status = failures.length ? '✖' : '✔';
   const signatureLabel = signatureResult.value?.status ?? (canReadSignature ? 'unreadable' : 'not read');
   console.log(
-    `${status} ${name} — ${mb} MB — ${machineLabel(machine)} — ${signatureLabel} — sha256 ${digest}`,
+    `${status} ${name} — ${mb} MB — machine ${machineLabel(machine)} (installer bootstrap) — ${signatureLabel} — sha256 ${digest}`,
   );
+  if (versionResult.value) {
+    console.log(
+      `   ${name}: ProductVersion "${versionResult.value.productVersion}" FileVersion "${versionResult.value.fileVersion}" ProductName "${versionResult.value.productName}"`,
+    );
+  }
+  const unpacked = unpackedFor(name);
+  if (unpacked) {
+    for (const binary of packagedBinaries(unpacked)) {
+      const binaryMachine = peMachine(readHead(binary));
+      console.log(
+        `   ${name}: payload ${path.relative(root, binary)} — machine ${machineLabel(binaryMachine)}`,
+      );
+    }
+  }
   sums.push(`${digest}  ${name}`);
 }
 
@@ -242,7 +293,33 @@ if (problems.length) {
   console.error('\n[verify-installer] RELEASE BLOCKED:');
   for (const problem of problems) console.error(`  ✖ ${problem}`);
   console.error('\n[verify-installer] SHA256SUMS.txt was not written. Do not upload these files.');
+  // The runner log is not always reachable, so every blocking problem is also published as a
+  // check annotation and in the job summary. `::error` is plain text outside GitHub Actions.
+  for (const problem of problems) {
+    console.log(`::error title=verify-installer::${problem.replace(/%/g, '%25').replace(/\r?\n/g, ' ')}`);
+  }
+  if (process.env.GITHUB_STEP_SUMMARY) {
+    try {
+      fs.appendFileSync(
+        process.env.GITHUB_STEP_SUMMARY,
+        `## Installer verification failed\n\n${problems.map((p) => `- ${p}`).join('\n')}\n`,
+      );
+    } catch {
+      /* never mask the real failure */
+    }
+  }
   process.exit(1);
+}
+
+if (process.env.GITHUB_STEP_SUMMARY) {
+  try {
+    fs.appendFileSync(
+      process.env.GITHUB_STEP_SUMMARY,
+      `## Installer verification\n\n${sums.map((line) => `- \`${line.trim()}\``).join('\n')}\n`,
+    );
+  } catch {
+    /* optional reporting */
+  }
 }
 
 const sumsPath = path.join(targetDir, 'SHA256SUMS.txt');
