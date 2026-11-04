@@ -104,7 +104,8 @@ export function missingArtifacts(names, version) {
  * @param {ReturnType<typeof parseVersionReport>} [input.versionInfo]
  * @param {ReturnType<typeof parseSignatureReport>} [input.signature]
  * @param {number|null} [input.machine]  PE machine type
- * @param {boolean} [input.requireTimestamp=true]
+ * @param {boolean} [input.requireSignature=false]  opt-in only; unsigned is accepted by policy
+ * @param {boolean} [input.requireTimestamp=false]  opt-in only
  * @returns {{failures: string[], warnings: string[]}}
  */
 export function evaluateInstaller(input) {
@@ -118,7 +119,9 @@ export function evaluateInstaller(input) {
     versionInfo,
     signature,
     machine,
-    requireTimestamp = true,
+    // v1.1.4 policy: unsigned installers are accepted, so the signature is reported, not required.
+    requireSignature = false,
+    requireTimestamp = false,
   } = input ?? {};
 
   if (typeof sizeBytes !== 'number' || !Number.isFinite(sizeBytes)) {
@@ -132,25 +135,23 @@ export function evaluateInstaller(input) {
     );
   }
 
-  // Signature — the hard gate. Anything other than Valid blocks publication.
+  // Signature — reported honestly. Unsigned is NOT a failure under the v1.1.4 policy; the
+  // caller may opt in to enforcement with `requireSignature`.
   if (!signature) {
-    failures.push(`${name}: Authenticode status could not be read (is signtool/PowerShell available?)`);
-  } else {
-    if (signature.status.toLowerCase() !== 'valid') {
-      failures.push(
-        `${name}: Authenticode status is "${signature.status || '(empty)'}"${
-          signature.statusMessage ? ` — ${signature.statusMessage}` : ''
-        }, expected "Valid"`,
-      );
-    }
-    if (!signature.subject) {
-      failures.push(`${name}: signed but no signer subject was reported`);
-    }
-    if (!signature.timestamper) {
-      (requireTimestamp ? failures : warnings).push(
-        `${name}: no RFC-3161 timestamp — the signature will expire with the certificate`,
-      );
-    }
+    warnings.push(`${name}: Authenticode status was not read`);
+  } else if (signature.status.toLowerCase() !== 'valid') {
+    (requireSignature ? failures : warnings).push(
+      `${name}: Authenticode status is "${signature.status || '(empty)'}"${
+        signature.statusMessage ? ` — ${signature.statusMessage}` : ''
+      } — unsigned, accepted by owner`,
+    );
+  } else if (!signature.subject) {
+    (requireSignature ? failures : warnings).push(`${name}: signature reported Valid but no signer subject`);
+  }
+  if (signature && signature.status.toLowerCase() === 'valid' && !signature.timestamper) {
+    (requireTimestamp ? failures : warnings).push(
+      `${name}: signature has no RFC-3161 timestamp — it will expire with the certificate`,
+    );
   }
 
   // Version metadata.

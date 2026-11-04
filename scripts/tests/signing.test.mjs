@@ -1,37 +1,34 @@
 /**
- * D-1 — a release build is signed or refused.
+ * Optional signing (v1.1.4 policy: unsigned installers are accepted).
  *
- * These tests exercise the configuration reader that both packaging scripts call before
- * electron-builder runs, so "missing signing credentials" cannot silently produce an unsigned
- * installer.
+ * These tests pin two things: a configured certificate is detected correctly, and the *absence*
+ * of one is a normal, reported state — never an error, and never a dependency of the release.
  */
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { assertSigningConfigured, describeSigning, signingConfig } from '../lib/signing.mjs';
+import { describeSigning, signingConfig } from '../lib/signing.mjs';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const read = (rel) => fs.readFileSync(path.join(repoRoot, rel), 'utf8');
 
 describe('signing configuration', () => {
-  it('refuses an empty environment', () => {
+  it('treats an empty environment as unsigned, not as an error', () => {
     const config = signingConfig({});
     expect(config.configured).toBe(false);
     expect(config.mode).toBeNull();
-    expect(config.problems.join(' ')).toMatch(/unsigned release is not permitted/i);
+    expect(config.builderArgs).toEqual([]);
+    expect(config.problems.join(' ')).toMatch(/unsigned.*accepted by owner/i);
   });
 
-  it('refuses a PFX path without its password', () => {
-    const config = signingConfig({ CSC_LINK: 'D:\\certs\\merqo.pfx' });
-    expect(config.configured).toBe(false);
-    expect(config.problems.join(' ')).toMatch(/CSC_KEY_PASSWORD/);
-  });
-
-  it('refuses a password without a PFX path', () => {
-    const config = signingConfig({ CSC_KEY_PASSWORD: 'secret' });
-    expect(config.configured).toBe(false);
-    expect(config.problems.join(' ')).toMatch(/CSC_LINK/);
+  it('ignores an incomplete PFX configuration instead of failing the build', () => {
+    const linkOnly = signingConfig({ CSC_LINK: 'D:\\certs\\merqo.pfx' });
+    expect(linkOnly.configured).toBe(false);
+    expect(linkOnly.problems.join(' ')).toMatch(/CSC_KEY_PASSWORD/);
+    const passwordOnly = signingConfig({ CSC_KEY_PASSWORD: 'secret' });
+    expect(passwordOnly.configured).toBe(false);
+    expect(passwordOnly.problems.join(' ')).toMatch(/CSC_LINK/);
   });
 
   it('accepts a complete PFX configuration', () => {
@@ -58,29 +55,10 @@ describe('signing configuration', () => {
     expect(config.mode).toBe('cloud');
   });
 
-  it('refuses an incomplete cloud-signing configuration and names what is missing', () => {
+  it('reports an incomplete cloud configuration without blocking the build', () => {
     const config = signingConfig({ AZURE_TRUSTED_SIGNING_ENDPOINT: 'https://weu.codesigning.azure.net' });
     expect(config.configured).toBe(false);
     expect(config.problems.join(' ')).toMatch(/AZURE_TRUSTED_SIGNING_ACCOUNT/);
-  });
-
-  it('throws SIGNING_REQUIRED with actionable instructions', () => {
-    let error = null;
-    try {
-      assertSigningConfigured({}, { label: 'package-app' });
-    } catch (err) {
-      error = err;
-    }
-    expect(error).not.toBeNull();
-    expect(error.code).toBe('SIGNING_REQUIRED');
-    expect(error.message).toMatch(/package-app refused/);
-    expect(error.message).toMatch(/CSC_LINK/);
-    expect(error.message).toMatch(/licence-signing private key/i);
-  });
-
-  it('returns the configuration when signing is available', () => {
-    const config = assertSigningConfigured({ WINDOWS_CODE_SIGNING_SUBJECT: 'MERQO' });
-    expect(config.mode).toBe('token');
   });
 
   it('describes the active method without ever printing a secret', () => {
@@ -88,20 +66,22 @@ describe('signing configuration', () => {
     const text = describeSigning(pfx);
     expect(text).toMatch(/pfx/i);
     expect(text).not.toContain('top-secret');
-    expect(describeSigning(signingConfig({}))).toMatch(/refused/i);
+    expect(describeSigning(signingConfig({}))).toMatch(/unsigned.*accepted/i);
   });
 });
 
-describe('packaging scripts cannot build unsigned', () => {
-  it('both packaging entry points call the signing guard before electron-builder', () => {
+describe('packaging scripts allow unsigned builds and report them', () => {
+  it('both entry points detect signing, never require it, and pass any signing args through', () => {
     for (const script of ['scripts/package-app.mjs', 'scripts/package-license-generator.mjs']) {
       const text = read(script);
-      expect(text, `${script} must import the guard`).toMatch(/assertSigningConfigured/);
-      const guardAt = text.indexOf('assertSigningConfigured(process.env');
+      expect(text, `${script} must read the signing configuration`).toMatch(/signingConfig\(process\.env\)/);
+      expect(text, `${script} must not block unsigned builds`).not.toMatch(/assertSigningConfigured/);
+      expect(text, `${script} must report the mode`).toMatch(/describeSigning/);
+      expect(text, `${script} must pass signing arguments when present`).toMatch(/signing\.builderArgs/);
+      const detectAt = text.indexOf('signingConfig(process.env)');
       const builderAt = text.indexOf('spawnSync(process.execPath, args');
-      expect(guardAt, `${script} must check signing`).toBeGreaterThan(-1);
-      expect(builderAt, `${script} must build`).toBeGreaterThan(guardAt);
-      expect(text, `${script} must pass the signing arguments`).toMatch(/signing\.builderArgs/);
+      expect(detectAt).toBeGreaterThan(-1);
+      expect(builderAt).toBeGreaterThan(detectAt);
     }
   });
 });

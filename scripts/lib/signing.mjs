@@ -1,19 +1,18 @@
 /**
- * Authenticode signing configuration for the release build (D-1).
+ * Optional Authenticode signing for the Windows release build.
  *
- * A release build fails closed: if no signing method is configured, packaging stops before
- * electron-builder runs, so an unsigned installer cannot be produced, let alone uploaded or
- * published. This module is pure (it only reads an environment object) so the failure cases are
- * unit-tested without Windows or a certificate.
+ * RELEASE POLICY (v1.1.4): the owner accepts **unsigned** installers. Code signing is therefore
+ * optional — it is used when the build host happens to have a certificate, and reported honestly
+ * when it does not. It is never a requirement, never a secret the release depends on, and never a
+ * reason to hold a release back.
  *
- * Supported methods (see docs/V1.1.4_WINDOWS_BUILD_SIGNING_HANDOFF.md §3):
+ * Supported (optional) methods:
  *  - `pfx`   : CSC_LINK + CSC_KEY_PASSWORD            (electron-builder signs the NSIS output)
  *  - `token` : WINDOWS_CODE_SIGNING_SUBJECT           (hardware token in the Windows cert store)
  *  - `cloud` : AZURE_TRUSTED_SIGNING_ENDPOINT/ACCOUNT/PROFILE
- *              (signed by the provider plugin; scripts/verify-installer.mjs still enforces
- *               Status: Valid, so a mis-configured cloud step cannot pass unnoticed)
  *
- * The licence-signing key is never part of this: it belongs to the licence-issuing step only.
+ * The licence-signing key that protects Sauda's own licences is a completely different thing and
+ * is never part of this: it belongs to the licence-issuing step only.
  */
 
 export const SIGNING_MODES = Object.freeze(['pfx', 'token', 'cloud']);
@@ -61,12 +60,12 @@ export function signingConfig(env = {}) {
     if (missing.length) {
       return failure('cloud', [`cloud signing is incomplete — missing ${missing.join(', ')}`]);
     }
-    // The provider's plugin performs the signing; our own gate still requires Status: Valid.
+    // The provider's plugin performs the signing; we only detect the configuration here.
     return { mode: 'cloud', configured: true, problems: [], builderArgs: [] };
   }
 
   return failure(null, [
-    'no Authenticode signing configuration found — an unsigned release is not permitted',
+    'no Authenticode signing configuration — the installer will be unsigned (accepted by owner)',
   ]);
 }
 
@@ -74,36 +73,9 @@ function failure(mode, problems) {
   return { mode, configured: false, problems, builderArgs: [] };
 }
 
-const HOW_TO_FIX = [
-  'Configure exactly one of:',
-  '  pfx   : CSC_LINK (path or base64 .pfx) + CSC_KEY_PASSWORD',
-  '  token : WINDOWS_CODE_SIGNING_SUBJECT="<exact certificate subject CN>" (token PIN at build time)',
-  '  cloud : AZURE_TRUSTED_SIGNING_ENDPOINT + AZURE_TRUSTED_SIGNING_ACCOUNT + AZURE_TRUSTED_SIGNING_PROFILE',
-  'The certificate must be a publicly trusted code-signing certificate (EKU 1.3.6.1.5.5.7.3.3).',
-  'Never put the licence-signing private key on the build host or in these variables.',
-].join('\n');
-
-/** Throws `SIGNING_REQUIRED` when the environment cannot produce a signed installer. */
-export function assertSigningConfigured(env = {}, options = {}) {
-  const config = signingConfig(env);
-  if (config.configured) return config;
-  const label = options.label ?? 'release packaging';
-  const error = new Error(
-    [
-      `${label} refused: no valid Authenticode signing configuration.`,
-      ...config.problems,
-      '',
-      HOW_TO_FIX,
-    ].join('\n'),
-  );
-  error.code = 'SIGNING_REQUIRED';
-  error.problems = config.problems;
-  throw error;
-}
-
 /** Human-readable summary for build logs — never prints a secret, only which mode is active. */
 export function describeSigning(config) {
-  if (!config.configured) return 'unsigned (refused)';
+  if (!config.configured) return 'unsigned (accepted by owner)';
   if (config.mode === 'pfx') return 'pfx (CSC_LINK)';
   if (config.mode === 'token') return 'hardware token (certificateSubjectName)';
   return 'cloud signing (provider plugin)';

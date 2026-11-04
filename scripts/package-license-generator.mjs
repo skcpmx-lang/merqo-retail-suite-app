@@ -7,7 +7,7 @@ import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { assertSigningConfigured, describeSigning } from './lib/signing.mjs';
+import { describeSigning, signingConfig } from './lib/signing.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const pkgDir = path.join(root, 'packages', 'license-generator');
@@ -41,13 +41,9 @@ if (realSuspicious.length) {
 }
 
 // Signed or refused (D-1) — the same rule as the main app.
-let signing;
-try {
-  signing = assertSigningConfigured(process.env, { label: 'package-license-generator' });
-} catch (err) {
-  console.error(`[package-license-generator] ${err.message}`);
-  process.exit(1);
-}
+// Code signing is optional (v1.1.4 policy: unsigned installers are accepted). When a
+// certificate is available it is used automatically; otherwise the build is reported as unsigned.
+const signing = signingConfig(process.env);
 console.log(`[package-license-generator] signing: ${describeSigning(signing)}`);
 
 const args = [

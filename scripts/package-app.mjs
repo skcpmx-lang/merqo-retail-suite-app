@@ -10,7 +10,7 @@ import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { assertSigningConfigured, describeSigning } from './lib/signing.mjs';
+import { describeSigning, signingConfig } from './lib/signing.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const appDir = path.join(root, 'packages', 'app');
@@ -26,13 +26,9 @@ if (!fs.existsSync(builderBin)) {
   process.exit(1);
 }
 
-let signing;
-try {
-  signing = assertSigningConfigured(process.env, { label: 'package-app' });
-} catch (err) {
-  console.error(`[package-app] ${err.message}`);
-  process.exit(1);
-}
+// Code signing is optional (v1.1.4 policy: unsigned installers are accepted). When a
+// certificate is available it is used automatically; otherwise the build is reported as unsigned.
+const signing = signingConfig(process.env);
 console.log(`[package-app] signing: ${describeSigning(signing)}`);
 
 const args = [

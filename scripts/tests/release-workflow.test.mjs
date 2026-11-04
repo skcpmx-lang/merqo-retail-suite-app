@@ -1,10 +1,9 @@
 /**
- * D-1 / D-3 — the release workflow cannot publish, cannot be triggered by a tag, and cannot
- * hand over an unverified artefact.
+ * Release workflow: builds verified installers, never publishes, never depends on Authenticode.
  *
- * These are source-level assertions on purpose: the workflow itself only runs on GitHub's
- * Windows runners, so the failure modes (an automatic tag build, an automatic release, a missing
- * signing gate) are exactly the ones that must be caught before anyone pushes a tag.
+ * Source-level assertions on purpose: the workflow only runs on GitHub's Windows runners, so the
+ * failure modes (automatic publication, an unsafe publish, a hidden signing requirement, a missing
+ * verification step) must be caught before a tag is pushed.
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -14,11 +13,11 @@ import { describe, expect, it } from 'vitest';
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const workflow = fs.readFileSync(path.join(repoRoot, '.github', 'workflows', 'release.yml'), 'utf8');
 
-describe('release workflow is fail-closed', () => {
-  it('runs only on manual dispatch — a tag can never mint an installer', () => {
+describe('release workflow builds but never publishes', () => {
+  it('can be dispatched manually and by a version tag, and that is all', () => {
     expect(workflow).toMatch(/^on:\s*\n\s*workflow_dispatch:/m);
-    expect(workflow).not.toMatch(/^\s{2}push:/m);
-    expect(workflow).not.toMatch(/^\s+tags:/m);
+    expect(workflow).toMatch(/^\s{2}push:\s*\n\s{4}tags:/m);
+    expect(workflow).not.toMatch(/pull_request:/);
   });
 
   it('cannot publish a release: read-only token and no release action', () => {
@@ -30,36 +29,35 @@ describe('release workflow is fail-closed', () => {
     expect(workflow).not.toMatch(/generate_release_notes/);
   });
 
-  it('refuses to start without signing credentials', () => {
-    const preflightAt = workflow.indexOf('scripts/check-signing-env.mjs');
-    const installAt = workflow.indexOf('npm ci');
-    expect(preflightAt).toBeGreaterThan(-1);
-    expect(installAt).toBeGreaterThan(preflightAt);
-    expect(workflow).toMatch(/CSC_LINK:\s*\$\{\{\s*secrets/);
-    expect(workflow).toMatch(/WINDOWS_CODE_SIGNING_SUBJECT:\s*\$\{\{\s*secrets/);
+  it('has no Authenticode dependency and no certificate secret', () => {
+    expect(workflow).not.toMatch(/secrets\./);
+    expect(workflow).not.toMatch(/CSC_LINK/);
+    expect(workflow).not.toMatch(/csc_key_password/i);
+    const reportAt = workflow.indexOf('scripts/check-signing-env.mjs');
+    expect(reportAt).toBeGreaterThan(-1);
+    // The status report must never be able to fail the run.
+    expect(workflow.slice(Math.max(0, reportAt - 400), reportAt)).toMatch(/continue-on-error:\s*true/);
   });
 
-  it('passes the signing environment to both packaging steps', () => {
+  it('packages both applications without requiring a certificate', () => {
+    expect(workflow).toMatch(/node scripts\/package-app\.mjs/);
+    expect(workflow).toMatch(/node scripts\/package-license-generator\.mjs/);
     const appAt = workflow.indexOf('node scripts/package-app.mjs');
-    const generatorAt = workflow.indexOf('node scripts/package-license-generator.mjs');
-    expect(appAt).toBeGreaterThan(-1);
-    expect(generatorAt).toBeGreaterThan(-1);
-    const before = (index) => workflow.slice(Math.max(0, index - 900), index);
-    expect(before(appAt)).toMatch(/CSC_LINK:/);
-    expect(before(generatorAt)).toMatch(/CSC_LINK:/);
+    const before = workflow.slice(Math.max(0, appAt - 600), appAt);
+    expect(before).not.toMatch(/CSC_LINK|WINDOWS_CODE_SIGNING_SUBJECT/);
   });
 
-  it('verifies signatures, version and architecture before uploading anything', () => {
+  it('verifies version, architecture and integrity before uploading anything', () => {
     const verifyAt = workflow.indexOf('scripts/verify-installer.mjs');
     const uploadAt = workflow.indexOf('actions/upload-artifact@v4', verifyAt);
     expect(verifyAt).toBeGreaterThan(-1);
     expect(uploadAt).toBeGreaterThan(verifyAt);
   });
 
-  it('requires the reviewed, fully filled release notes', () => {
+  it('requires the reviewed release notes', () => {
     const notesAt = workflow.indexOf('scripts/check-release-notes.mjs');
     expect(notesAt).toBeGreaterThan(-1);
-    expect(workflow.slice(notesAt, notesAt + 200)).toMatch(/--require-filled/);
+    expect(workflow.slice(notesAt, notesAt + 400)).toMatch(/docs\/V1\.1\.4_RELEASE_NOTES\.md/);
     expect(workflow).toMatch(/docs\/V1\.1\.4_RELEASE_NOTES\.md/);
     const uploadAt = workflow.indexOf('actions/upload-artifact@v4', notesAt);
     expect(uploadAt).toBeGreaterThan(notesAt);
@@ -67,7 +65,7 @@ describe('release workflow is fail-closed', () => {
 
   it('uploads build artefacts only, and fails when they are missing', () => {
     expect(workflow).toMatch(/if-no-files-found:\s*error/);
-    expect(workflow).toMatch(/name:\s*sauda-windows-signed-installers/);
+    expect(workflow).toMatch(/name:\s*sauda-windows-installers/);
     expect(workflow).not.toMatch(/release:\s*write/);
   });
 });

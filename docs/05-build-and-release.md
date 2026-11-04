@@ -59,22 +59,23 @@ ELECTRON_SKIP_BINARY_DOWNLOAD=1 npm ci
 | ওয়ার্কফ্লো | ট্রিগার | কাজ |
 |---|---|---|
 | `.github/workflows/ci.yml` | প্রতিটি পুশ/PR | Ubuntu-তে `npm run verify` |
-| `.github/workflows/release.yml` | **শুধু ম্যানুয়াল** (`workflow_dispatch`) | Windows-এ দুই **সাইনড** ইনস্টলার → workflow artifact (কোনো Release তৈরি হয় না) |
+| `.github/workflows/release.yml` | ম্যানুয়াল (`workflow_dispatch`) অথবা `v*` ট্যাগ | Windows-এ দুইটি **আনসাইনড** ইনস্টলার → workflow artifact (কোনো Release তৈরি হয় না) |
 
-v1.1.4 থেকে রিলিজ প্রক্রিয়া **fail-closed**:
+v1.1.4 থেকে রিলিজ প্রক্রিয়া:
 
-- ট্যাগ পুশে এই workflow চলে না; `permissions: contents: read` — এটি কোনো Release লিখতে পারে না।
-- সাইনিং কনফিগ (`CSC_LINK`+`CSC_KEY_PASSWORD`, অথবা `WINDOWS_CODE_SIGNING_SUBJECT`, অথবা
-  Azure Trusted Signing) না থাকলে `scripts/check-signing-env.mjs` কাজ শুরুই করতে দেয় না, এবং
-  `scripts/package-app.mjs` / `package-license-generator.mjs` নিজেরাই unsigned বিল্ড refuse করে।
-- `node scripts/verify-installer.mjs --dir artifacts` — Authenticode `Status: Valid`, timestamp,
-  ProductVersion/FileVersion, PE `8664` (x64), key-material স্ক্যান এবং SHA-256; কিছু ব্যর্থ হলে
-  `SHA256SUMS.txt` লেখা হয় না।
-- রিলিজ নোট হিসেবে শুধু `docs/V1.1.4_RELEASE_NOTES.md` গৃহীত; `--require-filled` সব `<placeholder>`
-  পূরণ না হলে আটকে দেয়।
+- **Authenticode সাইনিং প্রয়োজন নেই** — মালিক আনসাইনড ইনস্টলার গ্রহণ করেছেন। কোনো সার্টিফিকেট,
+  `CSC_LINK`, `WINDOWS_CODE_SIGNING_SUBJECT` বা Azure Trusted Signing কনফিগ লাগে না; কোনো signing
+  secret কোথাও রাখা হয় না। কনফিগ থাকলে সেটি স্বয়ংক্রিয়ভাবে ব্যবহার হবে, না থাকলে বিল্ড **ব্যর্থ হয় না**।
+- `scripts/check-signing-env.mjs` শুধু তথ্য দেখায় — সবসময় exit 0।
+- `permissions: contents: read` — workflow নিজে কোনো Release লিখতে পারে না; publish সবসময় হাতে।
+- `node scripts/verify-installer.mjs --dir artifacts` — ProductVersion/FileVersion, PE `8664` (x64),
+  key-material স্ক্যান এবং SHA-256; এগুলো ব্যর্থ হলে `SHA256SUMS.txt` লেখা হয় না।
+  Authenticode অবস্থা শুধু **রিপোর্ট** হয় (`Unsigned — accepted by owner.`)। ভবিষ্যতে সাইনিং বাধ্যতামূলক
+  করতে চাইলে `--require-signature` ব্যবহার করুন (তখন timestamp-ও দরকার হবে)।
+- রিলিজ নোট হিসেবে শুধু `docs/V1.1.4_RELEASE_NOTES.md` গৃহীত।
 
 প্রকাশ (publish) সবসময় হাতে, ধাপে ধাপে: verified `.exe` + `SHA256SUMS.txt` নিয়ে **draft** release
-তৈরি → ডাউনলোড করে hash ও signature আবার যাচাই → তারপরই publish। বিস্তারিত:
+তৈরি → ডাউনলোড করে hash আবার যাচাই → তারপরই publish। বিস্তারিত:
 `docs/V1.1.4_WINDOWS_BUILD_SIGNING_HANDOFF.md`।
 
 ## ৬. রিলিজ চেকলিস্ট
@@ -83,11 +84,12 @@ v1.1.4 থেকে রিলিজ প্রক্রিয়া **fail-closed
 - [ ] `CHANGELOG.md` আপডেট
 - [ ] ভার্সন তিন `package.json`-এ মিল (`core`, `app`, `license-generator`)
 - [ ] `publicKey.ts`-এ সঠিক পাবলিক কী ও KEY_ID
+- [ ] `artifacts/` কোথাও লাইসেন্স প্রাইভেট কী নেই (স্ক্যান পাস)
 - [ ] Windows মেশিনে সত্যিকারের ইনস্টল + দুই প্রস্থের থার্মাল রিসিট + রিপোর্ট PDF পরীক্ষা
 - [ ] ব্যাকআপ → আনইনস্টল → পুনরায় ইনস্টল → রিস্টোর পরীক্ষা
-- [ ] দুই ইনস্টলার Authenticode `Status: Valid` (এবং timestamp) — `verify-installer.mjs` পাস
+- [ ] দুই ইনস্টলার: ভার্সন `1.1.4`, x64, SHA-256 মিলে যায়; Authenticode **Unsigned — accepted by owner**
 - [ ] `docs/V1.1.4_RELEASE_NOTES.md`-এ কোনো `<placeholder>` নেই
-- [ ] draft release → ডাউনলোড করে hash ও signature পুনরায় যাচাই → publish
+- [ ] draft release → ডাউনলোড করে hash পুনরায় যাচাই → publish
 
 ## ৭. সমস্যা সমাধান
 
@@ -97,3 +99,4 @@ v1.1.4 থেকে রিলিজ প্রক্রিয়া **fail-closed
 | electron-builder “cannot find module” | আগে `node scripts/build-app.mjs` চালান |
 | আইকন ত্রুটি | `npm run icons` |
 | বিল্ডে `Cannot find module '@sauda/core'` | esbuild alias স্ক্রিপ্ট ব্যবহার করুন, `tsc` নয় |
+| ইনস্টলারে SmartScreen সতর্কতা | প্রত্যাশিত — ইনস্টলার আনসাইনড; “More info → Run anyway” |

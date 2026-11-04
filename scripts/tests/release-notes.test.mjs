@@ -48,7 +48,9 @@ describe('reviewed release notes', () => {
   it('still has placeholders, so it is not yet publishable (fail closed)', () => {
     const { placeholders, issues } = checkReleaseNotes(currentNotes, { requireFilled: true });
     expect(placeholders.length).toBeGreaterThan(0);
-    expect(placeholders).toContain('<hash>');
+    // Only the values measured on the Windows build host may remain: sizes and SHA-256.
+    expect(placeholders).toContain('<sha256>');
+    expect(placeholders.every((p) => p === '<bytes>' || p === '<sha256>')).toBe(true);
     expect(issues.join(' ')).toMatch(/unfilled placeholders/);
   });
 

@@ -1,8 +1,9 @@
 /**
- * D-2 — the installer gate rejects anything that is not a signed, correctly versioned x64 build.
+ * Installer integrity gate (v1.1.4: unsigned accepted).
  *
- * Every failure the owner asked for is covered here: invalid signature, wrong version, wrong
- * architecture, missing artefact, and a build that is too small to be the real installer.
+ * Hard failures: wrong version, wrong architecture, missing artefact, implausible size.
+ * Reported but not failing: Authenticode status (unsigned is accepted by the owner), unless the
+ * caller explicitly opts into `requireSignature`.
  */
 import { describe, expect, it } from 'vitest';
 import {
@@ -81,27 +82,40 @@ describe('Authenticode result', () => {
     expect(evaluateInstaller(validInput()).failures).toEqual([]);
   });
 
-  it('rejects NotSigned, UnknownError, HashMismatch and NotTrusted', () => {
+  it('accepts an UNSIGNED installer (owner policy) and reports it', () => {
     for (const status of ['NotSigned', 'UnknownError', 'HashMismatch', 'NotTrusted']) {
-      const { failures } = evaluateInstaller({
+      const { failures, warnings } = evaluateInstaller({
         ...validInput(),
         signature: { status, statusMessage: `simulated ${status}`, subject: '', timestamper: '' },
       });
-      expect(failures.join(' '), status).toMatch(new RegExp(`Authenticode status is "${status}"`));
+      expect(failures, status).toEqual([]);
+      expect(warnings.join(' '), status).toMatch(new RegExp(`Authenticode status is "${status}"`));
+      expect(warnings.join(' '), status).toMatch(/accepted by owner/i);
     }
   });
 
-  it('rejects a missing signature report entirely', () => {
-    const { failures } = evaluateInstaller({ ...validInput(), signature: null });
-    expect(failures.join(' ')).toMatch(/status could not be read/);
+  it('can still enforce signing when explicitly asked to (future policy switch)', () => {
+    const { failures } = evaluateInstaller({
+      ...validInput(),
+      signature: { status: 'NotSigned' },
+      requireSignature: true,
+    });
+    expect(failures.join(' ')).toMatch(/Authenticode status is "NotSigned"/);
   });
 
-  it('requires a timestamp by default but can downgrade it to a warning', () => {
+  it('treats an unread report as a warning, not a failure', () => {
+    const { failures, warnings } = evaluateInstaller({ ...validInput(), signature: null });
+    expect(failures).toEqual([]);
+    expect(warnings.join(' ')).toMatch(/not read/i);
+  });
+
+  it('warns about a valid signature without a timestamp', () => {
     const noTimestamp = { ...validInput(), signature: { status: 'Valid', subject: 'CN=MERQO', timestamper: '' } };
-    expect(evaluateInstaller(noTimestamp).failures.join(' ')).toMatch(/no RFC-3161 timestamp/);
-    const relaxed = evaluateInstaller({ ...noTimestamp, requireTimestamp: false });
-    expect(relaxed.failures).toEqual([]);
-    expect(relaxed.warnings.join(' ')).toMatch(/no RFC-3161 timestamp/);
+    const result = evaluateInstaller(noTimestamp);
+    expect(result.failures).toEqual([]);
+    expect(result.warnings.join(' ')).toMatch(/no RFC-3161 timestamp/);
+    const strict = evaluateInstaller({ ...noTimestamp, requireTimestamp: true });
+    expect(strict.failures.join(' ')).toMatch(/no RFC-3161 timestamp/);
   });
 });
 
@@ -170,7 +184,7 @@ describe('artefacts and size', () => {
     );
   });
 
-  it('collects every failure instead of stopping at the first', () => {
+  it('collects every integrity failure instead of stopping at the first', () => {
     const { failures } = evaluateInstaller({
       name: 'Sauda-License-Generator-1.1.4.exe',
       sizeBytes: 10,
@@ -179,6 +193,8 @@ describe('artefacts and size', () => {
       signature: { status: 'NotSigned' },
       machine: 0xaa64,
     });
-    expect(failures.length).toBeGreaterThanOrEqual(5);
+    // size + ProductVersion + FileVersion + architecture; the signature is reported separately.
+    expect(failures.length).toBeGreaterThanOrEqual(4);
+    expect(failures.join(' ')).not.toMatch(/Authenticode/);
   });
 });

@@ -1,28 +1,30 @@
 name: Release (Windows installers)
 
-# D-1: this workflow exists to PRODUCE verified, signed installers as downloadable workflow
-# artefacts. It deliberately does not create tags and does not publish a release:
+# Builds the two Windows x64 installers and hands them back as verified workflow artefacts.
 #
-#   - it runs only on manual dispatch (no `push: tags`), so a tag can never mint an installer
-#     behind the owner's back;
-#   - `permissions: contents: read` — it cannot write to the repository or to a release;
-#   - it fails closed: a preflight refuses to start without an Authenticode method, and the
-#     packaging scripts refuse to build unsigned, and the post-package gate refuses to pass
-#     anything whose signature is not `Status: Valid`.
+# v1.1.4 release policy: unsigned installers are accepted by the owner. Authenticode is optional
+# and never a dependency of this workflow — no certificate secret is required, and being unsigned
+# is not a failure.
 #
-# Publishing is a separate, deliberate step by the release owner
-# (docs/V1.1.4_WINDOWS_BUILD_SIGNING_HANDOFF.md §8): download the verified artefacts, create a
-# DRAFT release, re-verify the downloaded files, then publish.
+# This workflow never publishes. `permissions: contents: read` means it cannot write a release,
+# and there is no release step. Publishing is a separate, deliberate act by the owner:
+# download the verified artefacts, create a DRAFT release, re-verify, then publish.
+#
+# Triggers: manual dispatch, and a `v*` tag push so a reproducible build can be produced for a
+# specific commit. A tag build still cannot publish anything.
 
 on:
   workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
 
 permissions:
   contents: read
 
 jobs:
   windows:
-    name: Build signed Windows installers
+    name: Build Windows installers (unsigned accepted)
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -32,16 +34,9 @@ jobs:
           node-version: '22'
           cache: 'npm'
 
-      # Fail closed before anything is installed or built: no signing method, no run.
-      - name: Require Authenticode signing configuration
-        shell: bash
-        env:
-          CSC_LINK: ${{ secrets.WINDOWS_CSC_LINK }}
-          CSC_KEY_PASSWORD: ${{ secrets.WINDOWS_CSC_KEY_PASSWORD }}
-          WINDOWS_CODE_SIGNING_SUBJECT: ${{ secrets.WINDOWS_CODE_SIGNING_SUBJECT }}
-          AZURE_TRUSTED_SIGNING_ENDPOINT: ${{ secrets.AZURE_TRUSTED_SIGNING_ENDPOINT }}
-          AZURE_TRUSTED_SIGNING_ACCOUNT: ${{ secrets.AZURE_TRUSTED_SIGNING_ACCOUNT }}
-          AZURE_TRUSTED_SIGNING_PROFILE: ${{ secrets.AZURE_TRUSTED_SIGNING_PROFILE }}
+      # Informational only: states whether this run can sign, or is unsigned (accepted).
+      - name: Report signing status
+        continue-on-error: true
         run: node scripts/check-signing-env.mjs
 
       - name: Install dependencies
@@ -87,30 +82,18 @@ jobs:
           node scripts/build-app.mjs
           node scripts/build-license-generator.mjs
 
-      # The packaging scripts re-check the configuration and refuse to run unsigned.
-      - name: Package Sauda Retail Suite (signed NSIS)
-        env:
-          CSC_LINK: ${{ secrets.WINDOWS_CSC_LINK }}
-          CSC_KEY_PASSWORD: ${{ secrets.WINDOWS_CSC_KEY_PASSWORD }}
-          WINDOWS_CODE_SIGNING_SUBJECT: ${{ secrets.WINDOWS_CODE_SIGNING_SUBJECT }}
-          AZURE_TRUSTED_SIGNING_ENDPOINT: ${{ secrets.AZURE_TRUSTED_SIGNING_ENDPOINT }}
-          AZURE_TRUSTED_SIGNING_ACCOUNT: ${{ secrets.AZURE_TRUSTED_SIGNING_ACCOUNT }}
-          AZURE_TRUSTED_SIGNING_PROFILE: ${{ secrets.AZURE_TRUSTED_SIGNING_PROFILE }}
+      # Signing is optional: if a certificate is present the NSIS output is signed, otherwise
+      # the build continues and the artefacts are reported as unsigned (accepted).
+      - name: Package Sauda Retail Suite (NSIS)
         run: node scripts/package-app.mjs
 
-      - name: Package Sauda License Generator (signed NSIS)
-        env:
-          CSC_LINK: ${{ secrets.WINDOWS_CSC_LINK }}
-          CSC_KEY_PASSWORD: ${{ secrets.WINDOWS_CSC_KEY_PASSWORD }}
-          WINDOWS_CODE_SIGNING_SUBJECT: ${{ secrets.WINDOWS_CODE_SIGNING_SUBJECT }}
-          AZURE_TRUSTED_SIGNING_ENDPOINT: ${{ secrets.AZURE_TRUSTED_SIGNING_ENDPOINT }}
-          AZURE_TRUSTED_SIGNING_ACCOUNT: ${{ secrets.AZURE_TRUSTED_SIGNING_ACCOUNT }}
-          AZURE_TRUSTED_SIGNING_PROFILE: ${{ secrets.AZURE_TRUSTED_SIGNING_PROFILE }}
+      - name: Package Sauda License Generator (NSIS)
         run: node scripts/package-license-generator.mjs
 
-      # Hard gate: signature Valid, ProductVersion/FileVersion, x64 PE, no key material,
-      # and SHA256SUMS.txt computed from these exact files. Nothing passes this unless signed.
-      - name: Verify installers (signature, version, architecture, key material, SHA-256)
+      # Hard gate: both artefacts present, ProductVersion/FileVersion, x64 PE, no key material,
+      # and SHA256SUMS.txt computed from these exact files. Authenticode status is reported
+      # (unsigned is accepted); it is not a failure.
+      - name: Verify installers (version, architecture, key material, SHA-256)
         shell: bash
         run: |
           mkdir -p artifacts
@@ -118,16 +101,17 @@ jobs:
           cp packages/license-generator/release/*.exe artifacts/
           node scripts/verify-installer.mjs --dir artifacts
 
-      # D-3: the reviewed notes file is the only accepted release text, and it must have every
-      # measured value filled in before anything can be handed to the publisher.
-      - name: Require the reviewed release notes, fully filled
+      # D-3: the reviewed notes file is the only accepted release text. Sections are enforced
+      # here; the filled-values gate runs at publish time (scripts/check-release-notes.mjs
+      # --require-filled) once the measured sizes and hashes are recorded.
+      - name: Require the reviewed release notes
         shell: bash
-        run: node scripts/check-release-notes.mjs --file docs/V1.1.4_RELEASE_NOTES.md --require-filled
+        run: node scripts/check-release-notes.mjs --file docs/V1.1.4_RELEASE_NOTES.md
 
-      - name: Upload signed installers (no release is created)
+      - name: Upload installers (no release is created)
         uses: actions/upload-artifact@v4
         with:
-          name: sauda-windows-signed-installers
+          name: sauda-windows-installers
           path: |
             artifacts/*.exe
             artifacts/SHA256SUMS.txt

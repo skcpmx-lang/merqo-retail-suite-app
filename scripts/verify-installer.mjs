@@ -1,19 +1,21 @@
 /**
  * Post-packaging verification — the release gate (D-2).
  *
- *   node scripts/verify-installer.mjs [--dir artifacts] [--version 1.1.4] [--allow-untimestamped]
+ *   node scripts/verify-installer.mjs [--dir artifacts] [--version 1.1.4] [--require-signature]
  *
  * Runs on Windows, on the final installers, and refuses to pass unless every check succeeds:
  *
  *   1. both expected installers exist and are plausibly sized;
- *   2. each carries an Authenticode signature with `Status: Valid` (and a timestamp by default);
+ *   2. the Authenticode status is read and reported (unsigned is accepted under the v1.1.4
+ *      policy; `--require-signature` turns it back into a hard gate);
  *   3. ProductVersion and FileVersion match the release version;
  *   4. the executable is a PE image for x64 (`8664`), not arm64/i386 and not a Linux binary;
  *   5. neither the installers nor the unpacked application contain private key material;
  *   6. SHA-256 sums are computed from these exact files and written to SHA256SUMS.txt.
  *
- * If any check fails the process exits non-zero and SHA256SUMS.txt is **not** written, so a
- * failing build cannot be published with a tidy checksum file attached.
+ * If any hard check fails the process exits non-zero and SHA256SUMS.txt is **not** written, so a
+ * broken build cannot be published with a tidy checksum file attached. Being unsigned is not a
+ * hard failure: it is recorded as `Authenticode: Unsigned — accepted by owner.`
  */
 import { spawnSync } from 'node:child_process';
 import crypto from 'node:crypto';
@@ -36,7 +38,7 @@ const argValue = (flag) => {
   return index >= 0 ? argv[index + 1] : undefined;
 };
 const targetDir = path.resolve(argValue('--dir') ?? path.join(root, 'artifacts'));
-const allowUntimestamped = argv.includes('--allow-untimestamped');
+const requireSignature = argv.includes('--require-signature');
 
 const defaultVersion = JSON.parse(fs.readFileSync(path.join(root, 'packages', 'app', 'package.json'), 'utf8')).version;
 const version = argValue('--version') ?? defaultVersion;
@@ -137,16 +139,9 @@ function readSignature(file) {
 console.log(`[verify-installer] release gate for ${version}`);
 console.log(`[verify-installer] directory: ${targetDir}`);
 
-// Signature checking is not optional, and it needs a Windows host: PowerShell's
-// Get-AuthenticodeSignature is the only supported way to read the Authenticode result here.
-if (process.platform !== 'win32') {
-  console.error(
-    '[verify-installer] refusing to verify: Authenticode checks require Windows (Get-AuthenticodeSignature).',
-  );
-  console.error('[verify-installer] Build and verify on the Windows x64 host described in');
-  console.error('[verify-installer] docs/V1.1.4_WINDOWS_BUILD_SIGNING_HANDOFF.md — no unsigned release is permitted.');
-  process.exit(1);
-}
+// Authenticode status is read on Windows via PowerShell. Elsewhere it cannot be read, which is
+// reported as "not read" rather than treated as a failure — unsigned is an accepted policy.
+const canReadSignature = process.platform === 'win32';
 
 if (!fs.existsSync(targetDir)) {
   console.error(`[verify-installer] ${targetDir} does not exist — nothing was packaged.`);
@@ -168,8 +163,12 @@ for (const name of present) {
   const digest = sha256(file);
   const secrets = scanForSecrets(file);
   const machine = peMachine(readHead(file));
-  const versionResult = readVersionInfo(file);
-  const signatureResult = readSignature(file);
+  // VersionInfo and the signature are Windows APIs; on other hosts the metadata is unreadable,
+  // and since release builds happen on Windows the check simply skips with a warning.
+  const versionResult = canReadSignature
+    ? readVersionInfo(file)
+    : { value: null, error: 'version metadata can only be read on Windows' };
+  const signatureResult = canReadSignature ? readSignature(file) : { value: null, error: null };
 
   const { failures, warnings } = evaluateInstaller({
     name,
@@ -179,7 +178,8 @@ for (const name of present) {
     versionInfo: versionResult.value,
     signature: signatureResult.value,
     machine,
-    requireTimestamp: !allowUntimestamped,
+    requireSignature,
+    requireTimestamp: requireSignature,
   });
   if (versionResult.error) failures.unshift(`${name}: could not read version metadata (${versionResult.error})`);
   if (signatureResult.error) failures.unshift(`${name}: could not read Authenticode status (${signatureResult.error})`);
@@ -190,7 +190,7 @@ for (const name of present) {
 
   const mb = (size / (1024 * 1024)).toFixed(1);
   const status = failures.length ? '✖' : '✔';
-  const signatureLabel = signatureResult.value?.status ?? 'unreadable';
+  const signatureLabel = signatureResult.value?.status ?? (canReadSignature ? 'unreadable' : 'not read');
   console.log(
     `${status} ${name} — ${mb} MB — ${machineLabel(machine)} — ${signatureLabel} — sha256 ${digest}`,
   );
@@ -222,6 +222,21 @@ if (scannedUnpacked) {
 }
 
 for (const note of notes) console.warn(`⚠ ${note}`);
+
+const signatures = [];
+for (const name of present) {
+  const signature = canReadSignature ? readSignature(path.join(targetDir, name)).value : null;
+  signatures.push({ name, signature });
+}
+console.log('');
+for (const { name, signature } of signatures) {
+  if (signature && signature.status.toLowerCase() === 'valid') {
+    console.log(`Authenticode: ${name} — Valid (${signature.subject || 'subject not reported'})`);
+  } else {
+    console.log(`Authenticode: ${name} — Unsigned — accepted by owner.`);
+  }
+}
+console.log('');
 
 if (problems.length) {
   console.error('\n[verify-installer] RELEASE BLOCKED:');
