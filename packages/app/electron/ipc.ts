@@ -172,14 +172,21 @@ on('license.state', (ctx) => getActivationState(ctx.db), undefined, true);
 on('license.fingerprint', () => fingerprintForDisplay(), undefined, true);
 on(
   'license.activateKey',
-  (ctx, key: string) => activate(ctx.db, { key }, ctx.user ? { id: ctx.user.id, username: ctx.user.username } : null),
+  (ctx, key: string) => {
+    const state = activate(ctx.db, { key }, ctx.user ? { id: ctx.user.id, username: ctx.user.username } : null);
+    invalidateLicenseCache(ctx.db);
+    return state;
+  },
   undefined,
   true,
 );
 on(
   'license.activateFile',
-  (ctx, content: string) =>
-    activate(ctx.db, { fileContent: content }, ctx.user ? { id: ctx.user.id, username: ctx.user.username } : null),
+  (ctx, content: string) => {
+    const state = activate(ctx.db, { fileContent: content }, ctx.user ? { id: ctx.user.id, username: ctx.user.username } : null);
+    invalidateLicenseCache(ctx.db);
+    return state;
+  },
   undefined,
   true,
 );
@@ -229,7 +236,15 @@ on(
   'any',
 );
 
-on('license.deactivate', (ctx) => deactivate(ctx.db, ctx.user ? { id: ctx.user.id, username: ctx.user.username } : null), 'license.manage');
+on(
+  'license.deactivate',
+  (ctx) => {
+    deactivate(ctx.db, ctx.user ? { id: ctx.user.id, username: ctx.user.username } : null);
+    invalidateLicenseCache(ctx.db);
+    return true;
+  },
+  'license.manage',
+);
 
 on(
   'auth.login',
@@ -800,15 +815,19 @@ on(
       cancelId: 1,
     });
     if (response.response !== 0) return null;
-    const result = restoreBackup(ctx.db, {
-      backupPath: filePath,
-      dataDir: appPaths().backupsDir,
-      livePath: appPaths().dbPath,
-      appVersion: PRODUCT_VERSION,
-      actor: { id: ctx.user.id, username: ctx.user.username },
-    });
-    ctx.reopenDb();
-    return result;
+    // `restoreBackup` closes the live handle, so the session must always get a
+    // working connection back — even when the restore itself fails.
+    try {
+      return restoreBackup(ctx.db, {
+        backupPath: filePath,
+        dataDir: appPaths().backupsDir,
+        livePath: appPaths().dbPath,
+        appVersion: PRODUCT_VERSION,
+        actor: { id: ctx.user.id, username: ctx.user.username },
+      });
+    } finally {
+      ctx.reopenDb();
+    }
   },
   'backup.manage',
 );
@@ -1105,6 +1124,38 @@ export interface InvokeResult {
   code?: string;
 }
 
+/**
+ * Routes the shop must be able to reach before the licence is activated:
+ * first-run setup, activation itself, logging in and diagnostics.
+ */
+const LICENSE_EXEMPT_PREFIXES = ['license.', 'setup.', 'auth.', 'app.', 'meta.'];
+
+/** Activation state is expensive (hardware probe), so it is cached per DB handle. */
+const licenseCache = new WeakMap<object, { state: ReturnType<typeof getActivationState>; at: number }>();
+
+export function invalidateLicenseCache(db: object | null | undefined): void {
+  if (db) licenseCache.delete(db);
+}
+
+function licenseGate(ctx: AppContext, method: string): void {
+  if (!app.isPackaged && process.env.SAUDA_SKIP_LICENSE === '1') return;
+  if (LICENSE_EXEMPT_PREFIXES.some((prefix) => method.startsWith(prefix))) return;
+  if (!ctx.db) return;
+  const now = Date.now();
+  let entry = licenseCache.get(ctx.db);
+  if (!entry || now - entry.at > 60_000) {
+    entry = { state: getActivationState(ctx.db), at: now };
+    licenseCache.set(ctx.db, entry);
+  }
+  if (!entry.state.activated) {
+    const err = new Error(entry.state.message || 'লাইসেন্স সক্রিয় নয় — অ্যাক্টিভেশন স্ক্রিনে লাইসেন্স দিন।') as Error & {
+      code?: string;
+    };
+    err.code = 'LICENSE_REQUIRED';
+    throw err;
+  }
+}
+
 export async function invokeRoute(ctx: AppContext, method: string, args: any[]): Promise<InvokeResult> {
   const route = routes[method];
   if (!route) return { ok: false, error: `অজানা অনুরোধ: ${method}`, code: 'NOT_FOUND' };
@@ -1113,6 +1164,7 @@ export async function invokeRoute(ctx: AppContext, method: string, args: any[]):
       if (!ctx.user) return { ok: false, error: 'আপনি লগইন করা নেই।', code: 'AUTH_REQUIRED' };
       requirePermission(ctx.user, route.perm);
     }
+    licenseGate(ctx, method);
     const data = await route.fn(ctx, ...args);
     return { ok: true, data };
   } catch (err) {

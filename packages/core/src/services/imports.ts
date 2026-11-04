@@ -120,10 +120,17 @@ export function previewImport(db: Db, kind: ImportKind, csvText: string, mapping
       }
       if (values.opening_stock && !Number.isFinite(Number(values.opening_stock))) errors.push('ওপেনিং স্টক সংখ্যা নয়');
     } else if (kind === 'customers') {
-      if (values.phone && db.prepare('SELECT 1 FROM customers WHERE phone = ? LIMIT 1').get(values.phone)) duplicate = true;
-    } else {
-      if (values.name && db.prepare('SELECT 1 FROM suppliers WHERE lower(name)=lower(?) LIMIT 1').get(values.name))
+      const key = `c:${foldForSearch(values.phone || values.name)}`;
+      if (values.phone && seen.has(key)) duplicate = true;
+      else if (values.phone && db.prepare('SELECT 1 FROM customers WHERE phone = ? LIMIT 1').get(values.phone))
         duplicate = true;
+      seen.add(key);
+    } else {
+      const key = `s:${foldForSearch(values.name)}`;
+      if (seen.has(key)) duplicate = true;
+      else if (values.name && db.prepare('SELECT 1 FROM suppliers WHERE lower(name)=lower(?) LIMIT 1').get(values.name))
+        duplicate = true;
+      seen.add(key);
     }
     preview.push({ line: i + 2, values, errors, duplicate });
   }

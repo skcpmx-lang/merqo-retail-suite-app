@@ -120,6 +120,12 @@ export default function App() {
   }, [refreshBoot, reloadKey]);
 
   useEffect(() => {
+    const handler = () => void refreshBoot();
+    window.addEventListener('sauda:license-required', handler);
+    return () => window.removeEventListener('sauda:license-required', handler);
+  }, [refreshBoot]);
+
+  useEffect(() => {
     return onEvent((evt) => {
       if (evt.type === 'navigate' && evt.message) setPage(evt.message as PageId);
     });

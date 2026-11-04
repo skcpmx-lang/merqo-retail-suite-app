@@ -154,8 +154,8 @@ export function deactivate(db: Db, actor?: { id: number; username: string } | nu
   });
 }
 
-export function requireActivation(db: Db): ActivationState {
-  const state = getActivationState(db);
+export function requireActivation(db: Db, publicKeyB64?: string): ActivationState {
+  const state = getActivationState(db, publicKeyB64);
   if (!state.activated) {
     const err = new Error(state.message || 'লাইসেন্স সক্রিয় নয়।') as Error & { code?: string };
     err.code = 'LICENSE_REQUIRED';

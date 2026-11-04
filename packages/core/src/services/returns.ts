@@ -32,7 +32,10 @@ export interface ReturnResult {
   returnId: number;
   returnNo: string;
   total: number;
+  /** Cash that actually left (or entered) the drawer for this return. */
   refund: number;
+  /** Part of the requested refund that settled an outstanding balance instead of cash. */
+  appliedToDue: number;
 }
 
 export function createSaleReturn(db: Db, input: SaleReturnInput): ReturnResult {
@@ -84,9 +87,20 @@ export function createSaleReturn(db: Db, input: SaleReturnInput): ReturnResult {
     });
   }
 
-  let refund = input.refundPaisa === undefined ? total : Math.round(input.refundPaisa);
-  if (refund < 0) throw new Error('রিফান্ডের পরিমাণ সঠিক নয়।');
-  if (refund > total) throw new Error('রিফান্ড রিটার্নের মোট টাকার চেয়ে বেশি হতে পারবে না।');
+  // A refund may only pay out money the shop actually owes this customer.
+  // Returning goods against an unpaid invoice reduces the due instead of
+  // handing cash over the counter (otherwise the customer both keeps the money
+  // and still owes the full invoice).
+  const balanceBefore = sale.customer_id
+    ? ((db.prepare('SELECT balance_paisa b FROM customers WHERE id = ?').get(sale.customer_id) as { b: number } | undefined)?.b ?? 0)
+    : 0;
+  const creditAfterReturn = sale.customer_id ? Math.max(0, total - balanceBefore) : total;
+  const requested =
+    input.refundPaisa === undefined ? Math.min(total, creditAfterReturn) : Math.round(input.refundPaisa);
+  if (!Number.isFinite(requested) || requested < 0) throw new Error('রিফান্ডের পরিমাণ সঠিক নয়।');
+  if (requested > total) throw new Error('রিফান্ড রিটার্নের মোট টাকার চেয়ে বেশি হতে পারবে না।');
+  const refund = Math.min(requested, creditAfterReturn);
+  const appliedToDue = requested - refund;
   if (refund > 0 && !input.refundMethodId) throw new Error('রিফান্ডের পেমেন্ট মেথড নির্বাচন করুন।');
 
   const run = db.transaction((): ReturnResult => {
@@ -211,9 +225,9 @@ export function createSaleReturn(db: Db, input: SaleReturnInput): ReturnResult {
       action: 'return.sale',
       entity: 'return',
       entityId: returnId,
-      details: { returnNo, saleId: input.saleId, total, refund, restock },
+      details: { returnNo, saleId: input.saleId, total, refund, appliedToDue, restock },
     });
-    return { returnId, returnNo, total, refund };
+    return { returnId, returnNo, total, refund, appliedToDue };
   });
   return run();
 }
@@ -270,8 +284,17 @@ export function createPurchaseReturn(db: Db, input: PurchaseReturnInput): Return
     });
   }
 
-  let refund = input.refundPaisa === undefined ? 0 : Math.round(input.refundPaisa);
-  if (refund < 0 || refund > total) throw new Error('রিফান্ডের পরিমাণ সঠিক নয়।');
+  // Symmetric rule: the supplier only pays us back for goods we had already
+  // paid for. Otherwise the return simply reduces what we owe them.
+  const payableBefore = purchase.supplier_id
+    ? ((db.prepare('SELECT balance_paisa b FROM suppliers WHERE id = ?').get(purchase.supplier_id) as { b: number } | undefined)?.b ?? 0)
+    : 0;
+  const creditAfterReturn = purchase.supplier_id ? Math.max(0, total - payableBefore) : total;
+  const requested = input.refundPaisa === undefined ? 0 : Math.round(input.refundPaisa);
+  if (!Number.isFinite(requested) || requested < 0 || requested > total)
+    throw new Error('রিফান্ডের পরিমাণ সঠিক নয়।');
+  const refund = Math.min(requested, creditAfterReturn);
+  const appliedToDue = requested - refund;
   if (refund > 0 && !input.refundMethodId) throw new Error('রিফান্ডের পেমেন্ট মেথড নির্বাচন করুন।');
 
   const run = db.transaction((): ReturnResult => {
@@ -338,22 +361,22 @@ export function createPurchaseReturn(db: Db, input: PurchaseReturnInput): Return
         nowLocal(),
         purchase.supplier_id,
       );
-      if (refund > 0 && input.refundMethodId) {
-        insertPayment(db, {
-          kind: 'purchase_refund',
-          partyType: 'supplier',
-          supplierId: purchase.supplier_id,
-          purchaseId: input.purchaseId,
-          amount: refund,
-          methodId: input.refundMethodId,
-          reference: returnNo,
-          note: 'পারচেজ রিটার্ন রিফান্ড',
-          userId: input.actor.id,
-          date: returnDate,
-          direction: 'in',
-          affectsBalance: true,
-        });
-      }
+    }
+    if (refund > 0 && input.refundMethodId) {
+      insertPayment(db, {
+        kind: 'purchase_refund',
+        partyType: purchase.supplier_id ? 'supplier' : 'none',
+        supplierId: purchase.supplier_id ?? null,
+        purchaseId: input.purchaseId,
+        amount: refund,
+        methodId: input.refundMethodId,
+        reference: returnNo,
+        note: 'পারচেজ রিটার্ন রিফান্ড',
+        userId: input.actor.id,
+        date: returnDate,
+        direction: 'in',
+        affectsBalance: purchase.supplier_id != null,
+      });
     }
     const outstanding = (
       db
@@ -369,9 +392,9 @@ export function createPurchaseReturn(db: Db, input: PurchaseReturnInput): Return
       action: 'return.purchase',
       entity: 'return',
       entityId: returnId,
-      details: { returnNo, purchaseId: input.purchaseId, total, refund },
+      details: { returnNo, purchaseId: input.purchaseId, total, refund, appliedToDue },
     });
-    return { returnId, returnNo, total, refund };
+    return { returnId, returnNo, total, refund, appliedToDue };
   });
   return run();
 }

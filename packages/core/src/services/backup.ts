@@ -3,6 +3,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import type { Db } from '../db/connection.js';
 import { closeDatabase, checkpoint, integrityCheck, openDatabase } from '../db/connection.js';
+import { SCHEMA_VERSION } from '../db/schema.js';
 import { nowLocal } from '../domain/datetime.js';
 import { getMeta, setMeta } from '../db/connection.js';
 import type { BackupRecord } from '../domain/types.js';
@@ -173,6 +174,11 @@ export function validateBackup(filePath: string): ValidationResult {
     };
     if (!hasMeta.c) return fail('এই ফাইলটি Sauda ব্যাকআপ নয় (meta টেবিল নেই)।');
     const version = Number(db.pragma('user_version', { simple: true }) ?? 0);
+    if (version > SCHEMA_VERSION) {
+      return fail(
+        `এই ব্যাকআপ নতুন ভার্সনের (${version}) — বর্তমান অ্যাপ্লিকেশন (${SCHEMA_VERSION}) এটি রিস্টোর করতে পারবে না। আগে অ্যাপ আপডেট করুন।`,
+      );
+    }
     const hasProducts = db
       .prepare("SELECT COUNT(*) c FROM sqlite_master WHERE type='table' AND name='products'")
       .get() as { c: number };
@@ -235,17 +241,26 @@ export function restoreBackup(
   const temp = `${live}.restoring`;
   if (fs.existsSync(temp)) fs.rmSync(temp, { force: true });
   fs.copyFileSync(opts.backupPath, temp);
+
+  // Verify the copy *before* it replaces the live database: a failed restore
+  // must leave the shop's real data untouched (the safety backup is a second
+  // line of defence, not the first).
+  try {
+    const check = openDatabase({ file: temp, readonly: true });
+    const integrity = integrityCheck(check);
+    check.close();
+    if (!integrity.ok) {
+      throw new Error(`রিস্টোরের পরে ডাটাবেজ যাচাই ব্যর্থ: ${integrity.detail}`);
+    }
+  } catch (err) {
+    fs.rmSync(temp, { force: true });
+    throw err instanceof Error ? err : new Error(String(err));
+  }
+
   for (const suffix of ['-wal', '-shm']) {
     if (fs.existsSync(`${live}${suffix}`)) fs.rmSync(`${live}${suffix}`, { force: true });
   }
   fs.renameSync(temp, live);
-
-  const check = openDatabase({ file: live, readonly: true });
-  const integrity = integrityCheck(check);
-  check.close();
-  if (!integrity.ok) {
-    throw new Error(`রিস্টোরের পরে ডাটাবেজ যাচাই ব্যর্থ: ${integrity.detail}`);
-  }
 
   try {
     const logged = openDatabase({ file: live, appVersion: opts.appVersion });

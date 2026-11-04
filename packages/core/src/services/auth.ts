@@ -142,7 +142,7 @@ export function createUser(db: Db, input: CreateUserInput): User {
   const username = normalizeText(input.username).toLowerCase();
   const fullName = normalizeText(input.fullName);
   if (!/^[a-z0-9._-]{3,32}$/.test(username)) {
-    throw new Error('ইউজারনেম ৩–৩২ অক্ষরের英文 অক্ষর/সংখ্যা হতে হবে (a-z, 0-9, . _ -)।');
+    throw new Error('ইউজারনেম ৩–৩২ অক্ষরের ইংরেজি ছোট হাতের অক্ষর বা সংখ্যা হতে হবে (a-z, 0-9, . _ -)।');
   }
   if (!fullName) throw new Error('পুরো নাম দিতে হবে।');
   validatePasswordStrength(input.password);

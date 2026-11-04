@@ -115,7 +115,7 @@ export function SettingsPage({
             tabs={[
               { id: 'business', label: 'ব্যবসা ও রিসিট' },
               { id: 'receipt', label: 'প্রিন্টার' },
-              { id: 'stock', label: 'বಿಕ্রয় ও স্টক নিয়ম' },
+              { id: 'stock', label: 'বিক্রয় ও স্টক নিয়ম' },
               { id: 'catalog', label: 'ক্যাটালগ' },
               { id: 'users', label: 'ইউজার' },
               { id: 'license', label: 'লাইসেন্স' },

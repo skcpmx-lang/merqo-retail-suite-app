@@ -269,10 +269,12 @@ describe('returns', () => {
       actor: ctx.actor,
     });
     expect(ret.total).toBe(16000);
-    expect(ret.refund).toBe(16000);
+    // The invoice was on credit, so the refund settles the due instead of
+    // paying cash out of the drawer (audit 2026-11 finding F1).
+    expect(ret.refund).toBe(0);
+    expect(ret.appliedToDue).toBe(16000);
     expect(getProduct(db, ids.rice.id)!.stock_base_milli).toBe(17_000_000);
-    // customer had 30000 due, return reduces it by 16000, cash refund adds it back
-    expect(getCustomer(db, ids.customer.id)!.balance_paisa).toBe(30000 - 16000 + 16000);
+    expect(getCustomer(db, ids.customer.id)!.balance_paisa).toBe(14000);
 
     // cannot return more than was sold
     expect(() =>

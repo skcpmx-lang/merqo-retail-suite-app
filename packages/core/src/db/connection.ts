@@ -27,14 +27,19 @@ export interface MigrationResult {
   backedUp: string | null;
 }
 
+/**
+ * Pragmas are passed to better-sqlite3 *without* the `PRAGMA` keyword — the
+ * driver adds it. Including it made every statement a syntax error, which the
+ * old error handling swallowed: WAL was never actually enabled (audit F5).
+ */
 const PRAGMAS = [
-  'PRAGMA journal_mode = WAL',
-  'PRAGMA synchronous = FULL',
-  'PRAGMA foreign_keys = ON',
-  'PRAGMA busy_timeout = 8000',
-  'PRAGMA temp_store = MEMORY',
-  'PRAGMA cache_size = -16000',
-  'PRAGMA wal_autocheckpoint = 512',
+  'journal_mode = WAL',
+  'synchronous = FULL',
+  'foreign_keys = ON',
+  'busy_timeout = 8000',
+  'temp_store = MEMORY',
+  'cache_size = -16000',
+  'wal_autocheckpoint = 512',
 ];
 
 export function ensureDirFor(file: string): void {
@@ -53,6 +58,21 @@ export function openDatabase(opts: OpenOptions): Db {
       } catch (err) {
         opts.log?.(`pragma failed: ${p} — ${(err as Error).message}`);
       }
+    }
+    // Durability settings are not optional: verify the ones we rely on rather
+    // than trusting that the statements were accepted.
+    const journal = String(db.pragma('journal_mode', { simple: true }) ?? '').toLowerCase();
+    if (journal !== 'wal') {
+      opts.log?.(`journal_mode is ${journal || 'unknown'} (WAL unavailable for this database)`);
+    }
+    if (Number(db.pragma('synchronous', { simple: true })) !== 2) {
+      db.pragma('synchronous = FULL');
+    }
+    if (Number(db.pragma('foreign_keys', { simple: true })) !== 1) {
+      throw new Error('ডাটাবেজে foreign key প্রয়োগ করা যাচ্ছে না — অ্যাপ্লিকেশন চালু করা নিরাপদ নয়।');
+    }
+    if (Number(db.pragma('busy_timeout', { simple: true })) <= 0) {
+      db.pragma('busy_timeout = 8000');
     }
   } else {
     db.pragma('busy_timeout = 8000');

@@ -122,13 +122,22 @@ export function getProduct(db: Db, id: number): ProductWithMeta | null {
 export function findByCode(db: Db, code: string): ProductWithMeta | null {
   const clean = normalizeText(code);
   if (!clean) return null;
-  const row = db
+  // Exact hit first (uses the barcode/SKU indexes), then a case-insensitive
+  // retry so a manually typed "rice-01" still finds SKU "RICE-01".
+  const exact = db
     .prepare(
       `${PRODUCT_SELECT} WHERE p.is_active = 1 AND (p.sku = ? OR p.product_code = ?
         OR p.id IN (SELECT product_id FROM product_barcodes WHERE code = ?)) LIMIT 1`,
     )
     .get(clean, clean, clean) as ProductWithMeta | undefined;
-  return row ? decoratePrice(row) : null;
+  if (exact) return decoratePrice(exact);
+  const loose = db
+    .prepare(
+      `${PRODUCT_SELECT} WHERE p.is_active = 1 AND (lower(p.sku) = lower(?) OR lower(p.product_code) = lower(?)
+        OR p.id IN (SELECT product_id FROM product_barcodes WHERE lower(code) = lower(?))) LIMIT 1`,
+    )
+    .get(clean, clean, clean) as ProductWithMeta | undefined;
+  return loose ? decoratePrice(loose) : null;
 }
 
 export interface BarcodeInput {

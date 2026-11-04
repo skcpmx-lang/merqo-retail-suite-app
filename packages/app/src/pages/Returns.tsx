@@ -348,9 +348,14 @@ export function SaleReturnModal({
     }, 0);
   }, [items, qtys]);
 
+  // A return can only pay cash up to the credit it creates; anything beyond an
+  // outstanding due settles the due instead (server enforces the same rule).
+  const refundable = Math.max(0, computedTotal - Math.max(0, sale.due_paisa ?? 0));
+  const appliedToDue = Math.max(0, refund - refundable);
+
   useEffect(() => {
-    if (!touched) setRefund(computedTotal);
-  }, [computedTotal, touched]);
+    if (!touched) setRefund(refundable);
+  }, [refundable, touched]);
 
   const submit = async () => {
     const lines = Object.entries(qtys)
@@ -366,7 +371,7 @@ export function SaleReturnModal({
     }
     setBusy(true);
     try {
-      const res = await call<{ returnNo: string; refund: number }>('returns.createSaleReturn', {
+      const res = await call<{ returnNo: string; refund: number; appliedToDue: number }>('returns.createSaleReturn', {
         saleId: sale.id,
         items: lines,
         restock,
@@ -374,7 +379,8 @@ export function SaleReturnModal({
         refundMethodId: methodId || null,
         note: note || null,
       });
-      ui.success('রিটার্ন সম্পন্ন', `${res.returnNo} • রিফান্ড ${money(res.refund)}`);
+      const adjust = res.appliedToDue > 0 ? ` • বাকির সাথে সমন্বয় ${money(res.appliedToDue)}` : '';
+      ui.success('রিটার্ন সম্পন্ন', `${res.returnNo} • নগদ রিফান্ড ${money(res.refund)}${adjust}`);
       onDone();
     } catch (err) {
       ui.error('রিটার্ন ব্যর্থ', (err as Error).message);
@@ -451,7 +457,7 @@ export function SaleReturnModal({
 
       <div className="grid-2" style={{ marginTop: 14 }}>
         <div className="form-grid">
-          <Field label="রিফান্ডের পরিমাণ" hint="স্বয়ংক্রিয় হিসাব করা হয়েছে — দরকার হলে বদলান">
+          <Field label="রিফান্ডের পরিমাণ" hint={`নগদে সর্বোচ্চ ${money(refundable)} — এর বেশি হলে বাকির সাথে সমন্বয় হবে`}>
             <MoneyInput
               value={refund}
               onChange={(v) => {
@@ -480,10 +486,16 @@ export function SaleReturnModal({
             <span className="muted small">রিফান্ড</span>
             <span className="num bold">{money(refund)}</span>
           </div>
-          {sale.due_paisa > 0 && refund > 0 ? (
-            <Banner tone="info" icon="info">
-              কাস্টমারের বাকি থাকলে রিফান্ডটি আগে বাকির সাথে সমন্বয় হতে পারে — বিস্তারিত কাস্টমার স্টেটমেন্টে দেখুন।
-            </Banner>
+          {appliedToDue > 0 ? (
+            <>
+              <div className="row" style={{ justifyContent: 'space-between' }}>
+                <span className="muted small">বাকির সাথে সমন্বয়</span>
+                <span className="num bold">{money(appliedToDue)}</span>
+              </div>
+              <Banner tone="info" icon="info">
+                ইনভয়েসে বাকি থাকায় {money(appliedToDue)} নগদ ফেরত হবে না — কাস্টমারের বাকির সাথে সমন্বয় হবে।
+              </Banner>
+            </>
           ) : null}
         </div>
       </div>
