@@ -66,17 +66,32 @@ const files = [APP, GENERATOR].map((name) => {
 // Document order: the app appears before the generator in the reviewed notes.
 let rendered = notes;
 const placeholders = rendered.match(/<(bytes|sha256)>/g) ?? [];
-if (placeholders.length !== 4) {
+
+if (placeholders.length === 0) {
+  // The notes are already finalised with measured values (the released state). Verify those values
+  // against the files instead of trusting them: a rebuilt installer with a different hash must not
+  // be published under a stale number.
+  for (const file of files) {
+    if (!rendered.includes(String(file.size))) {
+      fail(`${file.name}: the notes do not contain the measured size ${file.size} B`);
+    }
+    if (!rendered.toLowerCase().includes(file.sha)) {
+      fail(`${file.name}: the notes do not contain the measured SHA-256 ${file.sha}`);
+    }
+  }
+  console.log('[render-release-notes] notes already contain the measured values — verified against the files');
+} else if (placeholders.length === 4) {
+  for (const file of files) {
+    rendered = rendered.replace('<bytes>', String(file.size));
+    rendered = rendered.replace('<sha256>', file.sha);
+  }
+  if (/<(bytes|sha256)>/.test(rendered)) fail('a build placeholder is still present after rendering');
+} else {
   fail(
-    `expected 4 build placeholders (<bytes>/<sha256> for both installers) but found ${placeholders.length}: ` +
+    `expected either 4 build placeholders (<bytes>/<sha256> for both installers) or none, but found ${placeholders.length}: ` +
       [...new Set(placeholders)].join(', '),
   );
 }
-for (const file of files) {
-  rendered = rendered.replace('<bytes>', String(file.size));
-  rendered = rendered.replace('<sha256>', file.sha);
-}
-if (/<(bytes|sha256)>/.test(rendered)) fail('a build placeholder is still present after rendering');
 
 // Any other `<...>` placeholder is a documentation defect, not a build value.
 const leftovers = [...new Set(rendered.match(/<[A-Za-z][^<>\n]{0,60}>/g) ?? [])];
