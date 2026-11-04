@@ -26,6 +26,7 @@ import {
   checkDeviceBinding,
   getActivationState,
   getDeviceFingerprint,
+  getStoreIdentity,
   issueLicense,
   licenseFileText,
   licenseSummary,
@@ -73,7 +74,12 @@ describe('generator → main app licence lifecycle', () => {
 
   it('activates from a generator .sauda-license file produced by licenseFileText', () => {
     const ctx = makeTestDb();
-    const { license } = issueFor(host, { storeId: STORE_A, deviceId: 'PC-1', deviceRole: 'server' });
+    // A bound licence must name this shop's own store id (activation enforces it).
+    const { license } = issueFor(host, {
+      storeId: getStoreIdentity(ctx.db).store_id,
+      deviceId: 'PC-1',
+      deviceRole: 'server',
+    });
     const file = licenseFileText(license, { org: 'সাউদা ট্রেডার্স' });
 
     // The generator writes JSON; the app must accept exactly that text.
@@ -94,7 +100,11 @@ describe('generator → main app licence lifecycle', () => {
 
   it('keeps the activation after the app is restarted (same database file)', () => {
     const ctx = makeTestDb({ file: true });
-    const { key } = issueFor(host, { storeId: STORE_A, deviceId: 'PC-1', deviceRole: 'server' });
+    const { key } = issueFor(host, {
+      storeId: getStoreIdentity(ctx.db).store_id,
+      deviceId: 'PC-1',
+      deviceRole: 'server',
+    });
     expect(activate(ctx.db, { key, publicKeyB64: keys.pubB64 }, ctx.actor).activated).toBe(true);
     ctx.db.close();
 
@@ -106,19 +116,20 @@ describe('generator → main app licence lifecycle', () => {
 
   it('issues one licence per PC for the same store and rejects cross-use', () => {
     const ctx = makeTestDb();
-    const server = issueFor(host, { storeId: STORE_A, deviceId: 'PC-SERVER', deviceRole: 'server' });
-    const client = issueFor(host, { storeId: STORE_A, deviceId: 'PC-TILL-2', deviceRole: 'client' });
+    const storeId = getStoreIdentity(ctx.db).store_id;
+    const server = issueFor(host, { storeId, deviceId: 'PC-SERVER', deviceRole: 'server' });
+    const client = issueFor(host, { storeId, deviceId: 'PC-TILL-2', deviceRole: 'client' });
 
     // Both licences are signed for the same hardware/store — only the identity fields differ.
-    expect(server.license.payload.store_id).toBe(STORE_A);
-    expect(client.license.payload.store_id).toBe(STORE_A);
+    expect(server.license.payload.store_id).toBe(storeId);
+    expect(client.license.payload.store_id).toBe(storeId);
     expect(server.license.payload.device_id).not.toBe(client.license.payload.device_id);
 
     // Binding checks are what keeps each licence on its own PC.
-    expect(checkDeviceBinding(server.license.payload, { storeId: STORE_A, deviceId: 'PC-SERVER', role: 'server' })).toEqual({
+    expect(checkDeviceBinding(server.license.payload, { storeId, deviceId: 'PC-SERVER', role: 'server' })).toEqual({
       ok: true,
     });
-    expect(checkDeviceBinding(server.license.payload, { storeId: STORE_A, deviceId: 'PC-TILL-2' })).toMatchObject({
+    expect(checkDeviceBinding(server.license.payload, { storeId, deviceId: 'PC-TILL-2' })).toMatchObject({
       ok: false,
       code: 'DEVICE_MISMATCH',
     });
@@ -184,7 +195,7 @@ describe('generator → main app licence lifecycle', () => {
 
   it('never activates a tampered licence file', () => {
     const ctx = makeTestDb();
-    const { license } = issueFor(host, { storeId: STORE_A });
+    const { license } = issueFor(host, { storeId: getStoreIdentity(ctx.db).store_id });
     const original = JSON.parse(licenseFileText(license)) as Record<string, any>;
 
     // Tamper with the signed payload inside the key and keep the original signature.
@@ -235,6 +246,24 @@ describe('generator → main app licence lifecycle', () => {
     expect(verifyLicense(signLicense(legacy, keys.privB64), { device: pc1, publicKeyB64: keys.pubB64 }).activated).toBe(
       true,
     );
+  });
+
+  it('binds a licence that names a store to that store only', () => {
+    const ctx = makeTestDb();
+    const store = getStoreIdentity(ctx.db);
+    const own = issueFor(host, { storeId: store.store_id, deviceId: 'PC-SERVER', deviceRole: 'SERVER_POS' });
+    expect(activate(ctx.db, { key: own.key, publicKeyB64: keys.pubB64 }, ctx.actor).activated).toBe(true);
+    expect(getActivationState(ctx.db, keys.pubB64).license?.store_id).toBe(store.store_id);
+
+    const other = makeTestDb();
+    const foreign = issueFor(host, { storeId: 'STORE-SOMEONE-ELSE' });
+    const refused = activate(other.db, { key: foreign.key, publicKeyB64: keys.pubB64 }, other.actor);
+    expect(refused.activated).toBe(false);
+    expect(refused.reason).toBe('store_mismatch');
+    const rows = other.db.prepare('SELECT COUNT(*) c FROM activations').get() as { c: number };
+    expect(rows.c).toBe(0);
+    ctx.cleanup();
+    other.cleanup();
   });
 
   it('surfaces a human-readable summary the activation screen can render', () => {

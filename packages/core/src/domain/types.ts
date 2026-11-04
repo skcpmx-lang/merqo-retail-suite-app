@@ -728,6 +728,7 @@ export interface ActivationState {
     | 'schema_invalid'
     | 'expired'
     | 'device_mismatch'
+    | 'store_mismatch'
     | 'org_mismatch'
     | 'version_unsupported'
     | 'clock_tamper'
