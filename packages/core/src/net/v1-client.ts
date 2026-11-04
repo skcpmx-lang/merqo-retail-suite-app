@@ -52,6 +52,18 @@ export interface V1Client {
   rpc<T = unknown>(method: string, args?: unknown[], opts?: { idempotencyKey?: string }): Promise<V1Result<T>>;
   serverInfo(): Promise<V1Result<{ protocol: number; version: string; store_id: string; server_id: string; capacity: number }>>;
   deviceSelf(): Promise<V1Result<Record<string, unknown>>>;
+  /**
+   * Unauthenticated (TLS-only) pairing claim. Returns the device's status; the device
+   * is `pending` until an administrator approves it on the Main PC.
+   */
+  claim(body: {
+    code: string;
+    device_id: string;
+    device_name: string;
+    public_key: string;
+    /** The host spells this field `license`; it carries the shop licence record. */
+    license: Record<string, unknown>;
+  }): Promise<V1Result<{ status: 'pending' | 'approved'; device_id: string }>>;
   health(): Promise<{ ok: boolean; code?: string; error?: string }>;
 }
 
@@ -64,11 +76,12 @@ export function createV1Client(opts: V1ClientOptions): V1Client {
   const timeoutMs = opts.timeoutMs ?? 12_000;
   let session: string | null = null;
 
-  function call<T>(method: 'GET' | 'POST', path: string, body?: unknown): Promise<V1Result<T>> {
+  function call<T>(method: 'GET' | 'POST', path: string, body?: unknown, signed = true): Promise<V1Result<T>> {
     const payload = body === undefined ? '' : JSON.stringify(body);
-    const headers: Record<string, string> = {
-      ...signRequest(opts.privateKeyPem, { method, path, body: payload, deviceId: opts.deviceId }),
-    };
+    const headers: Record<string, string> = {};
+    if (signed) {
+      Object.assign(headers, signRequest(opts.privateKeyPem, { method, path, body: payload, deviceId: opts.deviceId }));
+    }
     if (payload) {
       headers['content-type'] = 'application/json';
       headers['content-length'] = String(Buffer.byteLength(payload));
@@ -148,6 +161,11 @@ export function createV1Client(opts: V1ClientOptions): V1Client {
     },
     serverInfo() {
       return call('GET', '/api/v1/server/info');
+    },
+    claim(body) {
+      // The pairing code is the credential here; the request is authenticated by TLS
+      // pinning plus the single-use code itself. It grants nothing until approval.
+      return call('POST', '/api/v1/pairing/claim', body, false);
     },
     deviceSelf() {
       return call('GET', '/api/v1/devices/self');

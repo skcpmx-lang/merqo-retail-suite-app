@@ -24,8 +24,9 @@ import {
 } from './server-runtime.js';
 import { initServerRuntime } from './server.js';
 import { invokeRoute, type AppContext } from './ipc.js';
-import { lanClient, resetLanClient } from './lan.js';
-import type { RpcClient } from '@sauda/core';
+import { initTerminalManager, TerminalManager } from './terminal.js';
+import { dpapiSealer } from './device-key-storage.js';
+import { OfflineError } from './v1-transport.js';
 
 const isDev = !app.isPackaged;
 let mainWindow: BrowserWindow | null = null;
@@ -41,11 +42,31 @@ let db: Db;
  * Transport state. A *host* owns the writable database; a *terminal* keeps no
  * business data and forwards every route to the host over the LAN.
  */
-const transport: { mode: 'off' | 'host' | 'terminal'; client: RpcClient | null; hostUrl: string } = {
+const transport: {
+  mode: 'off' | 'host' | 'terminal';
+  /** Client transport: `/api/v1` over pinned TLS. There is no other remote path. */
+  client: { invoke: (method: string, args: unknown[]) => Promise<{ ok: boolean; data?: unknown; error?: string; code?: string }> } | null;
+  hostUrl: string;
+} = {
   mode: 'off',
   client: null,
   hostUrl: '',
 };
+
+/** Created once; owns the saved servers, the sealed device key and the event stream. */
+let terminalManager: TerminalManager | null = null;
+
+function terminalManagerFor(): TerminalManager {
+  if (!terminalManager) {
+    terminalManager = new TerminalManager({
+      dataDir: appPaths().dataDir,
+      sealer: dpapiSealer,
+      log: (level, message, detail) => writeLog(level, message, detail),
+    });
+    initTerminalManager(terminalManager);
+  }
+  return terminalManager;
+}
 
 /** Routes that must always run on the machine the operator is sitting at. */
 const LOCAL_PREFIXES = ['print.', 'app.', 'lan.', 'display.', 'meta.', 'license.fingerprint'];
@@ -103,13 +124,36 @@ function bootstrapDatabase(): void {
 function bootstrapTransport(): void {
   try {
     const settings = getSettings(db);
-    if (settings.lan_mode === 'terminal' && settings.lan_host_url && settings.lan_token) {
+    if (settings.lan_mode === 'terminal') {
+      // Client mode: the device credential + pinned certificate are the only way to
+      // reach the shop. Nothing falls back to a token or to plaintext HTTP.
+      const manager = terminalManagerFor();
+      const server = manager.activeServer;
       transport.mode = 'terminal';
-      transport.hostUrl = settings.lan_host_url;
-      transport.client = lanClient(settings.lan_host_url, settings.lan_token);
-      writeLog('info', 'terminal mode', { host: settings.lan_host_url });
+      transport.hostUrl = server?.base_url ?? '';
+      transport.client = {
+        invoke: async (method, args) => {
+          try {
+            return { ok: true, data: await manager.invoke(method, args) };
+          } catch (err) {
+            const e = err as Error & { code?: string };
+            const code = err instanceof OfflineError ? 'OFFLINE' : (e.code ?? 'ERROR');
+            writeLog('warn', `client route ${method} failed`, { code, message: e.message });
+            return { ok: false, error: e.message, code };
+          }
+        },
+      };
+      // Shop events arrive over the authenticated stream and are pushed to the
+      // renderer; the renderer refetches through the same routes it already uses.
+      manager.setSink({
+        onEvent: (event) => notifyV1Event({ kind: 'event', ...event }),
+        onState: (state, detail) => notifyV1Event({ kind: 'state', state, detail }),
+        onResync: (from) => notifyV1Event({ kind: 'resync', from }),
+      });
+      writeLog('info', 'client mode (/api/v1)', { host: server?.base_url ?? '', pinned: Boolean(server?.fingerprint) });
     } else {
       transport.mode = settings.lan_mode === 'host' ? 'host' : 'off';
+      transport.client = null;
     }
   } catch (err) {
     writeLog('warn', 'transport bootstrap failed', err);
@@ -270,6 +314,12 @@ function scheduleAutoBackup(): void {
 function stopAutoBackup(): void {
   if (autoBackupTimer) clearInterval(autoBackupTimer);
   autoBackupTimer = null;
+}
+
+function notifyV1Event(payload: Record<string, unknown>): void {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('sauda:v1-event', payload);
+  }
 }
 
 function notifyRenderer(type: string, message: string): void {
@@ -689,7 +739,7 @@ if (!singleInstance) {
   app.on('before-quit', (event) => {
     quitting = true;
     stopAutoBackup();
-    resetLanClient();
+    terminalManager?.logout();
     const runtime = serverRuntime;
     if (runtime && runtime.state !== 'stopped') {
       // Stop the listener first so no new request can arrive while the database is

@@ -46,6 +46,9 @@ export interface EventStreamHubOptions {
   maxStreams?: number;
   /** Close a connection whose unflushed buffer exceeds this. Default 1 MiB. */
   maxBufferedBytes?: number;
+  /** Reconnect churn limit per device, per minute. Default 30. */
+  maxOpensPerMinute?: number;
+
   read?: (afterSeq: number, limit: number) => OutboxEvent[];
   log?: (level: 'info' | 'warn', message: string, detail?: unknown) => void;
 }
@@ -58,6 +61,12 @@ export interface OpenStreamInput {
   lastEventId: number;
   /** Returns a close reason when the connection is no longer allowed, null when it is. */
   authorize: () => SseCloseReason | null;
+  /**
+   * Per-event visibility. Returning false keeps the payload from being sent (the
+   * sequence still advances so the stream cannot stall, and the client refetches).
+   * Used for permission-based visibility on top of the store filter.
+   */
+  canSee?: (event: OutboxEvent) => boolean;
 }
 
 export interface SseStream {
@@ -69,7 +78,7 @@ export interface SseStream {
 
 export type OpenStreamResult =
   | { ok: true; stream: SseStream }
-  | { ok: false; code: 'STREAM_LIMIT' | 'ALREADY_OPEN' };
+  | { ok: false; code: 'STREAM_LIMIT' | 'STREAM_RATE_LIMITED' };
 
 export class EventStreamHub {
   private readonly streams = new Map<string, SseStream>();
@@ -79,6 +88,8 @@ export class EventStreamHub {
   private readonly maxStreams: number;
   private readonly maxBufferedBytes: number;
   private readonly read: (afterSeq: number, limit: number) => OutboxEvent[];
+  private readonly maxOpensPerMinute: number;
+  private readonly opens = new Map<string, number[]>();
 
   constructor(private readonly opts: EventStreamHubOptions) {
     this.pollMs = Math.max(20, opts.pollMs ?? 1000);
@@ -87,6 +98,7 @@ export class EventStreamHub {
     this.maxStreams = Math.max(1, opts.maxStreams ?? 32);
     this.maxBufferedBytes = Math.max(4096, opts.maxBufferedBytes ?? 1024 * 1024);
     this.read = opts.read ?? ((after, limit) => readEvents(opts.db, after, limit));
+    this.maxOpensPerMinute = Math.max(1, opts.maxOpensPerMinute ?? 30);
   }
 
   count(): number {
@@ -98,7 +110,24 @@ export class EventStreamHub {
     return retentionFloor(this.opts.db);
   }
 
+  /** True when this device is allowed to open another stream right now. */
+  private withinReconnectBudget(deviceId: string, now = Date.now()): boolean {
+    const window = 60_000;
+    const recent = (this.opens.get(deviceId) ?? []).filter((t) => now - t < window);
+    if (recent.length >= this.maxOpensPerMinute) {
+      this.opens.set(deviceId, recent);
+      return false;
+    }
+    recent.push(now);
+    this.opens.set(deviceId, recent);
+    return true;
+  }
+
   open(input: OpenStreamInput): OpenStreamResult {
+    if (!this.withinReconnectBudget(input.deviceId)) {
+      this.opts.log?.('warn', 'sse reconnect budget exceeded', { device_id: input.deviceId });
+      return { ok: false, code: 'STREAM_RATE_LIMITED' };
+    }
     // One stream per device: a reconnect replaces the old connection instead of
     // accumulating sockets.
     const existing = this.streams.get(input.deviceId);
@@ -196,6 +225,16 @@ export class EventStreamHub {
       if (event.store_id !== input.storeId) return;
       if (event.seq <= lastEventId) return;
       lastEventId = event.seq;
+      // Permission-based visibility: the sequence still advances so the stream cannot
+      // stall, but the payload is withheld from a role that may not see it.
+      if (input.canSee && !input.canSee(event)) {
+        this.opts.log?.('info', 'sse event withheld by permission', {
+          device_id: input.deviceId,
+          seq: event.seq,
+          type: event.type,
+        });
+        return;
+      }
       write(`id: ${event.seq}\nevent: ${event.type}\ndata: ${event.payload}\n\n`);
     };
 

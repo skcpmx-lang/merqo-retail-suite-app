@@ -11,6 +11,7 @@ export * from './db/seed.js';
 export * from './services/accounting.js';
 export * from './services/devices.js';
 export * from './services/events.js';
+export * from './services/event-retention.js';
 export * from './services/idempotency.js';
 export * from './services/audit.js';
 export * from './services/auth.js';

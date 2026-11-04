@@ -1025,6 +1025,194 @@ const DEVICE_STATUS_LABEL: Record<DeviceRow['status'], string> = {
  * code is single-use and expires; the QR payload carries only the address, the code
  * and the certificate pin (never a shop token or a password).
  */
+/**
+ * Client-mode connection (v1.1.4 Phase 3, Milestone D).
+ *
+ * A Client PC reaches the shop only through a pinned TLS connection with its own device
+ * key. There is no token field here on purpose: the shared-token transport was removed,
+ * and this panel cannot be pointed at plaintext HTTP.
+ */
+function TerminalConnectionPanel({
+  settings,
+  patch,
+}: {
+  settings: AppSettings;
+  patch: (p: Partial<AppSettings>) => void;
+}) {
+  const ui = useUI();
+  const [config, setConfig] = useState<any>(null);
+  const [status, setStatus] = useState<any>(null);
+  const [busy, setBusy] = useState(false);
+  const [form, setForm] = useState({ baseUrl: '', fingerprint: '', certPem: '', storeName: '' });
+  const [pair, setPair] = useState({ code: '', licenseId: '', capacity: '1' });
+
+  const refresh = async () => {
+    try {
+      setConfig(await call('terminal.servers'));
+      setStatus(await call('terminal.status'));
+    } catch (err) {
+      ui.error('ক্লায়েন্ট অবস্থা পড়া যায়নি', (err as Error).message);
+    }
+  };
+
+  useEffect(() => {
+    void refresh();
+    const timer = setInterval(() => void refresh(), 20_000);
+    return () => clearInterval(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const run = async (fn: () => Promise<unknown>, message: string) => {
+    setBusy(true);
+    try {
+      await fn();
+      ui.success(message);
+      await refresh();
+    } catch (err) {
+      ui.error('কাজটি ব্যর্থ হয়েছে', (err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const active = config?.servers?.find((s: any) => s.id === config.active_server_id) ?? null;
+  const stateLabel: Record<string, string> = {
+    unpaired: 'পেয়ারিং হয়নি',
+    pending: 'অনুমোদনের অপেক্ষায়',
+    approved: 'অনুমোদিত',
+    rejected: 'প্রত্যাখ্যাত',
+    revoked: 'বাতিল হয়েছে',
+    offline: 'সংযোগ নেই',
+    error: 'সমস্যা',
+  };
+
+  return (
+    <>
+      <div className="section-title" style={{ marginTop: 20 }}>
+        ক্লায়েন্ট কম্পিউটার সংযোগ
+      </div>
+      <div className="small muted" style={{ marginBottom: 8 }}>
+        এই পিসি যদি মূল কম্পিউটার না হয়, তবে সার্ভারের ঠিকানা, ফিঙ্গারপ্রিন্ট ও সার্টিফিকেট দিয়ে যুক্ত করুন — এরপর
+        মালিক অনুমোদন দিলে লগইন করা যাবে।
+      </div>
+
+      <Field label="সার্ভারের ঠিকানা" hint="যেমন https://192.168.0.10:4747">
+        <TextInput value={form.baseUrl} onChange={(v) => setForm({ ...form, baseUrl: v })} />
+      </Field>
+      <Field label="সার্টিফিকেট ফিঙ্গারপ্রিন্ট" hint="SHA-256 (৬৪ হেক্স অক্ষর)">
+        <TextInput value={form.fingerprint} onChange={(v) => setForm({ ...form, fingerprint: v })} />
+      </Field>
+      <Field label="সার্ভার সার্টিফিকেট (PEM)" span={2}>
+        <TextInput
+          value={form.certPem}
+          onChange={(v) => setForm({ ...form, certPem: v })}
+          placeholder="-----BEGIN CERTIFICATE-----"
+        />
+      </Field>
+      <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
+        <Button
+          variant="primary"
+          disabled={busy}
+          onClick={() =>
+            run(() => call('terminal.configure', form), 'সার্ভার সংরক্ষণ হয়েছে')
+          }
+        >
+          সার্ভার সংরক্ষণ করুন
+        </Button>
+      </div>
+
+      {config?.servers?.length ? (
+        <div className="small" style={{ marginBottom: 12 }}>
+          {config.servers.map((server: any) => (
+            <div
+              key={server.id}
+              style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 6 }}
+            >
+              <Badge tone={server.id === config.active_server_id ? 'green' : 'plain'}>
+                {server.id === config.active_server_id ? 'সক্রিয়' : 'সংরক্ষিত'}
+              </Badge>
+              <span className="muted">{server.base_url}</span>
+              {server.id === config.active_server_id ? null : (
+                <Button size="sm" disabled={busy} onClick={() => run(() => call('terminal.use', server.id), 'সার্ভার নির্বাচন হয়েছে')}>
+                  ব্যবহার করুন
+                </Button>
+              )}
+              <IconButton
+                icon="trash"
+                title="সার্ভার মুছুন"
+                onClick={() => run(() => call('terminal.remove', server.id), 'সার্ভার মুছে ফেলা হয়েছে')}
+              />
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div className="small muted" style={{ marginBottom: 12 }}>
+          এখনো কোনো সার্ভার সংরক্ষিত নেই।
+        </div>
+      )}
+
+      {active ? (
+        <>
+          <Field label="পেয়ারিং কোড" hint="মূল কম্পিউটারের ডিভাইস প্যানেল থেকে">
+            <TextInput value={pair.code} onChange={(v) => setPair({ ...pair, code: v })} />
+          </Field>
+          <Field label="লাইসেন্স আইডি">
+            <TextInput value={pair.licenseId} onChange={(v) => setPair({ ...pair, licenseId: v })} />
+          </Field>
+          <Field label="লাইসেন্স ক্যাপাসিটি">
+            <TextInput value={pair.capacity} onChange={(v) => setPair({ ...pair, capacity: v.replace(/[^\d]/g, '') })} />
+          </Field>
+          <div style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap' }}>
+            <Button
+              variant="primary"
+              disabled={busy}
+              onClick={() =>
+                run(
+                  () =>
+                    call('terminal.pair', {
+                      code: pair.code.trim(),
+                      licenseId: pair.licenseId.trim(),
+                      capacity: Math.max(1, Number(pair.capacity) || 1),
+                    }),
+                  'পেয়ারিং অনুরোধ পাঠানো হয়েছে — মালিকের অনুমোদনের অপেক্ষা করুন',
+                )
+              }
+            >
+              পেয়ারিং করুন
+            </Button>
+            <Button disabled={busy} onClick={() => void refresh()}>
+              অবস্থা দেখুন
+            </Button>
+            <Button
+              variant="danger"
+              disabled={busy}
+              onClick={() => run(() => call('terminal.forget'), 'এই পিসির ডিভাইস কী মুছে ফেলা হয়েছে')}
+            >
+              ডিভাইস বিচ্ছিন্ন করুন
+            </Button>
+          </div>
+          <div className="small" style={{ marginBottom: 8 }}>
+            অবস্থা:{' '}
+            <strong>
+              {stateLabel[status?.status ?? 'unpaired'] ?? status?.status ?? '—'}
+            </strong>
+            {status?.paired ? ' • ডিভাইস কী সংরক্ষিত (DPAPI)' : ' • ডিভাইস কী নেই'}
+            {status?.server ? ` • ${status.server.base_url}` : ''}
+          </div>
+        </>
+      ) : null}
+
+      <Field label="এই কম্পিউটারের ভূমিকা" span={2} hint="মূল কম্পিউটার = ডেটা রাখে; ক্লায়েন্ট = শুধু সংযোগ করে">
+        <Switch
+          checked={settings.lan_mode === 'terminal'}
+          onChange={(v) => patch({ lan_mode: v ? 'terminal' : 'off' })}
+          label="ক্লায়েন্ট মোড"
+        />
+      </Field>
+    </>
+  );
+}
+
 function DeviceAdminPanel() {
   const ui = useUI();
   const [devices, setDevices] = useState<DeviceRow[]>([]);
@@ -1324,6 +1512,8 @@ function NetworkForm({
       )}
 
       <DeviceAdminPanel />
+
+      <TerminalConnectionPanel settings={settings} patch={patch} />
 
       <div className="section-title" style={{ marginTop: 20 }}>
         কাস্টমার ডিসপ্লে

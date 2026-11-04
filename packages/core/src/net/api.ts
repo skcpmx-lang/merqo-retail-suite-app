@@ -16,6 +16,7 @@ import { withIdempotencyAsync, IdempotencyError } from '../services/idempotency.
 import { verifyRequest, type NonceGuard } from './device-auth.js';
 import { SqliteReplayGuard } from './replay-store.js';
 import { EventStreamHub, type SseCloseReason } from './sse.js';
+import { canReceiveEvent } from './event-visibility.js';
 import { latestSeq } from '../services/events.js';
 
 /**
@@ -57,6 +58,8 @@ export interface LanApiOptions {
   sseMaxStreams?: number;
   /** A connection that buffers more than this is closed as a slow consumer. */
   sseMaxBufferedBytes?: number;
+  /** Per-device reconnect budget per minute (default 30). */
+  sseMaxOpensPerMinute?: number;
   log?: (level: 'info' | 'warn' | 'error', message: string, detail?: unknown) => void;
 }
 
@@ -94,6 +97,7 @@ export async function startLanApi(opts: LanApiOptions): Promise<LanApi> {
     heartbeatMs: opts.sseHeartbeatMs,
     maxStreams: opts.sseMaxStreams,
     maxBufferedBytes: opts.sseMaxBufferedBytes,
+    maxOpensPerMinute: opts.sseMaxOpensPerMinute,
     log: opts.log,
   });
   const server = https.createServer(
@@ -235,12 +239,20 @@ export async function startLanApi(opts: LanApiOptions): Promise<LanApi> {
         }
       };
 
+      // Role visibility is derived from the same `users.permissions` column the RPC
+      // permission table uses — one source of truth, no second ACL.
+      const permRow = opts.db.prepare('SELECT permissions FROM users WHERE id = ?').get(session.user_id) as
+        | { permissions: string }
+        | undefined;
+      const permissions = safeJsonArray(permRow?.permissions);
+
       const opened = hub.open({
         res,
         deviceId: device.device_id,
         storeId: device.store_id,
         lastEventId,
         authorize: reasonFor,
+        canSee: (event) => canReceiveEvent(event.type, permissions),
       });
       if (!opened.ok) {
         send(res, 429, {
@@ -249,7 +261,7 @@ export async function startLanApi(opts: LanApiOptions): Promise<LanApi> {
           message:
             opened.code === 'STREAM_LIMIT'
               ? 'একসাথে বেশি ইভেন্ট স্ট্রিম খোলা আছে — কিছুক্ষণ পরে আবার চেষ্টা করুন।'
-              : 'এই ডিভাইসের একটি স্ট্রিম আগেই খোলা আছে।',
+              : 'এই ডিভাইস বারবার পুনঃসংযোগ করছে — কিছুক্ষণ পরে চেষ্টা করুন।',
         });
         return;
       }

@@ -255,7 +255,7 @@ import {
   revokeDeviceFor,
 } from './device-admin.js';
 import { printHtml, listPrinters, htmlToPdf } from './printing.js';
-import { testLanConnection } from './lan.js';
+import { getTerminalManager } from './terminal.js';
 import { getServerRuntime, serverHealth } from './server.js';
 import { code128Svg, qrSvg } from './barcode.js';
 
@@ -2160,23 +2160,31 @@ on('lan.stopHost', async () => {
 }, 'settings.manage');
 on(
   'lan.configureTerminal',
-  async (ctx, input: { hostUrl: string; token: string }) => {
-    const url = String(input.hostUrl ?? '').trim();
-    if (!/^https?:\/\/[^\s]+$/.test(url)) throw new Error('সার্ভারের ঠিকানা সঠিক নয় (যেমন http://192.168.0.10:4747)।');
-    if (String(input.token ?? '').length < 32) throw new Error('LAN টোকেন সঠিক নয়।');
-    updateSettings(ctx.db, { lan_mode: 'terminal', lan_host_url: url, lan_token: input.token }, null);
-    return { ok: true };
+  () => {
+    // v1.1.4 Milestone D removed the shared-token transport. Configuration now goes
+    // through `terminal.configure` (pinned certificate + device key); there is no
+    // path that stores a shop-wide token for a client again.
+    const err = new Error(
+      'পুরোনো টোকেন-ভিত্তিক টার্মিনাল পরিবহন বন্ধ করা হয়েছে — এখন `terminal.configure` দিয়ে পেয়ারিং করুন।',
+    ) as Error & { code?: string };
+    err.code = 'LEGACY_TRANSPORT_REMOVED';
+    throw err;
   },
   'settings.manage',
 );
 on(
   'lan.test',
-  async (ctx, input?: { hostUrl?: string; token?: string }) => {
-    const settings = getSettings(ctx.db);
-    const url = input?.hostUrl || settings.lan_host_url;
-    const token = input?.token || settings.lan_token;
-    if (!url || !token) return { ok: false, error: 'ঠিকানা বা টোকেন দেওয়া নেই।' };
-    return testLanConnection(url, token);
+  async () => {
+    const manager = getTerminalManager();
+    if (!manager) return { ok: false, error: 'ক্লায়েন্ট মোড চালু হয়নি।', code: 'NOT_CONFIGURED' };
+    const result = await manager.status();
+    return {
+      ok: result.status === 'approved',
+      status: result.status,
+      error: result.status === 'approved' ? undefined : `সংযোগ অবস্থা: ${result.status}`,
+      business: result.server?.store_name ?? undefined,
+      fingerprint: result.server?.fingerprint ?? undefined,
+    };
   },
   'settings.manage',
 );
@@ -2197,6 +2205,82 @@ on(
     return token;
   },
   'settings.manage',
+);
+
+/* ------------------------------------------------------------------ */
+/* v1.1.4 Phase 3 — Client terminal (Milestone D)                     */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Client-mode connection routes. They act on the saved trusted servers and the
+ * sealed device credential — never on a shared token, and never with a local
+ * fallback: a route that cannot reach the Main PC fails instead of guessing.
+ *
+ * Public (pre-login) on purpose: a brand-new client must pair before anyone can log
+ * in. The bridge is only reachable from the bundled renderer (trust boundary in
+ * `main.ts`), and pairing still needs a one-time code plus administrator approval.
+ */
+function terminalManager() {
+  const manager = getTerminalManager();
+  if (!manager) throw new Error('ক্লায়েন্ট মোড চালু হয়নি — অ্যাপ আবার চালু করুন।');
+  return manager;
+}
+
+function terminalError<T>(fn: () => T): T {
+  try {
+    return fn();
+  } catch (err) {
+    const e = err as Error & { code?: string };
+    const error = new Error(e.message) as Error & { code?: string };
+    error.code = e.code ?? 'TERMINAL_ERROR';
+    throw error;
+  }
+}
+
+on('terminal.servers', () => terminalManager().configSnapshot, 'any', true);
+on(
+  'terminal.configure',
+  (_ctx, input: { baseUrl: string; fingerprint: string; certPem: string; storeName?: string; storeId?: string }) =>
+    terminalError(() => terminalManager().configure(input)),
+  'any',
+  true,
+);
+on('terminal.use', (_ctx, id: string) => terminalError(() => terminalManager().useServer(id)), 'any', true);
+on(
+  'terminal.remove',
+  (_ctx, id: string) => {
+    terminalError(() => terminalManager().removeServer(id));
+    return true;
+  },
+  'any',
+  true,
+);
+on('terminal.status', () => terminalManager().status(), 'any', true);
+on(
+  'terminal.pair',
+  (_ctx, input: { code: string; licenseId: string; capacity?: number; storeId?: string; deviceName?: string }) =>
+    terminalManager().pair(input),
+  'any',
+  true,
+);
+on('terminal.login', (_ctx, username: string, password: string) => terminalManager().login(username, password), 'any', true);
+on(
+  'terminal.logout',
+  () => {
+    terminalManager().logout();
+    return true;
+  },
+  'any',
+  true,
+);
+on(
+  'terminal.forget',
+  () => {
+    terminalManager().forget();
+    return true;
+  },
+  'any',
+  true,
 );
 
 /* ------------------------------------------------------------------ */

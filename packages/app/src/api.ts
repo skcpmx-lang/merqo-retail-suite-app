@@ -8,6 +8,7 @@ export interface BridgeResponse<T = unknown> {
 interface SaudaBridge {
   invoke: (method: string, args?: unknown[]) => Promise<BridgeResponse>;
   onEvent: (cb: (payload: { type: string; message?: string }) => void) => () => void;
+  onV1Event?: (cb: (payload: ShopEvent) => void) => () => void;
   platform: string;
   versions: { electron: string; chrome: string; node: string };
 }
@@ -16,6 +17,21 @@ declare global {
   interface Window {
     sauda: SaudaBridge;
   }
+}
+
+/**
+ * An event from the Main PC's authenticated stream (client mode). It is a *hint*:
+ * the renderer refetches through the normal routes and never renders payload data as
+ * if it were the source of truth.
+ */
+export interface ShopEvent {
+  kind: 'event' | 'state' | 'resync';
+  id?: number;
+  type?: string;
+  data?: unknown;
+  state?: string;
+  detail?: string;
+  from?: number;
 }
 
 export class ApiError extends Error {
@@ -37,6 +53,11 @@ export async function call<T = any>(method: string, ...args: unknown[]): Promise
     throw new ApiError(res.error || 'অজানা ত্রুটি', res.code);
   }
   return res.data as T;
+}
+
+export function onV1Event(cb: (payload: ShopEvent) => void): () => void {
+  if (!window.sauda?.onV1Event) return () => undefined;
+  return window.sauda.onV1Event(cb);
 }
 
 export function onEvent(cb: (payload: { type: string; message?: string }) => void): () => void {
