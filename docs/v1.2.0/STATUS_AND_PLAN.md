@@ -15,6 +15,7 @@ Last updated: 2026-11-07, tree `014d7a7` + this phase's commits.
 | 0 | Architecture assessment | **PASS (first pass)** — `ARCHITECTURE_ASSESSMENT.md`, 7 weaknesses named with actions |
 | 0 | Risk register | **PASS (open)** — `RISK_REGISTER.md`, R-01 … R-12 |
 | 14 | Release-process fix for requirement #20 | **PASS** — `scripts/audit-release-branch.mjs` + 5 tests, wired into `release.yml` before the draft release |
+| 14 | `main` matches the published release | **PASS** — PR #15 merged; `main` = `5d46ae6`, v1.1.5 is an ancestor, both gates green |
 
 ## 2. What is **not** complete
 
@@ -36,7 +37,8 @@ alternative is a document that sounds finished and is not.
 | 11 | Windows automation + owner acceptance plan (`OWNER_ACCEPTANCE_TEST_PLAN.md`, `WINDOWS_VERIFICATION.md`) | **NOT STARTED** (v1.1.5 has `V1.1.5_VM_TEST_PLAN.md`) |
 | 12 | Documentation and commercial readiness | **NOT STARTED** |
 | 13 | Final cross-audit and requirement traceability matrix | **NOT STARTED** |
-| 14 | Merge to `main`, tag, build, publish v1.2.0 | **BLOCKED** on the phases above |
+| 14 | Merge to `main` | **PASS** — PR #15 → `5d46ae6`; `v1.1.5` is now an ancestor of `main`, both gates green on the merged commit (run `42289557752`) |
+| 14 | Tag, build and publish v1.2.0 | **BLOCKED** on Phases 1–13 |
 
 ## 3. Honest statement of scale
 
@@ -54,8 +56,8 @@ risk register names the work that remains.
 
 Ordered by risk reduction per unit of effort:
 
-1. **Merge to `main`** (requirement #20; a pure fast-forward today) so the repository's front door
-   matches what customers run. This must happen before any v1.2.0 tag.
+1. ~~Merge to `main`~~ — **done** (PR #15, `5d46ae6`). Requirement #20 is satisfied for the past
+   release and guarded for the next one.
 2. **Phase 4 security audit + threat model** — the highest-value unstarted analysis, and it feeds the
    risk register directly.
 3. **Phase 2 module inventory for the Main App** — a per-screen/per-service table with test coverage,
