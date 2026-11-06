@@ -324,15 +324,13 @@ export async function startLanApi(opts: LanApiOptions): Promise<LanApi> {
     } catch {
       return { status: 400, body: { ok: false, code: 'BAD_KEY', message: 'ডিভাইসের পাবলিক কী সঠিক নয়।' } };
     }
-    try {
-      consumePairingToken(opts.db, code, deviceId);
-    } catch (err) {
-      const codeErr = (err as DeviceError).code ?? 'PAIRING_INVALID';
-      const status = codeErr === 'PAIRING_EXPIRED' || codeErr === 'PAIRING_USED' ? 410 : 400;
-      return { status, body: { ok: false, code: codeErr, message: (err as Error).message } };
-    }
     const licence = (parsed.license ?? {}) as Record<string, unknown>;
-    try {
+    // Consuming the code and enrolling the device are one step. Separate, a claim that failed
+    // *after* the code was consumed burned the shop's displayed pairing code — so any client on the
+    // LAN could kill pairing by claiming the code with a licence that does not fit (wrong store,
+    // full capacity) and walking away. Inside one transaction a failed enrolment releases it.
+    const claim = opts.db.transaction((): { terminal: ReturnType<typeof enrolDevice> } => {
+      consumePairingToken(opts.db, code, deviceId);
       const terminal = enrolDevice(opts.db, {
         device_id: deviceId,
         device_name: String(parsed.device_name ?? 'নতুন ডিভাইস'),
@@ -348,11 +346,20 @@ export async function startLanApi(opts: LanApiOptions): Promise<LanApi> {
         platform: String(parsed.platform ?? ''),
         app_version: String(parsed.app_version ?? ''),
       });
+      return { terminal };
+    });
+    try {
+      const { terminal } = claim.immediate();
       return {
         status: 202,
         body: { ok: true, data: { status: terminal.status, device_id: terminal.device_id } },
       };
     } catch (err) {
+      const codeErr = (err as DeviceError).code;
+      if (codeErr === 'PAIRING_INVALID' || codeErr === 'PAIRING_EXPIRED' || codeErr === 'PAIRING_USED') {
+        const status = codeErr === 'PAIRING_EXPIRED' || codeErr === 'PAIRING_USED' ? 410 : 400;
+        return { status, body: { ok: false, code: codeErr, message: (err as Error).message } };
+      }
       if (err instanceof DeviceError) return { status: 409, body: { ok: false, code: err.code, message: err.message } };
       return { status: 500, body: { ok: false, code: 'ERROR', message: (err as Error).message } };
     }
