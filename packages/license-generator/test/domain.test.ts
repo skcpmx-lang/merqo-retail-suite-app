@@ -13,6 +13,7 @@ import { afterAll, describe, expect, it } from 'vitest';
 import {
   FEATURES,
   appendLedger,
+  commitLedgerAndStore,
   buildBackup,
   createCustomer,
   customerById,
@@ -33,6 +34,7 @@ import {
   reportRows,
   revokeLicense,
   revokedIds,
+  listLedger as listLedgerAgain,
   signLicense,
   summarize,
   toLicenseFile,
@@ -329,5 +331,84 @@ describe('reports and summary', () => {
     const registry = reportRows(store, [], 'licenses');
     expect(registry.rows[0][0]).toBe(record.license_id);
     expect(FEATURES.length).toBeGreaterThan(8);
+  });
+});
+
+/**
+ * A-27: the store and the ledger are two records of one fact. `commitLedgerAndStore` writes both or
+ * neither — the ledger is what stops a revoked licence being re-issued, so a ledger line that
+ * outlives a failed store save (or goes missing after a successful one) is a real hazard, not tidiness.
+ */
+describe('commitLedgerAndStore (A-27)', () => {
+  const ledgerEntry = (id: string, action: 'issued' | 'revoked' = 'issued') => ({
+    license_id: id,
+    org: 'করিম ট্রেডার্স',
+    owner: 'করিম',
+    edition: 'standard' as const,
+    expires_at: null,
+    max_devices: 2,
+    device_hash: null,
+    key_id: 'key-1',
+    action,
+    replaces: null,
+    reason: null,
+    file: null,
+    customer_id: null,
+  });
+
+  it('writes the ledger lines and saves the store together', () => {
+    const dir = tmp();
+    const ledger = path.join(dir, 'ledger.jsonl');
+    let saved = false;
+    const written = commitLedgerAndStore(ledger, [ledgerEntry('L-1'), ledgerEntry('L-2')], () => {
+      saved = true;
+    });
+    expect(saved).toBe(true);
+    expect(written).toHaveLength(2);
+    expect(listLedger(ledger).map((e) => e.license_id)).toEqual(['L-2', 'L-1']); // newest first
+  });
+
+  it('takes the ledger lines back when the store cannot be saved', () => {
+    const dir = tmp();
+    const ledger = path.join(dir, 'ledger.jsonl');
+    appendLedger(ledger, ledgerEntry('OLD-1'));
+    const before = fs.statSync(ledger).size;
+
+    expect(() =>
+      commitLedgerAndStore(ledger, [ledgerEntry('L-NEW'), ledgerEntry('L-NEW', 'revoked')], () => {
+        throw new Error('forced failure');
+      }),
+    ).toThrow(/forced failure/);
+
+    expect(fs.statSync(ledger).size).toBe(before);
+    expect(listLedger(ledger).map((e) => e.license_id)).toEqual(['OLD-1']);
+    // and the revoked id the app keys on never appeared
+    expect(revokedIds(ledger)).toEqual([]);
+  });
+
+  it('shows why the old order was a hazard: the ledger line outlived the failed save', () => {
+    // This is what the app did before the fix — append to the ledger, then save the store — with the
+    // store save failing. Nothing rolls the ledger back, so the generator believes a licence was
+    // revoked that the store still shows as active.
+    const dir = tmp();
+    const ledger = path.join(dir, 'ledger.jsonl');
+    appendLedger(ledger, ledgerEntry('L-OLD', 'revoked'));
+    expect(() => {
+      throw new Error('store save failed');
+    }).toThrow();
+    expect(revokedIds(ledger)).toEqual(['L-OLD']);
+  });
+
+  it('leaves an empty (not missing) ledger when the very first save fails', () => {
+    const dir = tmp();
+    const ledger = path.join(dir, 'ledger.jsonl');
+    expect(fs.existsSync(ledger)).toBe(false);
+    expect(() =>
+      commitLedgerAndStore(ledger, [ledgerEntry('L-1', 'revoked')], () => {
+        throw new Error('forced failure');
+      }),
+    ).toThrow(/forced failure/);
+    expect(listLedger(ledger)).toEqual([]);
+    expect(revokedIds(ledger)).toEqual([]);
   });
 });
