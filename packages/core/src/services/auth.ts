@@ -215,34 +215,38 @@ export interface CreateUserInput {
 }
 
 export function createUser(db: Db, input: CreateUserInput): User {
-  const username = normalizeText(input.username).toLowerCase();
-  const fullName = normalizeText(input.fullName);
-  if (!/^[a-z0-9._-]{3,32}$/.test(username)) {
-    throw new Error('ইউজারনেম ৩–৩২ অক্ষরের ইংরেজি ছোট হাতের অক্ষর বা সংখ্যা হতে হবে (a-z, 0-9, . _ -)।');
-  }
-  if (!fullName) throw new Error('পুরো নাম দিতে হবে।');
-  validatePasswordStrength(input.password);
-  if (!['admin', 'manager', 'cashier'].includes(input.role)) throw new Error('রোল সঠিক নয়।');
-  if (usernameExists(db, username)) throw new Error('এই ইউজারনেম আগেই ব্যবহৃত হয়েছে।');
+  // The change and the audit line that records it are one step (v1.1.5, sweep finding A-26).
+  // Nested in a caller's transaction this is a savepoint, so a batch still rolls back as a whole.
+  return db.transaction(() => {
+    const username = normalizeText(input.username).toLowerCase();
+    const fullName = normalizeText(input.fullName);
+    if (!/^[a-z0-9._-]{3,32}$/.test(username)) {
+      throw new Error('ইউজারনেম ৩–৩২ অক্ষরের ইংরেজি ছোট হাতের অক্ষর বা সংখ্যা হতে হবে (a-z, 0-9, . _ -)।');
+    }
+    if (!fullName) throw new Error('পুরো নাম দিতে হবে।');
+    validatePasswordStrength(input.password);
+    if (!['admin', 'manager', 'cashier'].includes(input.role)) throw new Error('রোল সঠিক নয়।');
+    if (usernameExists(db, username)) throw new Error('এই ইউজারনেম আগেই ব্যবহৃত হয়েছে।');
 
-  const perms = input.permissions ?? DEFAULT_ROLE_PERMISSIONS[input.role];
-  const { hash, salt } = hashPassword(input.password);
-  const now = nowLocal();
-  const res = db
-    .prepare(
-      `INSERT INTO users (username, full_name, role, password_hash, password_salt, permissions, is_active, created_at, updated_at)
-       VALUES (?,?,?,?,?,?,1,?,?)`,
-    )
-    .run(username, fullName, input.role, hash, salt, JSON.stringify(perms), now, now);
-  audit(db, {
-    userId: input.actor?.id ?? null,
-    username: input.actor?.username ?? 'system',
-    action: 'user.create',
-    entity: 'user',
-    entityId: Number(res.lastInsertRowid),
-    details: { username, role: input.role },
-  });
-  return getUser(db, Number(res.lastInsertRowid))!;
+    const perms = input.permissions ?? DEFAULT_ROLE_PERMISSIONS[input.role];
+    const { hash, salt } = hashPassword(input.password);
+    const now = nowLocal();
+    const res = db
+      .prepare(
+        `INSERT INTO users (username, full_name, role, password_hash, password_salt, permissions, is_active, created_at, updated_at)
+         VALUES (?,?,?,?,?,?,1,?,?)`,
+      )
+      .run(username, fullName, input.role, hash, salt, JSON.stringify(perms), now, now);
+    audit(db, {
+      userId: input.actor?.id ?? null,
+      username: input.actor?.username ?? 'system',
+      action: 'user.create',
+      entity: 'user',
+      entityId: Number(res.lastInsertRowid),
+      details: { username, role: input.role },
+    });
+    return getUser(db, Number(res.lastInsertRowid))!;
+  })();
 }
 
 export function updateUser(
@@ -251,49 +255,53 @@ export function updateUser(
   patch: { fullName?: string; role?: UserRole; permissions?: string[]; isActive?: boolean },
   actor?: { id: number; username: string } | null,
 ): User {
-  const existing = getUser(db, id);
-  if (!existing) throw new Error('ইউজার পাওয়া যায়নি।');
-  const fields: string[] = [];
-  const params: unknown[] = [];
-  if (patch.fullName !== undefined) {
-    fields.push('full_name = ?');
-    params.push(normalizeText(patch.fullName));
-  }
-  if (patch.role !== undefined) {
-    if (!['admin', 'manager', 'cashier'].includes(patch.role)) throw new Error('রোল সঠিক নয়।');
-    fields.push('role = ?');
-    params.push(patch.role);
-  }
-  if (patch.permissions !== undefined) {
-    const clean = patch.permissions.filter((p) => (ALL_PERMISSIONS as readonly string[]).includes(p));
-    fields.push('permissions = ?');
-    params.push(JSON.stringify(clean));
-  }
-  if (patch.isActive !== undefined) {
-    if (existing.role === 'admin' && !patch.isActive) {
-      const activeAdmins = (
-        db.prepare("SELECT COUNT(*) c FROM users WHERE role='admin' AND is_active=1 AND id <> ?").get(id) as {
-          c: number;
-        }
-      ).c;
-      if (activeAdmins === 0) throw new Error('শেষ অ্যাডমিন ইউজার নিষ্ক্রিয় করা যাবে না।');
+  // The change and the audit line that records it are one step (v1.1.5, sweep finding A-26).
+  // Nested in a caller's transaction this is a savepoint, so a batch still rolls back as a whole.
+  return db.transaction(() => {
+    const existing = getUser(db, id);
+    if (!existing) throw new Error('ইউজার পাওয়া যায়নি।');
+    const fields: string[] = [];
+    const params: unknown[] = [];
+    if (patch.fullName !== undefined) {
+      fields.push('full_name = ?');
+      params.push(normalizeText(patch.fullName));
     }
-    fields.push('is_active = ?');
-    params.push(patch.isActive ? 1 : 0);
-  }
-  if (!fields.length) return existing;
-  fields.push('updated_at = ?');
-  params.push(nowLocal(), id);
-  db.prepare(`UPDATE users SET ${fields.join(', ')} WHERE id = ?`).run(...params);
-  audit(db, {
-    userId: actor?.id ?? null,
-    username: actor?.username ?? 'system',
-    action: 'user.update',
-    entity: 'user',
-    entityId: id,
-    details: patch,
-  });
-  return getUser(db, id)!;
+    if (patch.role !== undefined) {
+      if (!['admin', 'manager', 'cashier'].includes(patch.role)) throw new Error('রোল সঠিক নয়।');
+      fields.push('role = ?');
+      params.push(patch.role);
+    }
+    if (patch.permissions !== undefined) {
+      const clean = patch.permissions.filter((p) => (ALL_PERMISSIONS as readonly string[]).includes(p));
+      fields.push('permissions = ?');
+      params.push(JSON.stringify(clean));
+    }
+    if (patch.isActive !== undefined) {
+      if (existing.role === 'admin' && !patch.isActive) {
+        const activeAdmins = (
+          db.prepare("SELECT COUNT(*) c FROM users WHERE role='admin' AND is_active=1 AND id <> ?").get(id) as {
+            c: number;
+          }
+        ).c;
+        if (activeAdmins === 0) throw new Error('শেষ অ্যাডমিন ইউজার নিষ্ক্রিয় করা যাবে না।');
+      }
+      fields.push('is_active = ?');
+      params.push(patch.isActive ? 1 : 0);
+    }
+    if (!fields.length) return existing;
+    fields.push('updated_at = ?');
+    params.push(nowLocal(), id);
+    db.prepare(`UPDATE users SET ${fields.join(', ')} WHERE id = ?`).run(...params);
+    audit(db, {
+      userId: actor?.id ?? null,
+      username: actor?.username ?? 'system',
+      action: 'user.update',
+      entity: 'user',
+      entityId: id,
+      details: patch,
+    });
+    return getUser(db, id)!;
+  })();
 }
 
 export function resetPassword(
@@ -302,40 +310,48 @@ export function resetPassword(
   newPassword: string,
   actor?: { id: number; username: string } | null,
 ): void {
-  const existing = getUser(db, id);
-  if (!existing) throw new Error('ইউজার পাওয়া যায়নি।');
-  validatePasswordStrength(newPassword);
-  const { hash, salt } = hashPassword(newPassword);
-  db.prepare('UPDATE users SET password_hash = ?, password_salt = ?, updated_at = ? WHERE id = ?').run(
-    hash,
-    salt,
-    nowLocal(),
-    id,
-  );
-  audit(db, {
-    userId: actor?.id ?? null,
-    username: actor?.username ?? 'system',
-    action: 'user.password_reset',
-    entity: 'user',
-    entityId: id,
-  });
+  // The change and the audit line that records it are one step (v1.1.5, sweep finding A-26).
+  // Nested in a caller's transaction this is a savepoint, so a batch still rolls back as a whole.
+  return db.transaction(() => {
+    const existing = getUser(db, id);
+    if (!existing) throw new Error('ইউজার পাওয়া যায়নি।');
+    validatePasswordStrength(newPassword);
+    const { hash, salt } = hashPassword(newPassword);
+    db.prepare('UPDATE users SET password_hash = ?, password_salt = ?, updated_at = ? WHERE id = ?').run(
+      hash,
+      salt,
+      nowLocal(),
+      id,
+    );
+    audit(db, {
+      userId: actor?.id ?? null,
+      username: actor?.username ?? 'system',
+      action: 'user.password_reset',
+      entity: 'user',
+      entityId: id,
+    });
+  })();
 }
 
 export function changeOwnPassword(db: Db, id: number, oldPassword: string, newPassword: string): void {
-  const row = getCredentialRowById(db, id);
-  if (!row) throw new Error('ইউজার পাওয়া যায়নি।');
-  if (!verifyPassword(oldPassword, row.password_salt, row.password_hash)) {
-    throw new Error('বর্তমান পাসওয়ার্ড সঠিক নয়।');
-  }
-  validatePasswordStrength(newPassword);
-  const { hash, salt } = hashPassword(newPassword);
-  db.prepare('UPDATE users SET password_hash = ?, password_salt = ?, updated_at = ? WHERE id = ?').run(
-    hash,
-    salt,
-    nowLocal(),
-    id,
-  );
-  audit(db, { userId: id, username: row.username, action: 'user.password_change', entity: 'user', entityId: id });
+  // The change and the audit line that records it are one step (v1.1.5, sweep finding A-26).
+  // Nested in a caller's transaction this is a savepoint, so a batch still rolls back as a whole.
+  return db.transaction(() => {
+    const row = getCredentialRowById(db, id);
+    if (!row) throw new Error('ইউজার পাওয়া যায়নি।');
+    if (!verifyPassword(oldPassword, row.password_salt, row.password_hash)) {
+      throw new Error('বর্তমান পাসওয়ার্ড সঠিক নয়।');
+    }
+    validatePasswordStrength(newPassword);
+    const { hash, salt } = hashPassword(newPassword);
+    db.prepare('UPDATE users SET password_hash = ?, password_salt = ?, updated_at = ? WHERE id = ?').run(
+      hash,
+      salt,
+      nowLocal(),
+      id,
+    );
+    audit(db, { userId: id, username: row.username, action: 'user.password_change', entity: 'user', entityId: id });
+  })();
 }
 
 export interface LoginResult {

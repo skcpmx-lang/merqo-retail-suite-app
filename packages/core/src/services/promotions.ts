@@ -62,47 +62,51 @@ function assertPercent(value: number): void {
 }
 
 export function createCoupon(db: Db, input: CouponInput, actor?: Actor | null): Coupon {
-  const code = normalizeCode(input.code);
-  if (code.length < 3) throw new Error('কুপন কোড অন্তত ৩ অক্ষরের হতে হবে।');
-  if (!/^[A-Z0-9_-]+$/.test(code)) throw new Error('কুপন কোডে শুধু ইংরেজি অক্ষর, সংখ্যা, - এবং _ চলবে।');
-  const value = Math.round(input.value);
-  if (input.kind === 'percent') assertPercent(value);
-  else if (value <= 0) throw new Error('নির্দিষ্ট ছাড়ের পরিমাণ শূন্যের বেশি হতে হবে।');
-  if (db.prepare('SELECT id FROM coupons WHERE code = ?').get(code)) {
-    throw new Error(`"${code}" কোডটি আগেই ব্যবহার হয়েছে।`);
-  }
-  const now = nowLocal();
-  const res = db
-    .prepare(
-      `INSERT INTO coupons (code, label, kind, value, min_purchase_paisa, max_discount_paisa, starts_at, expires_at,
-         usage_limit, used_count, per_customer_limit, is_active, note, created_at, updated_at)
-       VALUES (?,?,?,?,?,?,?,?,?,0,?,1,?,?,?)`,
-    )
-    .run(
-      code,
-      input.label ?? null,
-      input.kind,
-      value,
-      Math.max(0, Math.round(input.minPurchasePaisa ?? 0)),
-      Math.max(0, Math.round(input.maxDiscountPaisa ?? 0)),
-      input.startsAt ?? null,
-      input.expiresAt ?? null,
-      Math.max(0, Math.round(input.usageLimit ?? 0)),
-      Math.max(0, Math.round(input.perCustomerLimit ?? 0)),
-      input.note ?? null,
-      now,
-      now,
-    );
-  const coupon = getCoupon(db, Number(res.lastInsertRowid))!;
-  audit(db, {
-    userId: actor?.id ?? null,
-    username: actor?.username ?? null,
-    action: 'coupon.create',
-    entity: 'coupon',
-    entityId: coupon.id,
-    details: { code, kind: coupon.kind, value: coupon.value },
-  });
-  return coupon;
+  // The change and the audit line that records it are one step (v1.1.5, sweep finding A-26).
+  // Nested in a caller's transaction this is a savepoint, so a batch still rolls back as a whole.
+  return db.transaction(() => {
+    const code = normalizeCode(input.code);
+    if (code.length < 3) throw new Error('কুপন কোড অন্তত ৩ অক্ষরের হতে হবে।');
+    if (!/^[A-Z0-9_-]+$/.test(code)) throw new Error('কুপন কোডে শুধু ইংরেজি অক্ষর, সংখ্যা, - এবং _ চলবে।');
+    const value = Math.round(input.value);
+    if (input.kind === 'percent') assertPercent(value);
+    else if (value <= 0) throw new Error('নির্দিষ্ট ছাড়ের পরিমাণ শূন্যের বেশি হতে হবে।');
+    if (db.prepare('SELECT id FROM coupons WHERE code = ?').get(code)) {
+      throw new Error(`"${code}" কোডটি আগেই ব্যবহার হয়েছে।`);
+    }
+    const now = nowLocal();
+    const res = db
+      .prepare(
+        `INSERT INTO coupons (code, label, kind, value, min_purchase_paisa, max_discount_paisa, starts_at, expires_at,
+           usage_limit, used_count, per_customer_limit, is_active, note, created_at, updated_at)
+         VALUES (?,?,?,?,?,?,?,?,?,0,?,1,?,?,?)`,
+      )
+      .run(
+        code,
+        input.label ?? null,
+        input.kind,
+        value,
+        Math.max(0, Math.round(input.minPurchasePaisa ?? 0)),
+        Math.max(0, Math.round(input.maxDiscountPaisa ?? 0)),
+        input.startsAt ?? null,
+        input.expiresAt ?? null,
+        Math.max(0, Math.round(input.usageLimit ?? 0)),
+        Math.max(0, Math.round(input.perCustomerLimit ?? 0)),
+        input.note ?? null,
+        now,
+        now,
+      );
+    const coupon = getCoupon(db, Number(res.lastInsertRowid))!;
+    audit(db, {
+      userId: actor?.id ?? null,
+      username: actor?.username ?? null,
+      action: 'coupon.create',
+      entity: 'coupon',
+      entityId: coupon.id,
+      details: { code, kind: coupon.kind, value: coupon.value },
+    });
+    return coupon;
+  })();
 }
 
 export function getCoupon(db: Db, id: number): Coupon | null {
@@ -141,39 +145,43 @@ export function listCoupons(
 }
 
 export function updateCoupon(db: Db, id: number, patch: Partial<CouponInput> & { isActive?: boolean }, actor?: Actor | null): Coupon {
-  const current = getCoupon(db, id);
-  if (!current) throw new Error('কুপন পাওয়া যায়নি।');
-  const kind = patch.kind ?? current.kind;
-  const value = patch.value != null ? Math.round(patch.value) : current.value;
-  if (kind === 'percent') assertPercent(value);
-  else if (value <= 0) throw new Error('নির্দিষ্ট ছাড়ের পরিমাণ শূন্যের বেশি হতে হবে।');
-  db.prepare(
-    `UPDATE coupons SET kind=?, value=?, label=?, min_purchase_paisa=?, max_discount_paisa=?, starts_at=?, expires_at=?,
-       usage_limit=?, per_customer_limit=?, is_active=?, note=?, updated_at=? WHERE id=?`,
-  ).run(
-    kind,
-    value,
-    patch.label !== undefined ? patch.label : current.label,
-    patch.minPurchasePaisa != null ? Math.max(0, Math.round(patch.minPurchasePaisa)) : current.min_purchase_paisa,
-    patch.maxDiscountPaisa != null ? Math.max(0, Math.round(patch.maxDiscountPaisa)) : current.max_discount_paisa,
-    patch.startsAt !== undefined ? patch.startsAt : current.starts_at,
-    patch.expiresAt !== undefined ? patch.expiresAt : current.expires_at,
-    patch.usageLimit != null ? Math.max(0, Math.round(patch.usageLimit)) : current.usage_limit,
-    patch.perCustomerLimit != null ? Math.max(0, Math.round(patch.perCustomerLimit)) : current.per_customer_limit,
-    patch.isActive === undefined ? current.is_active : patch.isActive ? 1 : 0,
-    patch.note !== undefined ? patch.note : current.note,
-    nowLocal(),
-    id,
-  );
-  audit(db, {
-    userId: actor?.id ?? null,
-    username: actor?.username ?? null,
-    action: 'coupon.update',
-    entity: 'coupon',
-    entityId: id,
-    details: { before: { kind: current.kind, value: current.value }, after: { kind, value } },
-  });
-  return getCoupon(db, id)!;
+  // The change and the audit line that records it are one step (v1.1.5, sweep finding A-26).
+  // Nested in a caller's transaction this is a savepoint, so a batch still rolls back as a whole.
+  return db.transaction(() => {
+    const current = getCoupon(db, id);
+    if (!current) throw new Error('কুপন পাওয়া যায়নি।');
+    const kind = patch.kind ?? current.kind;
+    const value = patch.value != null ? Math.round(patch.value) : current.value;
+    if (kind === 'percent') assertPercent(value);
+    else if (value <= 0) throw new Error('নির্দিষ্ট ছাড়ের পরিমাণ শূন্যের বেশি হতে হবে।');
+    db.prepare(
+      `UPDATE coupons SET kind=?, value=?, label=?, min_purchase_paisa=?, max_discount_paisa=?, starts_at=?, expires_at=?,
+         usage_limit=?, per_customer_limit=?, is_active=?, note=?, updated_at=? WHERE id=?`,
+    ).run(
+      kind,
+      value,
+      patch.label !== undefined ? patch.label : current.label,
+      patch.minPurchasePaisa != null ? Math.max(0, Math.round(patch.minPurchasePaisa)) : current.min_purchase_paisa,
+      patch.maxDiscountPaisa != null ? Math.max(0, Math.round(patch.maxDiscountPaisa)) : current.max_discount_paisa,
+      patch.startsAt !== undefined ? patch.startsAt : current.starts_at,
+      patch.expiresAt !== undefined ? patch.expiresAt : current.expires_at,
+      patch.usageLimit != null ? Math.max(0, Math.round(patch.usageLimit)) : current.usage_limit,
+      patch.perCustomerLimit != null ? Math.max(0, Math.round(patch.perCustomerLimit)) : current.per_customer_limit,
+      patch.isActive === undefined ? current.is_active : patch.isActive ? 1 : 0,
+      patch.note !== undefined ? patch.note : current.note,
+      nowLocal(),
+      id,
+    );
+    audit(db, {
+      userId: actor?.id ?? null,
+      username: actor?.username ?? null,
+      action: 'coupon.update',
+      entity: 'coupon',
+      entityId: id,
+      details: { before: { kind: current.kind, value: current.value }, after: { kind, value } },
+    });
+    return getCoupon(db, id)!;
+  })();
 }
 
 export function couponRedemptions(db: Db, couponId: number) {

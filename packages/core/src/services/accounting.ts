@@ -120,35 +120,39 @@ export function createAccount(
   input: AccountInput,
   actor?: { id: number; username: string } | null,
 ): Account {
-  const code = (input.code ?? '').trim();
-  if (!/^[0-9]{3,6}$/.test(code)) throw new Error('হিসাব কোড ৩–৬ সংখ্যার হতে হবে।');
-  if (!input.name?.trim()) throw new Error('হিসাবের নাম দিতে হবে।');
-  const exists = db.prepare('SELECT id FROM accounts WHERE code = ?').get(code);
-  if (exists) throw new Error('এই কোডে আরেকটি হিসাব আছে।');
-  const res = db
-    .prepare(
-      `INSERT INTO accounts (code, name, name_bn, type, parent_id, is_cash, is_bank, is_system, created_at)
-       VALUES (?,?,?,?,?,?,?,0,?)`,
-    )
-    .run(
-      code,
-      input.name.trim(),
-      input.nameBn?.trim() ?? '',
-      input.type,
-      input.parentId ?? null,
-      input.isCash ? 1 : 0,
-      input.isBank ? 1 : 0,
-      nowLocal(),
-    );
-  audit(db, {
-    userId: actor?.id ?? null,
-    username: actor?.username ?? 'system',
-    action: 'accounting.account_create',
-    entity: 'account',
-    entityId: Number(res.lastInsertRowid),
-    details: { code, name: input.name },
-  });
-  return db.prepare('SELECT * FROM accounts WHERE id = ?').get(res.lastInsertRowid) as Account;
+  // The change and the audit line that records it are one step (v1.1.5, sweep finding A-26).
+  // Nested in a caller's transaction this is a savepoint, so a batch still rolls back as a whole.
+  return db.transaction(() => {
+    const code = (input.code ?? '').trim();
+    if (!/^[0-9]{3,6}$/.test(code)) throw new Error('হিসাব কোড ৩–৬ সংখ্যার হতে হবে।');
+    if (!input.name?.trim()) throw new Error('হিসাবের নাম দিতে হবে।');
+    const exists = db.prepare('SELECT id FROM accounts WHERE code = ?').get(code);
+    if (exists) throw new Error('এই কোডে আরেকটি হিসাব আছে।');
+    const res = db
+      .prepare(
+        `INSERT INTO accounts (code, name, name_bn, type, parent_id, is_cash, is_bank, is_system, created_at)
+         VALUES (?,?,?,?,?,?,?,0,?)`,
+      )
+      .run(
+        code,
+        input.name.trim(),
+        input.nameBn?.trim() ?? '',
+        input.type,
+        input.parentId ?? null,
+        input.isCash ? 1 : 0,
+        input.isBank ? 1 : 0,
+        nowLocal(),
+      );
+    audit(db, {
+      userId: actor?.id ?? null,
+      username: actor?.username ?? 'system',
+      action: 'accounting.account_create',
+      entity: 'account',
+      entityId: Number(res.lastInsertRowid),
+      details: { code, name: input.name },
+    });
+    return db.prepare('SELECT * FROM accounts WHERE id = ?').get(res.lastInsertRowid) as Account;
+  })();
 }
 
 export function updateAccount(
@@ -157,26 +161,30 @@ export function updateAccount(
   patch: { name?: string; nameBn?: string; note?: string | null; isActive?: boolean },
   actor?: { id: number; username: string } | null,
 ): Account {
-  const row = db.prepare('SELECT * FROM accounts WHERE id = ?').get(id) as Account | undefined;
-  if (!row) throw new Error('হিসাব খাত পাওয়া যায়নি।');
-  if (row.is_system === 1 && patch.isActive === false) {
-    throw new Error('সিস্টেম হিসাব বন্ধ করা যাবে না।');
-  }
-  db.prepare('UPDATE accounts SET name = ?, name_bn = ?, note = ?, is_active = ? WHERE id = ?').run(
-    patch.name?.trim() || row.name,
-    patch.nameBn?.trim() ?? row.name_bn,
-    patch.note === undefined ? row.note : patch.note,
-    patch.isActive === undefined ? row.is_active : patch.isActive ? 1 : 0,
-    id,
-  );
-  audit(db, {
-    userId: actor?.id ?? null,
-    username: actor?.username ?? 'system',
-    action: 'accounting.account_update',
-    entity: 'account',
-    entityId: id,
-  });
-  return db.prepare('SELECT * FROM accounts WHERE id = ?').get(id) as Account;
+  // The change and the audit line that records it are one step (v1.1.5, sweep finding A-26).
+  // Nested in a caller's transaction this is a savepoint, so a batch still rolls back as a whole.
+  return db.transaction(() => {
+    const row = db.prepare('SELECT * FROM accounts WHERE id = ?').get(id) as Account | undefined;
+    if (!row) throw new Error('হিসাব খাত পাওয়া যায়নি।');
+    if (row.is_system === 1 && patch.isActive === false) {
+      throw new Error('সিস্টেম হিসাব বন্ধ করা যাবে না।');
+    }
+    db.prepare('UPDATE accounts SET name = ?, name_bn = ?, note = ?, is_active = ? WHERE id = ?').run(
+      patch.name?.trim() || row.name,
+      patch.nameBn?.trim() ?? row.name_bn,
+      patch.note === undefined ? row.note : patch.note,
+      patch.isActive === undefined ? row.is_active : patch.isActive ? 1 : 0,
+      id,
+    );
+    audit(db, {
+      userId: actor?.id ?? null,
+      username: actor?.username ?? 'system',
+      action: 'accounting.account_update',
+      entity: 'account',
+      entityId: id,
+    });
+    return db.prepare('SELECT * FROM accounts WHERE id = ?').get(id) as Account;
+  })();
 }
 
 /** The account money lands in for a given payment method (cash vs bank/wallet). */

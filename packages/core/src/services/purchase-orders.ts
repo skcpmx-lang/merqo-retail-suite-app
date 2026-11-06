@@ -393,29 +393,33 @@ export function receivePurchaseOrder(
 }
 
 export function cancelPurchaseOrder(db: Db, poId: number, reason: string, actor: Actor): PurchaseOrder {
-  const order = getPurchaseOrder(db, poId);
-  if (!order) throw new Error('অর্ডার পাওয়া যায়নি।');
-  if (order.status === 'cancelled') throw new Error('অর্ডারটি আগেই বাতিল করা হয়েছে।');
-  if (!reason?.trim()) throw new Error('বাতিলের কারণ লিখুন।');
-  const received = (order.items ?? []).some((i) => i.received_base_milli > 0);
-  if (received) {
-    throw new Error('কিছু পণ্য ইতিমধ্যে গ্রহণ করা হয়েছে — অর্ডারটি বাতিল করা যাবে না, বাকি লাইন বাতিল করুন।');
-  }
-  db.prepare('UPDATE purchase_orders SET status = ?, cancel_reason = ?, updated_at = ? WHERE id = ?').run(
-    'cancelled',
-    reason,
-    nowLocal(),
-    poId,
-  );
-  audit(db, {
-    userId: actor.id,
-    username: actor.username,
-    action: 'po.cancel',
-    entity: 'purchase_order',
-    entityId: poId,
-    details: { poNo: order.po_no, reason },
-  });
-  return getPurchaseOrder(db, poId)!;
+  // The change and the audit line that records it are one step (v1.1.5, sweep finding A-26).
+  // Nested in a caller's transaction this is a savepoint, so a batch still rolls back as a whole.
+  return db.transaction(() => {
+    const order = getPurchaseOrder(db, poId);
+    if (!order) throw new Error('অর্ডার পাওয়া যায়নি।');
+    if (order.status === 'cancelled') throw new Error('অর্ডারটি আগেই বাতিল করা হয়েছে।');
+    if (!reason?.trim()) throw new Error('বাতিলের কারণ লিখুন।');
+    const received = (order.items ?? []).some((i) => i.received_base_milli > 0);
+    if (received) {
+      throw new Error('কিছু পণ্য ইতিমধ্যে গ্রহণ করা হয়েছে — অর্ডারটি বাতিল করা যাবে না, বাকি লাইন বাতিল করুন।');
+    }
+    db.prepare('UPDATE purchase_orders SET status = ?, cancel_reason = ?, updated_at = ? WHERE id = ?').run(
+      'cancelled',
+      reason,
+      nowLocal(),
+      poId,
+    );
+    audit(db, {
+      userId: actor.id,
+      username: actor.username,
+      action: 'po.cancel',
+      entity: 'purchase_order',
+      entityId: poId,
+      details: { poNo: order.po_no, reason },
+    });
+    return getPurchaseOrder(db, poId)!;
+  })();
 }
 
 /** Preview of what a receipt will cost — used by the receiving screen. */

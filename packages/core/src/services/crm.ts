@@ -59,18 +59,22 @@ export function assertCreditLimit(db: Db, customerId: number, addingPaisa: numbe
 }
 
 export function setCreditLimit(db: Db, customerId: number, limitPaisa: number, actor?: Actor): void {
-  const row = db.prepare('SELECT name FROM customers WHERE id = ?').get(customerId) as { name: string } | undefined;
-  if (!row) throw new Error('কাস্টমার পাওয়া যায়নি।');
-  const limit = Math.max(0, Math.round(limitPaisa));
-  db.prepare('UPDATE customers SET credit_limit_paisa = ?, updated_at = ? WHERE id = ?').run(limit, nowLocal(), customerId);
-  audit(db, {
-    userId: actor?.id ?? null,
-    username: actor?.username,
-    action: 'customer.credit_limit',
-    entity: 'customer',
-    entityId: customerId,
-    details: { name: row.name, limitPaisa: limit },
-  });
+  // The change and the audit line that records it are one step (v1.1.5, sweep finding A-26).
+  // Nested in a caller's transaction this is a savepoint, so a batch still rolls back as a whole.
+  return db.transaction(() => {
+    const row = db.prepare('SELECT name FROM customers WHERE id = ?').get(customerId) as { name: string } | undefined;
+    if (!row) throw new Error('কাস্টমার পাওয়া যায়নি।');
+    const limit = Math.max(0, Math.round(limitPaisa));
+    db.prepare('UPDATE customers SET credit_limit_paisa = ?, updated_at = ? WHERE id = ?').run(limit, nowLocal(), customerId);
+    audit(db, {
+      userId: actor?.id ?? null,
+      username: actor?.username,
+      action: 'customer.credit_limit',
+      entity: 'customer',
+      entityId: customerId,
+      details: { name: row.name, limitPaisa: limit },
+    });
+  })();
 }
 
 /* ------------------------------------------------------------------ *
@@ -277,33 +281,41 @@ export function listCustomerGroups(db: Db): { group_name: string; customers: num
 }
 
 export function assignCustomerGroup(db: Db, customerId: number, groupName: string | null, actor?: Actor): void {
-  const row = db.prepare('SELECT name FROM customers WHERE id = ?').get(customerId) as { name: string } | undefined;
-  if (!row) throw new Error('কাস্টমার পাওয়া যায়নি।');
-  const value = groupName?.trim() ? groupName.trim() : null;
-  db.prepare('UPDATE customers SET group_name = ?, updated_at = ? WHERE id = ?').run(value, nowLocal(), customerId);
-  audit(db, {
-    userId: actor?.id ?? null,
-    username: actor?.username,
-    action: 'customer.group',
-    entity: 'customer',
-    entityId: customerId,
-    details: { name: row.name, group: value },
-  });
+  // The change and the audit line that records it are one step (v1.1.5, sweep finding A-26).
+  // Nested in a caller's transaction this is a savepoint, so a batch still rolls back as a whole.
+  return db.transaction(() => {
+    const row = db.prepare('SELECT name FROM customers WHERE id = ?').get(customerId) as { name: string } | undefined;
+    if (!row) throw new Error('কাস্টমার পাওয়া যায়নি।');
+    const value = groupName?.trim() ? groupName.trim() : null;
+    db.prepare('UPDATE customers SET group_name = ?, updated_at = ? WHERE id = ?').run(value, nowLocal(), customerId);
+    audit(db, {
+      userId: actor?.id ?? null,
+      username: actor?.username,
+      action: 'customer.group',
+      entity: 'customer',
+      entityId: customerId,
+      details: { name: row.name, group: value },
+    });
+  })();
 }
 
 export function setCustomerPriceLevel(db: Db, customerId: number, level: PriceLevel, actor?: Actor): void {
-  if (!CUSTOMER_PRICE_LEVELS.includes(level)) throw new Error('দামের স্তর সঠিক নয়।');
-  const row = db.prepare('SELECT name FROM customers WHERE id = ?').get(customerId) as { name: string } | undefined;
-  if (!row) throw new Error('কাস্টমার পাওয়া যায়নি।');
-  db.prepare('UPDATE customers SET price_level = ?, updated_at = ? WHERE id = ?').run(level, nowLocal(), customerId);
-  audit(db, {
-    userId: actor?.id ?? null,
-    username: actor?.username,
-    action: 'customer.price_level',
-    entity: 'customer',
-    entityId: customerId,
-    details: { name: row.name, level },
-  });
+  // The change and the audit line that records it are one step (v1.1.5, sweep finding A-26).
+  // Nested in a caller's transaction this is a savepoint, so a batch still rolls back as a whole.
+  return db.transaction(() => {
+    if (!CUSTOMER_PRICE_LEVELS.includes(level)) throw new Error('দামের স্তর সঠিক নয়।');
+    const row = db.prepare('SELECT name FROM customers WHERE id = ?').get(customerId) as { name: string } | undefined;
+    if (!row) throw new Error('কাস্টমার পাওয়া যায়নি।');
+    db.prepare('UPDATE customers SET price_level = ?, updated_at = ? WHERE id = ?').run(level, nowLocal(), customerId);
+    audit(db, {
+      userId: actor?.id ?? null,
+      username: actor?.username,
+      action: 'customer.price_level',
+      entity: 'customer',
+      entityId: customerId,
+      details: { name: row.name, level },
+    });
+  })();
 }
 
 /** The price level a sale should default to for this customer. */

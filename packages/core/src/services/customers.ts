@@ -99,120 +99,136 @@ export function buildCustomerSearch(name: string, phone?: string | null, address
 }
 
 export function createCustomer(db: Db, input: CustomerInput, actor?: Actor): Customer {
-  const name = normalizeText(input.name);
-  if (!name) throw new Error('কাস্টমারের নাম দিতে হবে।');
-  if (input.phone && !/^[0-9+\-\s]{5,20}$/.test(input.phone.trim()))
-    throw new Error('মোবাইল নম্বর সঠিক নয়।');
-  const dup = input.phone
-    ? db.prepare('SELECT id FROM customers WHERE phone = ? AND is_active = 1').get(input.phone.trim())
-    : null;
-  if (dup && !input.name) throw new Error('এই মোবাইল নম্বর আগেই নিবন্ধিত।');
-  const now = nowLocal();
-  const opening = Math.round(input.openingBalance ?? 0);
-  const res = db
-    .prepare(
-      `INSERT INTO customers (name, name_sort, search_text, phone, address, opening_balance_paisa, balance_paisa,
-         is_walkin, note, is_active, created_at, updated_at)
-       VALUES (?,?,?,?,?,?,?,0,?,1,?,?)`,
-    )
-    .run(
-      name,
-      bengaliSortKey(name),
-      buildCustomerSearch(name, input.phone, input.address),
-      input.phone ? normalizeText(input.phone) : null,
-      input.address ? normalizeText(input.address) : null,
-      opening,
-      opening,
-      input.note ? normalizeText(input.note) : null,
-      now,
-      now,
-    );
-  const id = Number(res.lastInsertRowid);
-  audit(db, {
-    userId: actor?.id ?? null,
-    username: actor?.username,
-    action: 'customer.create',
-    entity: 'customer',
-    entityId: id,
-    details: { name, opening },
-  });
-  if (opening > 0 && isPostingEnabled(db)) {
-    postEntry(db, {
-      date: now,
-      source: 'opening_customer',
-      sourceId: id,
-      memo: `প্রারম্ভিক বাকি: ${name}`,
+  // The change and the audit line that records it are one step (v1.1.5, sweep finding A-26).
+  // Nested in a caller's transaction this is a savepoint, so a batch still rolls back as a whole.
+  return db.transaction(() => {
+    const name = normalizeText(input.name);
+    if (!name) throw new Error('কাস্টমারের নাম দিতে হবে।');
+    if (input.phone && !/^[0-9+\-\s]{5,20}$/.test(input.phone.trim()))
+      throw new Error('মোবাইল নম্বর সঠিক নয়।');
+    const dup = input.phone
+      ? db.prepare('SELECT id FROM customers WHERE phone = ? AND is_active = 1').get(input.phone.trim())
+      : null;
+    if (dup && !input.name) throw new Error('এই মোবাইল নম্বর আগেই নিবন্ধিত।');
+    const now = nowLocal();
+    const opening = Math.round(input.openingBalance ?? 0);
+    const res = db
+      .prepare(
+        `INSERT INTO customers (name, name_sort, search_text, phone, address, opening_balance_paisa, balance_paisa,
+           is_walkin, note, is_active, created_at, updated_at)
+         VALUES (?,?,?,?,?,?,?,0,?,1,?,?)`,
+      )
+      .run(
+        name,
+        bengaliSortKey(name),
+        buildCustomerSearch(name, input.phone, input.address),
+        input.phone ? normalizeText(input.phone) : null,
+        input.address ? normalizeText(input.address) : null,
+        opening,
+        opening,
+        input.note ? normalizeText(input.note) : null,
+        now,
+        now,
+      );
+    const id = Number(res.lastInsertRowid);
+    audit(db, {
       userId: actor?.id ?? null,
-      idempotent: true,
-      lines: [
-        { code: '1100', debit: opening, memo: 'কাস্টমার বাকি' },
-        { code: '3100', credit: opening, memo: 'প্রারম্ভিক ব্যালেন্স' },
-      ],
+      username: actor?.username,
+      action: 'customer.create',
+      entity: 'customer',
+      entityId: id,
+      details: { name, opening },
     });
-  }
-  return db.prepare('SELECT * FROM customers WHERE id = ?').get(id) as Customer;
+    if (opening > 0 && isPostingEnabled(db)) {
+      postEntry(db, {
+        date: now,
+        source: 'opening_customer',
+        sourceId: id,
+        memo: `প্রারম্ভিক বাকি: ${name}`,
+        userId: actor?.id ?? null,
+        idempotent: true,
+        lines: [
+          { code: '1100', debit: opening, memo: 'কাস্টমার বাকি' },
+          { code: '3100', credit: opening, memo: 'প্রারম্ভিক ব্যালেন্স' },
+        ],
+      });
+    }
+    return db.prepare('SELECT * FROM customers WHERE id = ?').get(id) as Customer;
+  })();
 }
 
 export function updateCustomer(db: Db, id: number, input: CustomerInput, actor?: Actor): Customer {
-  const existing = db.prepare('SELECT * FROM customers WHERE id = ?').get(id) as Customer | undefined;
-  if (!existing) throw new Error('কাস্টমার পাওয়া যায়নি।');
-  if (existing.is_walkin && input.name && normalizeText(input.name) !== existing.name)
-    throw new Error('ওয়াক-ইন কাস্টমারের নাম পরিবর্তন করা যাবে না।');
-  const name = normalizeText(input.name) || existing.name;
-  const opening = input.openingBalance === undefined ? existing.opening_balance_paisa : Math.round(input.openingBalance);
-  const openingDelta = opening - existing.opening_balance_paisa;
-  db.prepare(
-    `UPDATE customers SET name = ?, name_sort = ?, search_text = ?, phone = ?, address = ?, opening_balance_paisa = ?,
-       balance_paisa = balance_paisa + ?, note = ?, updated_at = ? WHERE id = ?`,
-  ).run(
-    name,
-    bengaliSortKey(name),
-    buildCustomerSearch(name, input.phone ?? existing.phone, input.address ?? existing.address),
-    input.phone ? normalizeText(input.phone) : existing.phone,
-    input.address !== undefined ? normalizeText(input.address) : existing.address,
-    opening,
-    openingDelta,
-    input.note !== undefined ? normalizeText(input.note) : existing.note,
-    nowLocal(),
-    id,
-  );
-  audit(db, {
-    userId: actor?.id ?? null,
-    username: actor?.username,
-    action: 'customer.update',
-    entity: 'customer',
-    entityId: id,
-    details: { name, openingDelta },
-  });
-  return db.prepare('SELECT * FROM customers WHERE id = ?').get(id) as Customer;
+  // The change and the audit line that records it are one step (v1.1.5, sweep finding A-26).
+  // Nested in a caller's transaction this is a savepoint, so a batch still rolls back as a whole.
+  return db.transaction(() => {
+    const existing = db.prepare('SELECT * FROM customers WHERE id = ?').get(id) as Customer | undefined;
+    if (!existing) throw new Error('কাস্টমার পাওয়া যায়নি।');
+    if (existing.is_walkin && input.name && normalizeText(input.name) !== existing.name)
+      throw new Error('ওয়াক-ইন কাস্টমারের নাম পরিবর্তন করা যাবে না।');
+    const name = normalizeText(input.name) || existing.name;
+    const opening = input.openingBalance === undefined ? existing.opening_balance_paisa : Math.round(input.openingBalance);
+    const openingDelta = opening - existing.opening_balance_paisa;
+    db.prepare(
+      `UPDATE customers SET name = ?, name_sort = ?, search_text = ?, phone = ?, address = ?, opening_balance_paisa = ?,
+         balance_paisa = balance_paisa + ?, note = ?, updated_at = ? WHERE id = ?`,
+    ).run(
+      name,
+      bengaliSortKey(name),
+      buildCustomerSearch(name, input.phone ?? existing.phone, input.address ?? existing.address),
+      input.phone ? normalizeText(input.phone) : existing.phone,
+      input.address !== undefined ? normalizeText(input.address) : existing.address,
+      opening,
+      openingDelta,
+      input.note !== undefined ? normalizeText(input.note) : existing.note,
+      nowLocal(),
+      id,
+    );
+    audit(db, {
+      userId: actor?.id ?? null,
+      username: actor?.username,
+      action: 'customer.update',
+      entity: 'customer',
+      entityId: id,
+      details: { name, openingDelta },
+    });
+    return db.prepare('SELECT * FROM customers WHERE id = ?').get(id) as Customer;
+  })();
 }
 
 export function setCustomerActive(db: Db, id: number, active: boolean, actor?: Actor): void {
-  const row = db.prepare('SELECT * FROM customers WHERE id = ?').get(id) as Customer | undefined;
-  if (!row) throw new Error('কাস্টমার পাওয়া যায়নি।');
-  if (row.is_walkin) throw new Error('ওয়াক-ইন কাস্টমার নিষ্ক্রিয় করা যাবে না।');
-  if (!active && row.balance_paisa !== 0) throw new Error('বাকি থাকা অবস্থায় কাস্টমার নিষ্ক্রিয় করা যাবে না।');
-  db.prepare('UPDATE customers SET is_active = ?, updated_at = ? WHERE id = ?').run(active ? 1 : 0, nowLocal(), id);
-  audit(db, {
-    userId: actor?.id ?? null,
-    username: actor?.username,
-    action: active ? 'customer.restore' : 'customer.archive',
-    entity: 'customer',
-    entityId: id,
-  });
+  // The change and the audit line that records it are one step (v1.1.5, sweep finding A-26).
+  // Nested in a caller's transaction this is a savepoint, so a batch still rolls back as a whole.
+  return db.transaction(() => {
+    const row = db.prepare('SELECT * FROM customers WHERE id = ?').get(id) as Customer | undefined;
+    if (!row) throw new Error('কাস্টমার পাওয়া যায়নি।');
+    if (row.is_walkin) throw new Error('ওয়াক-ইন কাস্টমার নিষ্ক্রিয় করা যাবে না।');
+    if (!active && row.balance_paisa !== 0) throw new Error('বাকি থাকা অবস্থায় কাস্টমার নিষ্ক্রিয় করা যাবে না।');
+    db.prepare('UPDATE customers SET is_active = ?, updated_at = ? WHERE id = ?').run(active ? 1 : 0, nowLocal(), id);
+    audit(db, {
+      userId: actor?.id ?? null,
+      username: actor?.username,
+      action: active ? 'customer.restore' : 'customer.archive',
+      entity: 'customer',
+      entityId: id,
+    });
+  })();
 }
 
 export function deleteCustomer(db: Db, id: number, actor?: Actor): void {
-  const row = db.prepare('SELECT * FROM customers WHERE id = ?').get(id) as Customer | undefined;
-  if (!row) throw new Error('কাস্টমার পাওয়া যায়নি।');
-  if (row.is_walkin) throw new Error('ওয়াক-ইন কাস্টমার ডিলিট করা যাবে না।');
-  if (row.balance_paisa !== 0) throw new Error('বাকি থাকা অবস্থায় কাস্টমার ডিলিট করা যাবে না।');
-  const used =
-    (db.prepare('SELECT COUNT(*) c FROM sales WHERE customer_id = ?').get(id) as { c: number }).c +
-    (db.prepare('SELECT COUNT(*) c FROM payments WHERE customer_id = ?').get(id) as { c: number }).c;
-  if (used > 0) throw new Error('এই কাস্টমারের লেনদেন আছে — ডিলিট করা যাবে না, আর্কাইভ করুন।');
-  db.prepare('DELETE FROM customers WHERE id = ?').run(id);
-  audit(db, { userId: actor?.id ?? null, username: actor?.username, action: 'customer.delete', entity: 'customer', entityId: id });
+  // The change and the audit line that records it are one step (v1.1.5, sweep finding A-26).
+  // Nested in a caller's transaction this is a savepoint, so a batch still rolls back as a whole.
+  return db.transaction(() => {
+    const row = db.prepare('SELECT * FROM customers WHERE id = ?').get(id) as Customer | undefined;
+    if (!row) throw new Error('কাস্টমার পাওয়া যায়নি।');
+    if (row.is_walkin) throw new Error('ওয়াক-ইন কাস্টমার ডিলিট করা যাবে না।');
+    if (row.balance_paisa !== 0) throw new Error('বাকি থাকা অবস্থায় কাস্টমার ডিলিট করা যাবে না।');
+    const used =
+      (db.prepare('SELECT COUNT(*) c FROM sales WHERE customer_id = ?').get(id) as { c: number }).c +
+      (db.prepare('SELECT COUNT(*) c FROM payments WHERE customer_id = ?').get(id) as { c: number }).c;
+    if (used > 0) throw new Error('এই কাস্টমারের লেনদেন আছে — ডিলিট করা যাবে না, আর্কাইভ করুন।');
+    db.prepare('DELETE FROM customers WHERE id = ?').run(id);
+    audit(db, { userId: actor?.id ?? null, username: actor?.username, action: 'customer.delete', entity: 'customer', entityId: id });
+  })();
 }
 
 export function ensureWalkInCustomer(db: Db): Customer {

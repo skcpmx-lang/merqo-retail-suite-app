@@ -25,6 +25,7 @@ step('typecheck: license generator', process.execPath, [tsc, '-p', 'packages/lic
 step('tests: core', process.execPath, [vitest, 'run']);
 step('hooks (no suppressed deps)', process.execPath, ['scripts/audit-hooks.mjs']);
 step('native artifacts', process.execPath, ['scripts/audit-native.mjs']);
+step('audit-trail atomicity', process.execPath, ['scripts/audit-transactions.mjs']);
 step('ui wiring', process.execPath, ['scripts/audit-ui.mjs']);
 step('license generator wiring', process.execPath, ['scripts/audit-license-generator.mjs']);
 step('icons', process.execPath, ['scripts/make-icons.mjs']);

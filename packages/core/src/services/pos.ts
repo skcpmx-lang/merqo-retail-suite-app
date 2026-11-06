@@ -36,37 +36,41 @@ export interface HoldInput {
 }
 
 export function holdSale(db: Db, input: HoldInput): HeldSaleRow {
-  const lines = (input.lines ?? []).filter((l) => l && l.qtyMilli > 0);
-  if (lines.length === 0) throw new Error('হোল্ড করার জন্য অন্তত একটি পণ্য দরকার।');
-  const date = nowLocal();
-  const refNo = `HOLD-${date.slice(2, 4)}${date.slice(5, 7)}-${String(
-    Number(
-      (
-        db
-          .prepare("SELECT COUNT(*) AS c FROM held_sales WHERE substr(created_at,1,7) = ?")
-          .get(date.slice(0, 7)) as { c: number }
-      ).c,
-    ) + 1,
-  ).padStart(4, '0')}`;
-  const total = Math.round(input.totalPaisa ?? 0);
-  const id = Number(
-    db
-      .prepare(
-        `INSERT INTO held_sales (ref_no, customer_id, lines_json, note, total_paisa, status, user_id, created_at)
-         VALUES (?,?,?,?,?, 'held', ?, ?)`,
-      )
-      .run(refNo, input.customerId ?? null, JSON.stringify(lines), input.note ?? null, total, input.actor.id, nowLocal())
-      .lastInsertRowid,
-  );
-  audit(db, {
-    userId: input.actor.id,
-    username: input.actor.username,
-    action: 'pos.hold',
-    entity: 'held_sale',
-    entityId: id,
-    details: { refNo, lines: lines.length, total },
-  });
-  return getHeldSale(db, id)!;
+  // The change and the audit line that records it are one step (v1.1.5, sweep finding A-26).
+  // Nested in a caller's transaction this is a savepoint, so a batch still rolls back as a whole.
+  return db.transaction(() => {
+    const lines = (input.lines ?? []).filter((l) => l && l.qtyMilli > 0);
+    if (lines.length === 0) throw new Error('হোল্ড করার জন্য অন্তত একটি পণ্য দরকার।');
+    const date = nowLocal();
+    const refNo = `HOLD-${date.slice(2, 4)}${date.slice(5, 7)}-${String(
+      Number(
+        (
+          db
+            .prepare("SELECT COUNT(*) AS c FROM held_sales WHERE substr(created_at,1,7) = ?")
+            .get(date.slice(0, 7)) as { c: number }
+        ).c,
+      ) + 1,
+    ).padStart(4, '0')}`;
+    const total = Math.round(input.totalPaisa ?? 0);
+    const id = Number(
+      db
+        .prepare(
+          `INSERT INTO held_sales (ref_no, customer_id, lines_json, note, total_paisa, status, user_id, created_at)
+           VALUES (?,?,?,?,?, 'held', ?, ?)`,
+        )
+        .run(refNo, input.customerId ?? null, JSON.stringify(lines), input.note ?? null, total, input.actor.id, nowLocal())
+        .lastInsertRowid,
+    );
+    audit(db, {
+      userId: input.actor.id,
+      username: input.actor.username,
+      action: 'pos.hold',
+      entity: 'held_sale',
+      entityId: id,
+      details: { refNo, lines: lines.length, total },
+    });
+    return getHeldSale(db, id)!;
+  })();
 }
 
 export function getHeldSale(db: Db, id: number): HeldSaleRow | null {
@@ -101,38 +105,46 @@ export function listHeldSales(db: Db, status: 'held' | 'resumed' | 'cancelled' |
 
 /** Mark a held cart as resumed and hand the lines back to the POS screen. */
 export function resumeHeldSale(db: Db, id: number, actor: Actor): HeldSaleRow {
-  const row = getHeldSale(db, id);
-  if (!row) throw new Error('হোল্ড করা বিক্রয় পাওয়া যায়নি।');
-  if (row.status !== 'held') throw new Error('এই বিক্রয় আর হোল্ড অবস্থায় নেই।');
-  db.prepare("UPDATE held_sales SET status = 'resumed', resumed_at = ? WHERE id = ?").run(nowLocal(), id);
-  audit(db, {
-    userId: actor.id,
-    username: actor.username,
-    action: 'pos.resume',
-    entity: 'held_sale',
-    entityId: id,
-    details: { refNo: row.ref_no },
-  });
-  return getHeldSale(db, id)!;
+  // The change and the audit line that records it are one step (v1.1.5, sweep finding A-26).
+  // Nested in a caller's transaction this is a savepoint, so a batch still rolls back as a whole.
+  return db.transaction(() => {
+    const row = getHeldSale(db, id);
+    if (!row) throw new Error('হোল্ড করা বিক্রয় পাওয়া যায়নি।');
+    if (row.status !== 'held') throw new Error('এই বিক্রয় আর হোল্ড অবস্থায় নেই।');
+    db.prepare("UPDATE held_sales SET status = 'resumed', resumed_at = ? WHERE id = ?").run(nowLocal(), id);
+    audit(db, {
+      userId: actor.id,
+      username: actor.username,
+      action: 'pos.resume',
+      entity: 'held_sale',
+      entityId: id,
+      details: { refNo: row.ref_no },
+    });
+    return getHeldSale(db, id)!;
+  })();
 }
 
 export function cancelHeldSale(db: Db, id: number, reason: string | null, actor: Actor): void {
-  const row = getHeldSale(db, id);
-  if (!row) throw new Error('হোল্ড করা বিক্রয় পাওয়া যায়নি।');
-  if (row.status === 'resumed') throw new Error('রিসিউম করা বিক্রয় বাতিল করা যাবে না।');
-  if (!reason || !reason.trim()) throw new Error('বাতিলের কারণ লিখতে হবে।');
-  db.prepare("UPDATE held_sales SET status = 'cancelled', note = ? WHERE id = ?").run(
-    `${row.note ? `${row.note} — ` : ''}বাতিল: ${reason.trim()}`,
-    id,
-  );
-  audit(db, {
-    userId: actor.id,
-    username: actor.username,
-    action: 'pos.hold.cancel',
-    entity: 'held_sale',
-    entityId: id,
-    details: { refNo: row.ref_no, reason },
-  });
+  // The change and the audit line that records it are one step (v1.1.5, sweep finding A-26).
+  // Nested in a caller's transaction this is a savepoint, so a batch still rolls back as a whole.
+  return db.transaction(() => {
+    const row = getHeldSale(db, id);
+    if (!row) throw new Error('হোল্ড করা বিক্রয় পাওয়া যায়নি।');
+    if (row.status === 'resumed') throw new Error('রিসিউম করা বিক্রয় বাতিল করা যাবে না।');
+    if (!reason || !reason.trim()) throw new Error('বাতিলের কারণ লিখতে হবে।');
+    db.prepare("UPDATE held_sales SET status = 'cancelled', note = ? WHERE id = ?").run(
+      `${row.note ? `${row.note} — ` : ''}বাতিল: ${reason.trim()}`,
+      id,
+    );
+    audit(db, {
+      userId: actor.id,
+      username: actor.username,
+      action: 'pos.hold.cancel',
+      entity: 'held_sale',
+      entityId: id,
+      details: { refNo: row.ref_no, reason },
+    });
+  })();
 }
 
 /* ------------------------------------------------------------------ *
