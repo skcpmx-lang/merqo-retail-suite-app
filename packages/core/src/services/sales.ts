@@ -5,6 +5,7 @@ import {
   lineValuePaisa,
   percentOfPaisa,
   resolveDiscount,
+  roundDiv,
   toBaseMilli,
 } from '../domain/money.js';
 import type { Product, Sale, SaleItem } from '../domain/types.js';
@@ -149,24 +150,32 @@ export function computeSale(
     const qtyBaseMilli = toBaseMilli(qtyMilli, unit.factor_milli);
     if (qtyBaseMilli <= 0) throw new Error(`"${product.name}" এর পরিমাণ খুবই কম।`);
 
+    // Prices are stored per PRIMARY unit; everything below converts to the unit actually sold, in
+    // integer poisa, so a floor and a price can only ever be compared in the same unit (A-12).
+    const primaryFactor = (
+      db
+        .prepare('SELECT factor_milli FROM units WHERE id = ?')
+        .get(product.primary_unit_id ?? product.unit_id) as { factor_milli: number }
+    ).factor_milli;
+
     let unitPrice: number;
     if (line.unitPricePaisa != null && line.unitPricePaisa > 0) {
       unitPrice = Math.round(line.unitPricePaisa);
     } else {
       const breakdown = productPriceBreakdown(product, line.priceLevel ?? salePriceLevel);
-      // product-level price is per primary unit; convert to the chosen unit
-      const primaryFactor = (db
-        .prepare('SELECT factor_milli FROM units WHERE id = ?')
-        .get(product.primary_unit_id ?? product.unit_id) as { factor_milli: number }).factor_milli;
-      const perBase = breakdown.final / primaryFactor;
-      unitPrice = Math.max(0, Math.round(perBase * unit.factor_milli));
+      unitPrice = Math.max(0, roundDiv(breakdown.final * unit.factor_milli, primaryFactor));
     }
     // Price floor and per-product discount cap are enforced here so no caller
     // (POS screen, import, script) can bypass them.
     const minSale = Math.max(0, Number((product as any).min_sale_price ?? 0));
-    if (minSale > 0 && unitPrice < minSale && !input.allowBelowMinPrice) {
+    // min_sale_price is per primary unit. Comparing it with a per-gram price rejected every legal
+    // sub-unit sale of a product that has a floor — a shop could not sell 250 g of rice priced at
+    // ৳100/kg+ — so the floor is converted into the sold unit first.
+    const minSaleForUnit = roundDiv(minSale * unit.factor_milli, primaryFactor);
+    if (minSale > 0 && unitPrice < minSaleForUnit && !input.allowBelowMinPrice) {
+      const what = unit.factor_milli === primaryFactor ? '' : ` (${unit.short_name} প্রতি)`;
       throw new Error(
-        `"${product.name}" এর সর্বনিম্ন বিক্রয়মূল্য ${(minSale / 100).toFixed(2)} টাকা — এর কম দামে বিক্রয়ের অনুমতি নেই।`,
+        `"${product.name}" এর সর্বনিম্ন বিক্রয়মূল্য ${(minSaleForUnit / 100).toFixed(2)} টাকা${what} — এর কম দামে বিক্রয়ের অনুমতি নেই।`,
       );
     }
     const gross = lineValuePaisa(qtyMilli, unitPrice);
