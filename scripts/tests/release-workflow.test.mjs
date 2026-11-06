@@ -87,7 +87,7 @@ describe('release workflow: build and verification order', () => {
   });
 
   it('renders measured notes and refuses any leftover placeholder', () => {
-    before('scripts/check-release-notes.mjs --file docs/V1.1.4_RELEASE_NOTES.md', 'scripts/render-release-notes.mjs');
+    before('scripts/check-release-notes.mjs --file "$RELEASE_NOTES"', 'scripts/render-release-notes.mjs');
     before('scripts/render-release-notes.mjs', 'scripts/check-release-notes.mjs --file release-notes.md --require-filled');
     expect(workflow).toMatch(/--require-filled/);
     // The publishable text is the rendered file, never the template.
@@ -97,8 +97,9 @@ describe('release workflow: build and verification order', () => {
   it('uploads exactly the two installers, the checksum file and the notes', () => {
     expect(workflow).toMatch(/name:\s*sauda-windows-installers/);
     expect(workflow).toMatch(/if-no-files-found:\s*error/);
-    expect(workflow).toMatch(/artifacts\/Sauda-Retail-Suite-Setup-1\.1\.4\.exe/);
-    expect(workflow).toMatch(/artifacts\/Sauda-License-Generator-1\.1\.4\.exe/);
+    // Asset names come from the manifest via $APP_EXE / $GENERATOR_EXE (R-01).
+    expect(workflow).toMatch(/artifacts\/\$\{APP_EXE\}/);
+    expect(workflow).toMatch(/artifacts\/\$\{GENERATOR_EXE\}/);
     expect(workflow).toMatch(/artifacts\/SHA256SUMS\.txt/);
   });
 });
@@ -196,5 +197,32 @@ describe('continuous integration covers both supported platforms', () => {
     expect(ci).not.toMatch(/softprops\/action-gh-release/);
     expect(ci).not.toMatch(/gh release/);
     expect(ci).toMatch(/scripts\/ci-failure-report\.mjs/);
+  });
+});
+
+describe('release workflow: the release version is derived, never hard-coded (R-01/R-03)', () => {
+  it('contains no literal version number anywhere', () => {
+    // v1.1.4 hard-coded 1.1.4 in the asset paths, the notes path and the release title. A v1.1.5
+    // tag then failed on a missing file — or published the wrong text. This makes that impossible.
+    expect(workflow).not.toMatch(/\b\d+\.\d+\.\d+\b/);
+  });
+
+  it('resolves the version from the manifest before it installs or builds anything', () => {
+    before('scripts/lib/release-version.mjs --env', 'npm ci');
+    before('scripts/lib/release-version.mjs --env', 'npm run verify');
+    before('scripts/lib/release-version.mjs --env', 'node scripts/package-app.mjs');
+    expect(workflow).toMatch(/RELEASE_VERSION/);
+    expect(workflow).toMatch(/RELEASE_NOTES/);
+  });
+
+  it('refuses a tag that does not match the manifests, before packaging', () => {
+    before('--assert-tag', 'npm run verify');
+    // Only ever on a tag run; a manual dispatch builds without publishing.
+    expect(workflow).toMatch(/GITHUB_REF_TYPE.*=.*"tag"/);
+    expect(workflow).toMatch(/GITHUB_REF_NAME/);
+  });
+
+  it('names the release title from the resolved version', () => {
+    expect(workflow).toMatch(/--title "Sauda Retail Suite v\$\{RELEASE_VERSION\}"/);
   });
 });

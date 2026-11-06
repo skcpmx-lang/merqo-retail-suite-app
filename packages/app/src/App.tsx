@@ -306,7 +306,9 @@ function AppShell({
   const [alerts, setAlerts] = useState<any[]>([]);
   const [alertsOpen, setAlertsOpen] = useState(false);
   const [logoUrl, setLogoUrl] = useState<string | null>(null);
-  const [appVersion, setAppVersion] = useState('1.1.4');
+  // Unknown until the main process answers (R-09). A hard-coded fallback could display a version
+  // this build is not — the one thing the About line must never get wrong.
+  const [appVersion, setAppVersion] = useState<string | null>(null);
   const [navOpen, setNavOpen] = useState(false);
   const searchRef = useRef<HTMLInputElement | null>(null);
 
@@ -358,7 +360,7 @@ function AppShell({
 
   useEffect(() => {
     void call<{ version: string }>('app.info')
-      .then((info) => setAppVersion(info?.version ?? '1.1.4'))
+      .then((info) => setAppVersion(info?.version ?? null))
       .catch(() => undefined);
   }, []);
 
@@ -561,7 +563,7 @@ function AppShell({
         <div className="sidebar-footer">
           <div className="small bold">{businessName}</div>
           <div className="tiny" style={{ marginTop: 2, opacity: 0.75 }}>
-            MERQO • v{appVersion}
+            {appVersion ? `MERQO • v${appVersion}` : 'MERQO'}
           </div>
         </div>
       </aside>

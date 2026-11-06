@@ -1,7 +1,10 @@
 /**
  * Release-note gate (D-3).
  *
- *   node scripts/check-release-notes.mjs [--file docs/V1.1.4_RELEASE_NOTES.md] [--require-filled]
+ *   node scripts/check-release-notes.mjs [--file docs/V<version>_RELEASE_NOTES.md] [--require-filled]
+ *
+ * The default file is derived from the release version (`packages/app/package.json`), so a new
+ * version cannot silently keep checking the previous version's notes (R-01).
  *
  * The release job calls this with `--require-filled` after the installers are verified: the
  * reviewed notes file must still contain every mandatory section and disclosure, and every
@@ -12,11 +15,13 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { checkReleaseNotes } from './lib/release-notes.mjs';
+import { releaseNotesPath, releaseVersion } from './lib/release-version.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const argv = process.argv.slice(2);
 const fileIndex = argv.indexOf('--file');
-const file = path.resolve(root, fileIndex >= 0 ? argv[fileIndex + 1] : 'docs/V1.1.4_RELEASE_NOTES.md');
+const version = releaseVersion(root);
+const file = path.resolve(root, fileIndex >= 0 ? argv[fileIndex + 1] : releaseNotesPath(version));
 const requireFilled = argv.includes('--require-filled');
 
 if (!fs.existsSync(file)) {
@@ -26,7 +31,7 @@ if (!fs.existsSync(file)) {
 }
 
 const text = fs.readFileSync(file, 'utf8');
-const { issues, placeholders } = checkReleaseNotes(text, { requireFilled });
+const { issues, placeholders } = checkReleaseNotes(text, { requireFilled, version });
 
 if (issues.length) {
   console.error(`[check-release-notes] ${path.relative(root, file)} is not publishable:`);

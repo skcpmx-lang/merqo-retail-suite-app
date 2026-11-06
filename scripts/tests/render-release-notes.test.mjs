@@ -20,11 +20,13 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import { artifactNames, releaseVersion } from '../lib/release-version.mjs';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const script = path.join(repoRoot, 'scripts', 'render-release-notes.mjs');
-const APP = 'Sauda-Retail-Suite-Setup-1.1.4.exe';
-const GENERATOR = 'Sauda-License-Generator-1.1.4.exe';
+// Derived from the manifest, so this contract survives every release (R-01).
+const VERSION = releaseVersion();
+const { app: APP, generator: GENERATOR } = artifactNames(VERSION);
 
 function workspace() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sauda-render-'));
@@ -57,6 +59,16 @@ const render = (ws, extra = []) =>
     [script, '--notes', ws.notes, '--dir', ws.artifacts, '--sums', ws.sums, '--out', ws.out, ...extra],
     { encoding: 'utf8' },
   );
+
+describe('version parameterisation', () => {
+  it('expects the installer names of --version, not of the manifest default', () => {
+    const ws = workspace();
+    fs.writeFileSync(ws.notes, template());
+    const result = render(ws, ['--version', '9.9.9']);
+    expect(result.status).not.toBe(0);
+    expect(`${result.stdout}${result.stderr}`).toContain('Sauda-Retail-Suite-Setup-9.9.9.exe');
+  });
+});
 
 describe('rendering a template with placeholders', () => {
   it('fills the measured size and hash of both installers, app first', () => {
