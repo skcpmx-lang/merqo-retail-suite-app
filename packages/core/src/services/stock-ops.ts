@@ -689,16 +689,47 @@ export function listSerials(
 }
 
 /** Sell serials; throws when a requested serial is not available. */
-export function markSerialsSold(db: Db, serials: string[], saleId: number, actor?: Actor): number {
+export function markSerialsSold(
+  db: Db,
+  serials: string[],
+  saleId: number,
+  actor?: Actor,
+  options: { productId?: number | null } = {},
+): number {
   if (!serials?.length) return 0;
   const now = nowLocal();
+  // `serial_numbers` is UNIQUE(product_id, serial), so the same IMEI-style string can exist for two
+  // products. Without the product in the WHERE clause, selling one marked *every* product's row with
+  // that serial as sold — and a serial belonging to another product was accepted on any line (A-13).
+  const scoped = options.productId != null;
   const upd = db.prepare(
-    "UPDATE serial_numbers SET status = 'sold', sale_id = ?, updated_at = ? WHERE serial = ? AND status = 'in_stock'",
+    scoped
+      ? "UPDATE serial_numbers SET status = 'sold', sale_id = ?, updated_at = ? WHERE serial = ? AND product_id = ? AND status = 'in_stock'"
+      : "UPDATE serial_numbers SET status = 'sold', sale_id = ?, updated_at = ? WHERE serial = ? AND status = 'in_stock'",
   );
+  const productName = scoped
+    ? (
+        db.prepare('SELECT name FROM products WHERE id = ?').get(Number(options.productId)) as
+          | { name: string }
+          | undefined
+      )?.name
+    : undefined;
   let n = 0;
   for (const s of serials) {
-    const info = upd.run(saleId, now, String(s).trim());
-    if (info.changes === 0) throw new Error(`সিরিয়াল "${s}" বিক্রয়ের জন্য পাওয়া যায়নি (আগেই বিক্রি হয়েছে?)।`);
+    const serial = String(s).trim();
+    const info = scoped
+      ? upd.run(saleId, now, serial, Number(options.productId))
+      : upd.run(saleId, now, serial);
+    if (info.changes === 0) {
+      throw new Error(
+        productName
+          ? `সিরিয়াল "${serial}" "${productName}" এর জন্য পাওয়া যায়নি (আগেই বিক্রি হয়েছে বা অন্য প্রোডাক্টের সিরিয়াল?)।`
+          : `সিরিয়াল "${serial}" বিক্রয়ের জন্য পাওয়া যায়নি (আগেই বিক্রি হয়েছে?)।`,
+      );
+    }
+    if (info.changes > 1) {
+      throw new Error(`সিরিয়াল "${serial}" একাধিক প্রোডাক্টে নিবন্ধিত — ডেটা ঠিক করুন, তারপর বিক্রয় করুন।`);
+    }
     n++;
   }
   audit(db, {

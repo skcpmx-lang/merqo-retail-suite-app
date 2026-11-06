@@ -417,19 +417,19 @@ export function createSale(db: Db, input: SaleInput): CreateSaleResult {
       consumeBatches(db, line.productId, line.qtyBaseMilli);
     }
 
-    // Serial/IMEI tracking: every supplied serial must be available, and a line
-    // cannot hand out more serials than the quantity actually sold.
-    let serialCursor = 0;
-    for (const line of input.lines) {
+    // Serial/IMEI tracking: every supplied serial must belong to the line's own product and be
+    // available, and a line cannot hand out more serials than the quantity actually sold.
+    // The line index is used directly (A-13): a cursor advanced only for lines that carry serials
+    // compared a cart's second product against the first product's quantity.
+    input.lines.forEach((line, index) => {
       const serials = (line.serials ?? []).map((x) => String(x).trim()).filter(Boolean);
-      if (serials.length === 0) continue;
-      const soldLine = computation.lines[serialCursor];
-      serialCursor++;
+      if (serials.length === 0) return;
+      const soldLine = computation.lines[index];
       if (soldLine && serials.length > Math.ceil(soldLine.qtyMilli / 1000)) {
         throw new Error(`"${soldLine.productName}" — বিক্রির পরিমাণের চেয়ে বেশি সিরিয়াল দেওয়া হয়েছে।`);
       }
-      markSerialsSold(db, serials, saleId, input.actor);
-    }
+      markSerialsSold(db, serials, saleId, input.actor, { productId: soldLine?.productId ?? line.productId });
+    });
 
     if (computation.due !== 0 && input.customerId) {
       db.prepare('UPDATE customers SET balance_paisa = balance_paisa + ?, updated_at = ? WHERE id = ?').run(
