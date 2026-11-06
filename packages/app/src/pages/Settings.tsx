@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { call } from '../api.js';
 import { useShopRefresh } from '../lib/use-shop-refresh.js';
 import { money, dateTime } from '../format.js';
@@ -72,7 +72,7 @@ export function SettingsPage({
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
 
-  const load = async () => {
+  const load = useCallback(async () => {
     setLoading(true);
     try {
       setSettings(await call<AppSettings>('settings.get'));
@@ -81,12 +81,11 @@ export function SettingsPage({
     } finally {
       setLoading(false);
     }
-  };
+  }, [ui]);
 
   useEffect(() => {
     void load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [load]);
 
   const patch = (p: Partial<AppSettings>) => setSettings((prev) => (prev ? { ...prev, ...p } : prev));
 
@@ -490,7 +489,7 @@ function CatalogSection() {
   const [methods, setMethods] = useState<any[]>([]);
   const [form, setForm] = useState<any>({});
 
-  const load = async () => {
+  const load = useCallback(async () => {
     try {
       const [u, c, m] = await Promise.all([
         call<any[]>('settings.units', true),
@@ -503,12 +502,11 @@ function CatalogSection() {
     } catch (err) {
       ui.error('ক্যাটালগ লোড ব্যর্থ', (err as Error).message);
     }
-  };
+  }, [ui]);
 
   useEffect(() => {
     void load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [load]);
 
   const add = async () => {
     try {
@@ -656,7 +654,7 @@ function UsersSection({ currentUser }: { currentUser: User }) {
   const [newPassword, setNewPassword] = useState('');
   const [ownPassword, setOwnPassword] = useState({ open: false, old: '', next: '', confirm: '' });
 
-  const load = async () => {
+  const load = useCallback(async () => {
     try {
       const [u, p] = await Promise.all([call<User[]>('users.list'), call<string[]>('users.permissions')]);
       setUsers(u);
@@ -664,12 +662,11 @@ function UsersSection({ currentUser }: { currentUser: User }) {
     } catch (err) {
       ui.error('ইউজার লোড ব্যর্থ', (err as Error).message);
     }
-  };
+  }, [ui]);
 
   useEffect(() => {
     void load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [load]);
 
   const save = async () => {
     if (!editing) return;
@@ -1047,21 +1044,20 @@ function TerminalConnectionPanel({
   const [form, setForm] = useState({ baseUrl: '', fingerprint: '', certPem: '', storeName: '' });
   const [pair, setPair] = useState({ code: '', licenseId: '', capacity: '1' });
 
-  const refresh = async () => {
+  const refresh = useCallback(async () => {
     try {
       setConfig(await call('terminal.servers'));
       setStatus(await call('terminal.status'));
     } catch (err) {
       ui.error('ক্লায়েন্ট অবস্থা পড়া যায়নি', (err as Error).message);
     }
-  };
+  }, [ui]);
 
   useEffect(() => {
     void refresh();
     const timer = setInterval(() => void refresh(), 20_000);
     return () => clearInterval(timer);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [refresh]);
 
   const run = async (fn: () => Promise<unknown>, message: string) => {
     setBusy(true);

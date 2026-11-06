@@ -152,14 +152,20 @@ export function POSPage({
         const cash = mets.find((m: any) => m.is_cash === 1) ?? mets[0];
         if (cash) setMethodId(cash.id);
         const walkIn = custs.rows.find((c) => c.is_walkin === 1);
-        const preferred = settings?.default_customer_id ?? walkIn?.id;
-        if (preferred) setCustomerId(preferred);
+        if (walkIn) setCustomerId(walkIn.id);
       } catch (err) {
         ui.error('তথ্য লোড ব্যর্থ', (err as Error).message);
       }
     })();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [ui]);
+
+  // The shop's configured default customer wins over walk-in, but settings arrive from the shell
+  // as a prop and may land *after* this screen mounts — reading them in the mount effect above
+  // silently missed them. This effect applies them whenever they become available.
+  useEffect(() => {
+    const preferred = settings?.default_customer_id;
+    if (preferred) setCustomerId(preferred);
+  }, [settings?.default_customer_id]);
 
   /* ---------------- product list ---------------- */
   useEffect(() => {
@@ -189,8 +195,9 @@ export function POSPage({
       alive = false;
       window.clearTimeout(timer);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [search, categoryId, page, catalogNonce]);
+    // `catalogNonce` is a deliberate extra trigger (a catalog change elsewhere invalidates this
+    // list); `ui` is a stable context value.
+  }, [search, categoryId, page, catalogNonce, ui]);
 
   useEffect(() => setPage(1), [search, categoryId]);
 
@@ -488,29 +495,33 @@ export function POSPage({
   };
 
   /* ---------------- keyboard ---------------- */
+  // The shortcut handler needs the *current* cart and totals, but re-subscribing a window listener
+  // on every render (or on every cart change) is churn. The listener is registered once and reads
+  // the latest handler through a ref, so a shortcut always acts on what is on screen now.
+  const keyHandler = useRef<(e: KeyboardEvent) => void>(() => undefined);
+  keyHandler.current = (e: KeyboardEvent) => {
+    if (e.key === 'F2') {
+      e.preventDefault();
+      searchRef.current?.focus();
+    }
+    if (e.key === 'F8' && lines.length) {
+      e.preventDefault();
+      openPayment();
+    }
+    if (e.key === 'F3' && lines.length) {
+      e.preventDefault();
+      void doHold();
+    }
+    if (e.key === 'F4') {
+      e.preventDefault();
+      setHeldOpen(true);
+    }
+  };
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'F2') {
-        e.preventDefault();
-        searchRef.current?.focus();
-      }
-      if (e.key === 'F8' && lines.length) {
-        e.preventDefault();
-        openPayment();
-      }
-      if (e.key === 'F3' && lines.length) {
-        e.preventDefault();
-        void doHold();
-      }
-      if (e.key === 'F4') {
-        e.preventDefault();
-        setHeldOpen(true);
-      }
-    };
+    const onKey = (e: KeyboardEvent) => keyHandler.current(e);
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [lines.length, computation]);
+  }, []);
 
   /* ---------------- payment ---------------- */
   const openPayment = () => {

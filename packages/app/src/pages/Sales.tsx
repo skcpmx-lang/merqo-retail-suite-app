@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { call } from '../api.js';
 import { useShopRefresh } from '../lib/use-shop-refresh.js';
 import { money, qty, dateTime, today, addDays } from '../format.js';
@@ -54,7 +54,7 @@ export function SalesPage({
 
   useShopRefresh('sales', () => void load());
 
-  const load = async () => {
+  const load = useCallback(async () => {
     setLoading(true);
     try {
       const res = await call<{ rows: Sale[]; total: number }>('sales.list', {
@@ -73,12 +73,11 @@ export function SalesPage({
     } finally {
       setLoading(false);
     }
-  };
+  }, [search, from, to, status, hasDue, page, ui]);
 
   useEffect(() => {
     void load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [search, from, to, status, hasDue, page]);
+  }, [load]);
 
   useEffect(() => {
     call<any[]>('settings.paymentMethods').then(setMethods).catch(() => setMethods([]));

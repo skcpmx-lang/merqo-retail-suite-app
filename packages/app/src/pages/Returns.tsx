@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { call } from '../api.js';
 import { money, qty, dateTime, today, addDays } from '../format.js';
 import { Icon } from '../icons.js';
@@ -45,7 +45,7 @@ export function ReturnsPage({ can }: { can: (perm?: string) => boolean }) {
   const [term, setTerm] = useState('');
   const [options, setOptions] = useState<any[]>([]);
 
-  const load = async () => {
+  const load = useCallback(async () => {
     setLoading(true);
     try {
       const res = await call<{ rows: ReturnDoc[]; total: number }>('returns.list', {
@@ -63,12 +63,11 @@ export function ReturnsPage({ can }: { can: (perm?: string) => boolean }) {
     } finally {
       setLoading(false);
     }
-  };
+  }, [tab, from, to, search, page, ui]);
 
   useEffect(() => {
     void load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tab, from, to, search, page]);
+  }, [load]);
 
   useEffect(() => {
     if (!startOpen) return;

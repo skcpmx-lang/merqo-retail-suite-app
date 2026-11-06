@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { call } from '../api.js';
 import { useShopRefresh } from '../lib/use-shop-refresh.js';
 import { BarList, CHART_COLORS, LineChart } from '../charts.js';
@@ -77,7 +77,7 @@ export function DashboardPage({
     })();
   }, []);
 
-  const load = async () => {
+  const load = useCallback(async () => {
     try {
       const [s, r, l, o, t] = await Promise.all([
         call<DashboardStats>('dashboard.stats'),
@@ -96,7 +96,7 @@ export function DashboardPage({
     } finally {
       setLoading(false);
     }
-  };
+  }, [ui]);
 
   // Shop events from the Main PC invalidate this screen (client mode).
   useShopRefresh('dashboard', () => void load());
@@ -105,8 +105,7 @@ export function DashboardPage({
     void load();
     const timer = window.setInterval(() => void load(), 60_000);
     return () => window.clearInterval(timer);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [load]);
 
   useEffect(() => {
     let alive = true;

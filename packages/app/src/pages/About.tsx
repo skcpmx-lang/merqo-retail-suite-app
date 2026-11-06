@@ -32,8 +32,7 @@ export function AboutPage({ user }: { user: User }) {
         ui.error('তথ্য লোড ব্যর্থ', (err as Error).message);
       }
     })();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [ui]);
 
   const runCheck = async () => {
     setBusy(true);

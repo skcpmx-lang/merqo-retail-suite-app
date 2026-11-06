@@ -138,9 +138,8 @@ function Shell() {
       } finally {
         setLoading(false);
       }
-      // eslint-disable-next-line react-hooks/exhaustive-deps
     })();
-  }, []);
+  }, [refreshInfo, ui]);
 
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);

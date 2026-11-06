@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { call } from '../api.js';
 import { useShopRefresh } from '../lib/use-shop-refresh.js';
 import { money, qty, dateTime } from '../format.js';
@@ -56,7 +56,7 @@ export function PurchasesPage({ can }: { can: (perm?: string) => boolean }) {
   // Shop events from the Main PC invalidate this screen.
   useShopRefresh('purchases', () => void load());
 
-  const load = async () => {
+  const load = useCallback(async () => {
     setLoading(true);
     try {
       const res = await call<{ rows: Purchase[]; total: number }>('purchases.list', {
@@ -73,12 +73,11 @@ export function PurchasesPage({ can }: { can: (perm?: string) => boolean }) {
     } finally {
       setLoading(false);
     }
-  };
+  }, [search, from, to, page, ui]);
 
   useEffect(() => {
     void load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [search, from, to, page]);
+  }, [load]);
 
   const openDetail = async (row: Purchase) => {
     try {
@@ -316,8 +315,7 @@ function PurchaseEditor({ onClose, onSaved }: { onClose: () => void; onSaved: ()
         ui.error('তথ্য লোড ব্যর্থ', (err as Error).message);
       }
     })();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [ui]);
 
   useEffect(() => {
     if (timer.current) window.clearTimeout(timer.current);

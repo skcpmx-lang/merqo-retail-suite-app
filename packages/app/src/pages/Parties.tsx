@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { call } from '../api.js';
 import { useShopRefresh } from '../lib/use-shop-refresh.js';
 import { money, dateShort, dateTime, today, addDays } from '../format.js';
@@ -56,7 +56,7 @@ export function CustomersPage({ can, settings }: { can: (perm?: string) => boole
 
   useShopRefresh(['customers', 'suppliers'], () => void load());
 
-  const load = async () => {
+  const load = useCallback(async () => {
     setLoading(true);
     try {
       const res = await call<{ rows: Customer[]; total: number }>('customers.list', {
@@ -74,12 +74,11 @@ export function CustomersPage({ can, settings }: { can: (perm?: string) => boole
     } finally {
       setLoading(false);
     }
-  };
+  }, [search, onlyDue, page, ui]);
 
   useEffect(() => {
     void load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [search, onlyDue, page]);
+  }, [load]);
 
   useEffect(() => {
     call<any[]>('settings.paymentMethods').then(setMethods).catch(() => setMethods([]));
@@ -540,7 +539,7 @@ export function SuppliersPage({ can }: { can: (perm?: string) => boolean }) {
   const [paying, setPaying] = useState<Supplier | null>(null);
   const [methods, setMethods] = useState<any[]>([]);
 
-  const load = async () => {
+  const load = useCallback(async () => {
     setLoading(true);
     try {
       const res = await call<{ rows: Supplier[]; total: number }>('suppliers.list', {
@@ -558,12 +557,11 @@ export function SuppliersPage({ can }: { can: (perm?: string) => boolean }) {
     } finally {
       setLoading(false);
     }
-  };
+  }, [search, onlyPayable, page, ui]);
 
   useEffect(() => {
     void load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [search, onlyPayable, page]);
+  }, [load]);
 
   useEffect(() => {
     call<any[]>('settings.paymentMethods').then(setMethods).catch(() => setMethods([]));

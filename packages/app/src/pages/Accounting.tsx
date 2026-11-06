@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { call } from '../api.js';
 import { useShopRefresh } from '../lib/use-shop-refresh.js';
 import { money, today, addDays } from '../format.js';
@@ -91,7 +91,7 @@ export function AccountingPage({ can }: { can: (perm?: string) => boolean }) {
   // Shop events from the Main PC invalidate this screen.
   useShopRefresh('accounting', () => void load());
 
-  const load = async () => {
+  const load = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
@@ -115,12 +115,11 @@ export function AccountingPage({ can }: { can: (perm?: string) => boolean }) {
     } finally {
       setLoading(false);
     }
-  };
+  }, [tab, from, to, ledgerAccount, dayDate]);
 
   useEffect(() => {
     void load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tab, from, to, ledgerAccount, dayDate]);
+  }, [load]);
 
   const voucherTotals = useMemo(() => {
     const debit = voucherLines.reduce((s, l) => s + Math.round(l.debit || 0), 0);

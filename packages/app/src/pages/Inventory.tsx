@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { call } from '../api.js';
 import { money, qty, dateTime, today, addDays } from '../format.js';
 import { Icon } from '../icons.js';
@@ -69,7 +69,7 @@ export function InventoryPage({ can }: { can: (perm?: string) => boolean }) {
 
   const canAdjust = can('stock.adjust');
 
-  const loadStock = async () => {
+  const loadStock = useCallback(async () => {
     setLoading(true);
     try {
       const [res, value] = await Promise.all([
@@ -90,12 +90,11 @@ export function InventoryPage({ can }: { can: (perm?: string) => boolean }) {
     } finally {
       setLoading(false);
     }
-  };
+  }, [debounced, stockState, page, ui]);
 
   useEffect(() => {
     if (tab === 'stock') void loadStock();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tab, debounced, stockState, page]);
+  }, [tab, loadStock]);
 
   useEffect(() => {
     if (tab !== 'movements') return;
@@ -125,8 +124,8 @@ export function InventoryPage({ can }: { can: (perm?: string) => boolean }) {
       alive = false;
       window.clearTimeout(t);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tab, moveType, moveFrom, moveTo, debouncedMove, movePage]);
+    // `ui` is memoised by UIProvider, so listing it cannot re-run this effect.
+  }, [tab, moveType, moveFrom, moveTo, debouncedMove, movePage, ui]);
 
   useEffect(() => {
     if (tab !== 'alerts') return;
@@ -144,8 +143,7 @@ export function InventoryPage({ can }: { can: (perm?: string) => boolean }) {
         ui.error('অ্যালার্ট লোড ব্যর্থ', (err as Error).message);
       }
     })();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tab]);
+  }, [tab, ui]);
 
   const openAdjust = (product: ProductWithMeta, type: 'count' | 'damage' | 'expiry') => {
     setAdjusting(product);

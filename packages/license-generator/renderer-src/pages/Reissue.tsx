@@ -52,7 +52,7 @@ export function ReissuePage({ presetLicenseId }: { presetLicenseId: string | nul
     void load();
   }, [load]);
 
-  const pick = async (record: LicenseRecord) => {
+  const pick = useCallback(async (record: LicenseRecord) => {
     setSelected(record);
     setLifetime(!record.expires_at);
     setExpiresAt(record.expires_at ? String(record.expires_at).slice(0, 10) : addDaysInput(365));
@@ -61,15 +61,14 @@ export function ReissuePage({ presetLicenseId }: { presetLicenseId: string | nul
     setReason('');
     setDone(null);
     setDevice(null);
-  };
+  }, []);
 
   useEffect(() => {
     if (!presetLicenseId) return;
     void call<{ record: LicenseRecord }>('licenses.get', presetLicenseId)
       .then((res) => pick(res.record))
       .catch(() => undefined);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [presetLicenseId]);
+  }, [presetLicenseId, pick]);
 
   const importDevice = async () => {
     try {
