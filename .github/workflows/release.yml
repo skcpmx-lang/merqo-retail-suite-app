@@ -165,6 +165,17 @@ jobs:
       # Publication — tag pushes only. Manual runs stop above this line.
       # ------------------------------------------------------------------
 
+      # Requirement #20: never publish a tag that is not on `main`. v1.1.5 was published from a
+      # development branch and `main` still showed the previous release — this step makes that
+      # impossible to repeat. It runs before the draft exists, so a failure leaves nothing behind.
+      - name: Refuse a tag that is not on main
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main:refs/remotes/origin/main || true
+          node scripts/audit-release-branch.mjs --tag "${GITHUB_REF_NAME}" --main origin/main
+
       - name: Create DRAFT release with the verified assets
         if: startsWith(github.ref, 'refs/tags/v')
         shell: bash
