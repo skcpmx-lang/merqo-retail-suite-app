@@ -400,3 +400,39 @@ th.center, td.center { text-align: center; }
   .field.span-2 { grid-column: span 1; }
   .kv { grid-template-columns: 1fr; }
 }
+
+/* ---------------- v1.1.5 accessibility layer ----------------
+   Mirrors the Main App so an operator who works in both windows does not have to relearn focus. */
+
+tr.clickable:focus-visible {
+  outline: 2px solid var(--brand-500);
+  outline-offset: -2px;
+}
+
+tr.clickable:focus-visible td {
+  background: var(--brand-50, #eefaf6);
+}
+
+table.data thead th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--surface-2);
+  box-shadow: inset 0 -1px 0 var(--line, #e4e7ec);
+}
+
+.num,
+table.data td.right {
+  font-variant-numeric: tabular-nums;
+}
+
+@media print {
+  .sidebar,
+  .topbar {
+    display: none !important;
+  }
+  body {
+    background: #fff;
+    overflow: visible;
+  }
+}

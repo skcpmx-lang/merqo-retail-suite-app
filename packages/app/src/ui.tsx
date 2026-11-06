@@ -13,6 +13,71 @@ import { Icon, type IconName } from './icons.js';
 import { money } from './format.js';
 
 /* ------------------------------------------------------------------ */
+/* Focus management (v1.1.5)                                           */
+/* ------------------------------------------------------------------ */
+
+const FOCUSABLE =
+  'a[href], button:not([disabled]), input:not([disabled]):not([type="hidden"]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+/**
+ * True when an element is rendered and announced. Computed style, not `offsetParent`: the dialog
+ * must behave the same in the browser and under the DOM test environment, and `offsetParent` is
+ * always null where there is no layout engine.
+ */
+function isFocusVisible(el: HTMLElement): boolean {
+  if (el.hasAttribute('hidden') || el.getAttribute('aria-hidden') === 'true') return false;
+  const style = window.getComputedStyle(el);
+  return style.display !== 'none' && style.visibility !== 'hidden' && !el.hasAttribute('disabled');
+}
+
+/** Elements inside `root` that can take focus, in DOM order. */
+export function focusableIn(root: HTMLElement | null): HTMLElement[] {
+  if (!root) return [];
+  return Array.from(root.querySelectorAll<HTMLElement>(FOCUSABLE)).filter(isFocusVisible);
+}
+
+/**
+ * Keeps Tab inside a dialog (v1.1.5, A-16).
+ *
+ * A POS is driven from the keyboard, and a modal that lets Tab escape into the page behind it
+ * silently moves the cashier's next keystroke into a form they cannot see. Returns a cleanup that
+ * puts focus back where it was, so the screen continues from where it left off.
+ */
+export function useFocusTrap(ref: React.RefObject<HTMLElement | null>, active = true): void {
+  useEffect(() => {
+    if (!active) return undefined;
+    const previous = document.activeElement as HTMLElement | null;
+    const root = ref.current;
+    // Focus the first *field* when there is one — opening a dialog onto its own close button makes
+    // the cashier press Tab before they can type — otherwise the first control.
+    const firstField = root?.querySelector<HTMLElement>('input, select, textarea');
+    const target = firstField ?? focusableIn(root)[0];
+    if (target && !root?.contains(document.activeElement)) target.focus();
+
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== 'Tab') return;
+      const items = focusableIn(ref.current);
+      if (!items.length) return;
+      const firstItem = items[0]!;
+      const lastItem = items[items.length - 1]!;
+      const current = document.activeElement as HTMLElement | null;
+      if (event.shiftKey && (current === firstItem || !ref.current?.contains(current))) {
+        event.preventDefault();
+        lastItem.focus();
+      } else if (!event.shiftKey && current === lastItem) {
+        event.preventDefault();
+        firstItem.focus();
+      }
+    };
+    document.addEventListener('keydown', onKey, true);
+    return () => {
+      document.removeEventListener('keydown', onKey, true);
+      if (previous && document.contains(previous)) previous.focus();
+    };
+  }, [ref, active]);
+}
+
+/* ------------------------------------------------------------------ */
 /* Toasts + confirm                                                    */
 /* ------------------------------------------------------------------ */
 
@@ -576,13 +641,24 @@ export function Tabs<T extends string>({
   active: T;
   onChange: (id: T) => void;
 }) {
+  const onKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    const step = event.key === 'ArrowRight' ? 1 : event.key === 'ArrowLeft' ? -1 : 0;
+    if (!step) return;
+    event.preventDefault();
+    const index = tabs.findIndex((t) => t.id === active);
+    const next = tabs[(index + step + tabs.length) % tabs.length];
+    if (next) onChange(next.id);
+  };
   return (
-    <div className="tabs" role="tablist">
+    <div className="tabs" role="tablist" onKeyDown={onKeyDown}>
       {tabs.map((t) => (
         <button
           key={t.id}
           role="tab"
+          id={`tab-${t.id}`}
           aria-selected={active === t.id}
+          // Roving tabindex: one stop for the whole tab strip, arrows move between tabs.
+          tabIndex={active === t.id ? 0 : -1}
           className={`tab ${active === t.id ? 'active' : ''}`}
           onClick={() => onChange(t.id)}
         >
@@ -604,9 +680,15 @@ export function Segmented<T extends string>({
   onChange: (v: T) => void;
 }) {
   return (
-    <div className="seg">
+    <div className="seg" role="group">
       {options.map((o) => (
-        <button key={o.value} className={value === o.value ? 'active' : ''} onClick={() => onChange(o.value)}>
+        <button
+          key={o.value}
+          type="button"
+          className={value === o.value ? 'active' : ''}
+          aria-pressed={value === o.value}
+          onClick={() => onChange(o.value)}
+        >
           {o.label}
         </button>
       ))}
@@ -635,19 +717,32 @@ export function Modal({
   size?: 'sm' | 'md' | 'lg' | 'xl';
   hideClose?: boolean;
 }) {
+  const titleId = useId();
+  const bodyRef = useRef<HTMLDivElement | null>(null);
+  useFocusTrap(bodyRef);
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && !hideClose) onClose();
+      if (e.key === 'Escape' && !hideClose) {
+        // Escape must not also close a dialog stacked *under* this one.
+        e.stopPropagation();
+        onClose();
+      }
     };
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
   }, [onClose, hideClose]);
   return (
     <div className="overlay" onMouseDown={(e) => e.target === e.currentTarget && !hideClose && onClose()}>
-      <div className={`modal ${size === 'md' ? '' : size}`} role="dialog" aria-modal="true">
+      <div
+        className={`modal ${size === 'md' ? '' : size}`}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        ref={bodyRef}
+      >
         <div className="modal-head">
           <div>
-            <h2>{title}</h2>
+            <h2 id={titleId}>{title}</h2>
             {sub ? <div className="sub">{sub}</div> : null}
           </div>
           {!hideClose ? (
@@ -687,6 +782,7 @@ export function DataTable<T>({
   rowKey,
   compact,
   maxHeight,
+  sort,
 }: {
   columns: Column<T>[];
   rows: T[];
@@ -697,6 +793,8 @@ export function DataTable<T>({
   rowKey?: (row: T, i: number) => string | number;
   compact?: boolean;
   maxHeight?: number | string;
+  /** Current sort, announced on the header so a screen reader knows the order (v1.1.5). */
+  sort?: { key: string; dir: 'asc' | 'desc' };
 }) {
   if (loading) return <Loading />;
   if (!rows.length) return <>{empty ?? <EmptyState title="কোনো তথ্য পাওয়া যায়নি" message="ফিল্টার বদলে আবার চেষ্টা করুন।" />}</>;
@@ -710,6 +808,8 @@ export function DataTable<T>({
                 key={c.key}
                 className={c.align === 'right' ? 'right' : c.align === 'center' ? 'center' : ''}
                 style={{ width: c.width }}
+                scope="col"
+                aria-sort={sort?.key === c.key ? (sort.dir === 'asc' ? 'ascending' : 'descending') : undefined}
               >
                 {c.label}
               </th>
@@ -721,7 +821,21 @@ export function DataTable<T>({
             <tr
               key={rowKey ? rowKey(row, i) : i}
               className={onRowClick ? 'clickable' : ''}
+              // A clickable row must be reachable and operable from the keyboard: a cashier
+              // driving the till without a mouse could not open a sale or a product before.
+              tabIndex={onRowClick ? 0 : undefined}
+              role={onRowClick ? 'button' : undefined}
               onClick={onRowClick ? () => onRowClick(row) : undefined}
+              onKeyDown={
+                onRowClick
+                  ? (event) => {
+                      if (event.key === 'Enter' || event.key === ' ') {
+                        event.preventDefault();
+                        onRowClick(row);
+                      }
+                    }
+                  : undefined
+              }
             >
               {columns.map((c) => {
                 const raw = (row as any)[c.key];
@@ -773,6 +887,24 @@ export function Pagination({
         <Icon name="chevronRight" size={15} />
       </button>
     </div>
+  );
+}
+
+/**
+ * A key cap, for the shortcut hints the till relies on (v1.1.5). Screen readers get the label;
+ * sighted users get the cap. Kept as a `<kbd>` so it is semantic, not decorative text.
+ */
+export function Kbd({ children }: { children: ReactNode }) {
+  return <kbd className="kbd">{children}</kbd>;
+}
+
+/** A key cap plus what it does, e.g. ⌨ F2 — খুঁজুন. */
+export function KeyHint({ keys, children }: { keys: string; children?: ReactNode }) {
+  return (
+    <span className="kbd-hint">
+      <Kbd>{keys}</Kbd>
+      {children ? <span>{children}</span> : null}
+    </span>
   );
 }
 

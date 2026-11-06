@@ -3,21 +3,7 @@ import { ApiError, call } from '../api.js';
 import { useShopRefresh } from '../lib/use-shop-refresh.js';
 import { money, qty as fmtQty, dateTime } from '../format.js';
 import { Icon } from '../icons.js';
-import {
-  Badge,
-  Button,
-  EmptyState,
-  Field,
-  IconButton,
-  Loading,
-  Modal,
-  MoneyInput,
-  QtyInput,
-  Select,
-  Spinner,
-  TextInput,
-  useUI,
-} from '../ui.js';
+import { Badge, Button, EmptyState, Field, IconButton, KeyHint, Loading, Modal, MoneyInput, QtyInput, Select, Spinner, TextInput, useUI } from '../ui.js';
 import type { AppSettings, Customer, ProductWithMeta, Sale, Unit } from '../types.js';
 import type { PageId } from '../App.js';
 
@@ -743,6 +729,14 @@ export function POSPage({
     <>
       <div className="pos-layout">
         <div className="pos-left">
+          {/* Shortcut legend (v1.1.5): the till is keyboard-driven, and the hints were only in
+              placeholder text and tooltips where nobody finds them. */}
+          <div className="row kbd-hint" style={{ gap: 10, padding: '0 2px 6px' }}>
+            <KeyHint keys="F2">খুঁজুন</KeyHint>
+            <KeyHint keys="F3">হোল্ড</KeyHint>
+            <KeyHint keys="F4">হোল্ড তালিকা</KeyHint>
+            <KeyHint keys="F8">পরিশোধ</KeyHint>
+          </div>
           <div className="pos-search">
             <div className="global-search" style={{ maxWidth: 'none' }}>
               <span className="search-icon">

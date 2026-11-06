@@ -576,7 +576,26 @@ export function Table<T>({
         </thead>
         <tbody>
           {rows.map((row, i) => (
-            <tr key={rowKey ? rowKey(row, i) : i} className={onRowClick ? 'clickable' : ''} onClick={onRowClick ? () => onRowClick(row) : undefined}>
+            <tr
+              key={rowKey ? rowKey(row, i) : i}
+              className={onRowClick ? 'clickable' : ''}
+              // Keyboard parity with the Main App (v1.1.5): a row you can click is a row you can
+              // open with Enter or Space, and it shows a focus ring when it has focus.
+              tabIndex={onRowClick ? 0 : undefined}
+              role={onRowClick ? 'button' : undefined}
+              aria-label={onRowClick ? `সারি খুলুন ${i + 1}` : undefined}
+              onClick={onRowClick ? () => onRowClick(row) : undefined}
+              onKeyDown={
+                onRowClick
+                  ? (event: React.KeyboardEvent<HTMLTableRowElement>) => {
+                      if (event.key === 'Enter' || event.key === ' ') {
+                        event.preventDefault();
+                        onRowClick(row);
+                      }
+                    }
+                  : undefined
+              }
+            >
               {columns.map((c) => (
                 <td key={c.key} className={c.align ?? 'left'}>
                   {c.render ? c.render(row, i) : String((row as Record<string, unknown>)[c.key] ?? '—')}
