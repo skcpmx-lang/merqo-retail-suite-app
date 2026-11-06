@@ -1,5 +1,5 @@
 import type { Db } from '../db/connection.js';
-import { nowLocal } from '../domain/datetime.js';
+import { dayEnd, dayStart, nowLocal } from '../domain/datetime.js';
 import { audit } from './audit.js';
 
 type Actor = { id: number; username: string };
@@ -33,12 +33,12 @@ export function listAttendance(
   const where: string[] = [];
   const params: unknown[] = [];
   if (filter.from) {
-    where.push('date(a.clock_in) >= date(?)');
-    params.push(filter.from);
+    where.push('a.clock_in >= ?');
+    params.push(dayStart(filter.from));
   }
   if (filter.to) {
-    where.push('date(a.clock_in) <= date(?)');
-    params.push(filter.to);
+    where.push('a.clock_in <= ?');
+    params.push(dayEnd(filter.to));
   }
   if (filter.userId) {
     where.push('a.user_id = ?');

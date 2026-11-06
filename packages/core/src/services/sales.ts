@@ -1,5 +1,5 @@
 import type { Db } from '../db/connection.js';
-import { nowLocal } from '../domain/datetime.js';
+import { dayEnd, dayStart, nowLocal } from '../domain/datetime.js';
 import {
   costValuePaisa,
   lineValuePaisa,
@@ -556,12 +556,12 @@ export function listSales(db: Db, f: SaleFilter = {}): { rows: Sale[]; total: nu
   const where: string[] = [];
   const params: unknown[] = [];
   if (f.from) {
-    where.push('date(s.sale_date) >= date(?)');
-    params.push(f.from);
+    where.push('s.sale_date >= ?');
+    params.push(dayStart(f.from));
   }
   if (f.to) {
-    where.push('date(s.sale_date) <= date(?)');
-    params.push(f.to);
+    where.push('s.sale_date <= ?');
+    params.push(dayEnd(f.to));
   }
   if (f.customerId) {
     where.push('s.customer_id = ?');

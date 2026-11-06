@@ -1,5 +1,5 @@
 import type { Db } from '../db/connection.js';
-import { nowLocal } from '../domain/datetime.js';
+import { dayEnd, dayStart, nowLocal } from '../domain/datetime.js';
 import type { Expense } from '../domain/types.js';
 import { audit } from './audit.js';
 import { addCashMovement } from './cash.js';
@@ -188,12 +188,12 @@ export function listExpenses(db: Db, f: ExpenseFilter = {}): { rows: Expense[]; 
   const where: string[] = [];
   const params: unknown[] = [];
   if (f.from) {
-    where.push('date(e.expense_date) >= date(?)');
-    params.push(f.from);
+    where.push('e.expense_date >= ?');
+    params.push(dayStart(f.from));
   }
   if (f.to) {
-    where.push('date(e.expense_date) <= date(?)');
-    params.push(f.to);
+    where.push('e.expense_date <= ?');
+    params.push(dayEnd(f.to));
   }
   if (f.categoryId) {
     where.push('e.category_id = ?');
@@ -233,12 +233,12 @@ export function expenseTotal(db: Db, from?: string, to?: string): number {
   const where = ["status = 'active'"];
   const params: unknown[] = [];
   if (from) {
-    where.push('date(expense_date) >= date(?)');
-    params.push(from);
+    where.push('expense_date >= ?');
+    params.push(dayStart(from));
   }
   if (to) {
-    where.push('date(expense_date) <= date(?)');
-    params.push(to);
+    where.push('expense_date <= ?');
+    params.push(dayEnd(to));
   }
   const row = db
     .prepare(`SELECT COALESCE(SUM(amount_paisa),0) v FROM expenses WHERE ${where.join(' AND ')}`)
@@ -250,12 +250,12 @@ export function expensesByCategory(db: Db, from?: string, to?: string): { name: 
   const where = ["e.status = 'active'"];
   const params: unknown[] = [];
   if (from) {
-    where.push('date(e.expense_date) >= date(?)');
-    params.push(from);
+    where.push('e.expense_date >= ?');
+    params.push(dayStart(from));
   }
   if (to) {
-    where.push('date(e.expense_date) <= date(?)');
-    params.push(to);
+    where.push('e.expense_date <= ?');
+    params.push(dayEnd(to));
   }
   return db
     .prepare(

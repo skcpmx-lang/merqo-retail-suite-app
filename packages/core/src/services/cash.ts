@@ -1,5 +1,5 @@
 import type { Db } from '../db/connection.js';
-import { nowLocal } from '../domain/datetime.js';
+import { dayEnd, dayStart, nowLocal } from '../domain/datetime.js';
 import type { CashMovement, CashSession } from '../domain/types.js';
 import { audit } from './audit.js';
 import { isPostingEnabled, postCashMovement } from './accounting.js';
@@ -149,12 +149,12 @@ export function listSessions(
   const where: string[] = [];
   const params: unknown[] = [];
   if (f.from) {
-    where.push('date(s.opened_at) >= date(?)');
-    params.push(f.from);
+    where.push('s.opened_at >= ?');
+    params.push(dayStart(f.from));
   }
   if (f.to) {
-    where.push('date(s.opened_at) <= date(?)');
-    params.push(f.to);
+    where.push('s.opened_at <= ?');
+    params.push(dayEnd(f.to));
   }
   if (f.userId) {
     where.push('s.user_id = ?');

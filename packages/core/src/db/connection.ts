@@ -9,6 +9,7 @@ import { migrateToV3 } from './migration-v3.js';
 import { migrateToV4 } from './migration-v4.js';
 import { migrateToV5 } from './migration-v5.js';
 import { migrateToV6 } from './migration-v6.js';
+import { migrateToV7 } from './migration-v7.js';
 
 export type Db = SqliteDb;
 
@@ -208,6 +209,13 @@ export const MIGRATIONS: Migration[] = [
     name: 'replay_protection_and_rotation_journal',
     up: (db) => {
       migrateToV6(db);
+    },
+  },
+  {
+    version: 7,
+    name: 'date_filter_indexes',
+    up: (db) => {
+      migrateToV7(db);
     },
   },
 ];

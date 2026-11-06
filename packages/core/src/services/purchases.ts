@@ -1,5 +1,5 @@
 import type { Db } from '../db/connection.js';
-import { nowLocal } from '../domain/datetime.js';
+import { dayEnd, dayStart, nowLocal } from '../domain/datetime.js';
 import { lineValuePaisa, resolveDiscount, roundDiv, toBaseMilli } from '../domain/money.js';
 import type { Product, Purchase, PurchaseItem } from '../domain/types.js';
 import { audit } from './audit.js';
@@ -281,12 +281,12 @@ export function listPurchases(db: Db, f: PurchaseFilter = {}): { rows: Purchase[
   const where: string[] = [];
   const params: unknown[] = [];
   if (f.from) {
-    where.push('date(p.purchase_date) >= date(?)');
-    params.push(f.from);
+    where.push('p.purchase_date >= ?');
+    params.push(dayStart(f.from));
   }
   if (f.to) {
-    where.push('date(p.purchase_date) <= date(?)');
-    params.push(f.to);
+    where.push('p.purchase_date <= ?');
+    params.push(dayEnd(f.to));
   }
   if (f.supplierId) {
     where.push('p.supplier_id = ?');
