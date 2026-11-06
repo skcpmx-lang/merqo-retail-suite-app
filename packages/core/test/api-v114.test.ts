@@ -459,6 +459,49 @@ describe('pairing', () => {
     expect(res.json.code).toBe('STORE_MISMATCH');
   });
 
+  // v1.1.5, A-21: a claim that cannot be honoured must not spend the shop's pairing code.
+  it('does not burn the code when the claim is refused, so the shop can still pair', async () => {
+    const h = await harness();
+    const store = getStoreIdentity(h.db);
+    h.db
+      .prepare(
+        `INSERT INTO device_licenses (license_id, store_id, device_id, role, capacity, issued_at, status, payload, registered_at)
+         VALUES ('LIC-SRV', ?, 'DEV-SRV', 'SERVER_POS', 4, ?, 'active', '{}', ?)`,
+      )
+      .run(store.store_id, new Date().toISOString(), new Date().toISOString());
+    const { code } = createPairingToken(h.db, { createdBy: admin.id });
+    const keys = generateDeviceKeyPair();
+
+    // A claim from another shop's licence: the code is presented first, the licence refused after.
+    const refused = await h.call({
+      path: '/api/v1/pairing/claim',
+      body: {
+        code,
+        device_id: 'DEV-P5',
+        role: 'CLIENT_POS',
+        public_key: keys.publicKeySpkiB64,
+        license: { license_id: 'LIC-OTHER', store_id: 'STORE-OTHER', issued_at: new Date().toISOString(), capacity: 4 },
+      },
+    });
+    expect(refused.status).toBe(409);
+    expect(refused.json.code).toBe('STORE_MISMATCH');
+
+    // The same code still works for a legitimate claim — before the fix it had been consumed and
+    // this answered 410 PAIRING_USED, which let any LAN client disable pairing at will.
+    const accepted = await h.call({
+      path: '/api/v1/pairing/claim',
+      body: {
+        code,
+        device_id: 'DEV-P6',
+        role: 'CLIENT_POS',
+        public_key: keys.publicKeySpkiB64,
+        license: { license_id: 'LIC-P6', store_id: store.store_id, issued_at: new Date().toISOString(), capacity: 4, payload: {} },
+      },
+    });
+    expect(accepted.status).toBe(202);
+    expect(accepted.json.data.status).toBe('pending');
+  });
+
   it('rejects an expired pairing code', async () => {
     const h = await harness();
     const { code } = createPairingToken(h.db, { ttlMs: -1000 });

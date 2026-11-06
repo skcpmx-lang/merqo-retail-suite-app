@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { call } from '../api.js';
 import { useShopRefresh } from '../lib/use-shop-refresh.js';
 import { money, qty as fmtQty, dateTime, today } from '../format.js';
@@ -119,28 +119,32 @@ export function StockOpsPage({ can }: { can: (perm?: string) => boolean }) {
   const canTransfer = can('stock.transfer');
   const canCount = can('stock.count');
 
-  const loadLocations = async () => {
+  const loadLocations = useCallback(async () => {
     try {
       const rows = await call<Location[]>('locations.list');
       setLocations(rows);
-      if (!fromLoc && rows.length) setFromLoc(rows.find((l) => l.is_default === 1)?.id ?? rows[0]!.id);
-      if (!toLoc && rows.length > 1) setToLoc(rows.filter((l) => l.id !== (rows[0]!.id))[0]!.id);
-      if (!countLoc && rows.length) setCountLoc(rows.find((l) => l.is_default === 1)?.id ?? rows[0]!.id);
+      // Functional updates: the loader no longer reads the selected locations, so it cannot go
+      // stale and it does not need those selections in its dependencies (which would re-run it
+      // every time a selection changed).
+      const fallback: number | '' = rows.length ? (rows.find((l) => l.is_default === 1)?.id ?? rows[0]!.id) : '';
+      const other: number | '' = rows.length > 1 ? (rows.find((l) => l.id !== rows[0]!.id)?.id ?? '') : '';
+      setFromLoc((cur) => cur || fallback);
+      setToLoc((cur) => cur || other);
+      setCountLoc((cur) => cur || fallback);
       setLocationsReady(true);
     } catch (err) {
       setError((err as Error).message);
     }
-  };
+  }, []);
 
   useEffect(() => {
     void loadLocations();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [loadLocations]);
 
   // Stock, transfer or count changes from any PC reload the open tab.
   useShopRefresh('stock', () => void loadTab());
 
-  const loadTab = async () => {
+  const loadTab = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
@@ -166,12 +170,11 @@ export function StockOpsPage({ can }: { can: (perm?: string) => boolean }) {
     } finally {
       setLoading(false);
     }
-  };
+  }, [tab]);
 
   useEffect(() => {
     void loadTab();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tab]);
+  }, [loadTab]);
 
   /* ---------------- actions ---------------- */
 

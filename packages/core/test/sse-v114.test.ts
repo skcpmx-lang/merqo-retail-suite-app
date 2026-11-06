@@ -341,6 +341,35 @@ describe('event delivery', () => {
     expect(reason).toBeTruthy();
     await waitFor(() => api.streamCount() === 0, 'the server drops the closed stream');
   });
+
+  /**
+   * R-06: `stop()` must be terminal. v1.1.4 emptied the hub with `closeAll()`, which left a window
+   * in which an already-authenticated request could register a stream on the empty map — the socket
+   * was destroyed, but the hub kept the stream and its two intervals. The unit contract lives in
+   * `sse-shutdown-v115.test.ts`; this pins the wiring: the API really does begin a shutdown, and the
+   * state it returns in is settled.
+   */
+  it('is settled after stop: nothing registers afterwards, and a racing second stop resolves', async () => {
+    const dir = tempDir();
+    const db = freshDb(dir);
+    const device = addDevice(db, 'DEV-S12');
+    const token = session(db, device.deviceId);
+    const { api, certPem } = await startApi(dir, db);
+    const stream = openStream(api, certPem, { device, session: token });
+    await waitFor(() => api.streamCount() === 1, 'the server sees the open stream');
+
+    await within(api.stop(), 'the first stop resolves');
+    expect(api.streamCount()).toBe(0);
+    await within(stream.closed, 'the client observes the closed stream');
+
+    // `before-quit` can race an explicit stop; the second call must resolve rather than hang.
+    await within(api.stop(), 'the second stop resolves');
+    // A late request (the v1.1.4 race) must not register a stream on the stopped hub.
+    const late = openStream(api, certPem, { device, session: token });
+    await sleep(150);
+    expect(api.streamCount()).toBe(0);
+    await within(late.closed.catch(() => 'refused'), 'the late client gives up').catch(() => undefined);
+  });
 });
 
 describe('event stream client', () => {

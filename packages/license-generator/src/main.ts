@@ -14,7 +14,7 @@ import {
   EDITIONS,
   FEATURES,
   REPORTS,
-  appendLedger,
+  commitLedgerAndStore,
   buildBackup,
   createCustomer,
   customerById,
@@ -186,12 +186,13 @@ function toIssueInput(input: Partial<IssueInput>): IssueInput {
   };
 }
 
-function ledgerEntryFor(
+/** The ledger line for a record — data only; `commitLedgerAndStore` writes it with the store. */
+function ledgerEntryDataFor(
   record: LicenseRecord,
   action: LedgerEntry['action'],
   extra: { reason?: string | null; file?: string | null; replaces?: string | null } = {},
-): LedgerEntry {
-  return appendLedger(ledgerPath(), {
+): Omit<LedgerEntry, 'id' | 'at'> {
+  return {
     license_id: record.license_id,
     org: record.org,
     owner: record.owner,
@@ -205,7 +206,7 @@ function ledgerEntryFor(
     reason: extra.reason ?? null,
     file: extra.file ?? record.file_path,
     customer_id: record.customer_id,
-  });
+  };
 }
 
 async function saveLicenseDialog(defaultName: string, body: string): Promise<string | null> {
@@ -402,8 +403,7 @@ const routes: Record<string, Route> = {
       );
       record.file_path = filePath;
     }
-    saveStore(store);
-    ledgerEntryFor(record, 'issued', { file: filePath });
+    commitLedgerAndStore(ledgerPath(), [ledgerEntryDataFor(record, 'issued', { file: filePath })], () => saveStore(store));
     return { record, payload: result.payload, licenseKey: result.licenseKey, filePath, check: result.check };
   },
 
@@ -445,10 +445,17 @@ const routes: Record<string, Route> = {
       );
       record.file_path = filePath;
     }
-    saveStore(store);
-    // The replaced licence is closed out in the ledger, with the reason kept.
-    ledgerEntryFor(previous, 'revoked', { reason: `রি-ইস্যু: ${reason}` });
-    ledgerEntryFor(record, 'reissued', { reason, file: filePath, replaces: previous.license_id });
+    // The replaced licence is closed out in the ledger, with the reason kept, in the same step as
+    // the store: a ledger that says "reissued" without a store entry (or the reverse) is how a
+    // revoked licence gets issued again.
+    commitLedgerAndStore(
+      ledgerPath(),
+      [
+        ledgerEntryDataFor(previous, 'revoked', { reason: `রি-ইস্যু: ${reason}` }),
+        ledgerEntryDataFor(record, 'reissued', { reason, file: filePath, replaces: previous.license_id }),
+      ],
+      () => saveStore(store),
+    );
     return { record, payload: result.payload, licenseKey: result.licenseKey, filePath, replaces: previous.license_id };
   },
 
@@ -469,8 +476,11 @@ const routes: Record<string, Route> = {
   'license.revoke': (_e, licenseId: string, reason: string) => {
     const store = loadStore();
     const record = revokeLicense(store, licenseId, reason);
-    saveStore(store);
-    const entry = ledgerEntryFor(record, 'revoked', { reason: record.revoke_reason });
+    const [entry] = commitLedgerAndStore(
+      ledgerPath(),
+      [ledgerEntryDataFor(record, 'revoked', { reason: record.revoke_reason })],
+      () => saveStore(store),
+    );
     return { record, entry };
   },
 

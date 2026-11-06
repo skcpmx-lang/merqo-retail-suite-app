@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { call } from '../api.js';
 import { useShopRefresh } from '../lib/use-shop-refresh.js';
 import { money, qty, dateTime } from '../format.js';
@@ -118,7 +118,7 @@ export function ProductsPage({ can }: { can: (perm?: string) => boolean }) {
   // Products, prices and stock arriving from another PC/person reload this list.
   useShopRefresh('products', () => void load());
 
-  const load = async () => {
+  const load = useCallback(async () => {
     setLoading(true);
     try {
       const res = await call<{ rows: ProductWithMeta[]; total: number }>('products.list', {
@@ -138,12 +138,11 @@ export function ProductsPage({ can }: { can: (perm?: string) => boolean }) {
     } finally {
       setLoading(false);
     }
-  };
+  }, [debounced, categoryId, stockState, includeInactive, page, sort, ui]);
 
   useEffect(() => {
     void load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [debounced, categoryId, stockState, page, sort, includeInactive]);
+  }, [load]);
 
   useEffect(() => {
     (async () => {
@@ -611,18 +610,17 @@ function ProductEditor({
   const [variantPrice, setVariantPrice] = useState(0);
   const [variantStock, setVariantStock] = useState(0);
 
-  const loadVariants = async (id: number) => {
+  const loadVariants = useCallback(async (id: number) => {
     try {
       setVariants(await call<any[]>('products.variants', id));
     } catch {
       setVariants([]);
     }
-  };
+  }, []);
 
   useEffect(() => {
     if (editor.id) void loadVariants(editor.id);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [editor.id]);
+  }, [editor.id, loadVariants]);
   const margin =
     editor.purchasePrice > 0 && editor.salePrice > 0
       ? ((editor.salePrice - editor.purchasePrice) / editor.salePrice) * 100

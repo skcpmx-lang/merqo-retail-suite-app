@@ -128,3 +128,19 @@ export function daysRemaining(expiresAt: string | null): number | null {
   const end = new Date(`${localDateOf(expiresAt)}T23:59:59`).getTime();
   return Math.ceil((end - Date.now()) / 86_400_000);
 }
+
+/**
+ * Bounds for "everything on this day", used for sargable date filters (v1.1.5).
+ *
+ * `date(sale_date) BETWEEN date(?) AND date(?)` wraps the *column* in a function, so SQLite cannot
+ * use the index on `sale_date` and scans the table — measured in `docs/V1.1.5_PERFORMANCE.md`.
+ * Comparing the column itself against the first and last instant of the day is exactly equivalent
+ * for the `YYYY-MM-DD HH:MM:SS` text this application writes, and lets the index do its job.
+ */
+export function dayStart(day: string): string {
+  return `${day.slice(0, 10)} 00:00:00`;
+}
+
+export function dayEnd(day: string): string {
+  return `${day.slice(0, 10)} 23:59:59`;
+}

@@ -62,47 +62,51 @@ function assertPercent(value: number): void {
 }
 
 export function createCoupon(db: Db, input: CouponInput, actor?: Actor | null): Coupon {
-  const code = normalizeCode(input.code);
-  if (code.length < 3) throw new Error('কুপন কোড অন্তত ৩ অক্ষরের হতে হবে।');
-  if (!/^[A-Z0-9_-]+$/.test(code)) throw new Error('কুপন কোডে শুধু ইংরেজি অক্ষর, সংখ্যা, - এবং _ চলবে।');
-  const value = Math.round(input.value);
-  if (input.kind === 'percent') assertPercent(value);
-  else if (value <= 0) throw new Error('নির্দিষ্ট ছাড়ের পরিমাণ শূন্যের বেশি হতে হবে।');
-  if (db.prepare('SELECT id FROM coupons WHERE code = ?').get(code)) {
-    throw new Error(`"${code}" কোডটি আগেই ব্যবহার হয়েছে।`);
-  }
-  const now = nowLocal();
-  const res = db
-    .prepare(
-      `INSERT INTO coupons (code, label, kind, value, min_purchase_paisa, max_discount_paisa, starts_at, expires_at,
-         usage_limit, used_count, per_customer_limit, is_active, note, created_at, updated_at)
-       VALUES (?,?,?,?,?,?,?,?,?,0,?,1,?,?,?)`,
-    )
-    .run(
-      code,
-      input.label ?? null,
-      input.kind,
-      value,
-      Math.max(0, Math.round(input.minPurchasePaisa ?? 0)),
-      Math.max(0, Math.round(input.maxDiscountPaisa ?? 0)),
-      input.startsAt ?? null,
-      input.expiresAt ?? null,
-      Math.max(0, Math.round(input.usageLimit ?? 0)),
-      Math.max(0, Math.round(input.perCustomerLimit ?? 0)),
-      input.note ?? null,
-      now,
-      now,
-    );
-  const coupon = getCoupon(db, Number(res.lastInsertRowid))!;
-  audit(db, {
-    userId: actor?.id ?? null,
-    username: actor?.username ?? null,
-    action: 'coupon.create',
-    entity: 'coupon',
-    entityId: coupon.id,
-    details: { code, kind: coupon.kind, value: coupon.value },
-  });
-  return coupon;
+  // The change and the audit line that records it are one step (v1.1.5, sweep finding A-26).
+  // Nested in a caller's transaction this is a savepoint, so a batch still rolls back as a whole.
+  return db.transaction(() => {
+    const code = normalizeCode(input.code);
+    if (code.length < 3) throw new Error('কুপন কোড অন্তত ৩ অক্ষরের হতে হবে।');
+    if (!/^[A-Z0-9_-]+$/.test(code)) throw new Error('কুপন কোডে শুধু ইংরেজি অক্ষর, সংখ্যা, - এবং _ চলবে।');
+    const value = Math.round(input.value);
+    if (input.kind === 'percent') assertPercent(value);
+    else if (value <= 0) throw new Error('নির্দিষ্ট ছাড়ের পরিমাণ শূন্যের বেশি হতে হবে।');
+    if (db.prepare('SELECT id FROM coupons WHERE code = ?').get(code)) {
+      throw new Error(`"${code}" কোডটি আগেই ব্যবহার হয়েছে।`);
+    }
+    const now = nowLocal();
+    const res = db
+      .prepare(
+        `INSERT INTO coupons (code, label, kind, value, min_purchase_paisa, max_discount_paisa, starts_at, expires_at,
+           usage_limit, used_count, per_customer_limit, is_active, note, created_at, updated_at)
+         VALUES (?,?,?,?,?,?,?,?,?,0,?,1,?,?,?)`,
+      )
+      .run(
+        code,
+        input.label ?? null,
+        input.kind,
+        value,
+        Math.max(0, Math.round(input.minPurchasePaisa ?? 0)),
+        Math.max(0, Math.round(input.maxDiscountPaisa ?? 0)),
+        input.startsAt ?? null,
+        input.expiresAt ?? null,
+        Math.max(0, Math.round(input.usageLimit ?? 0)),
+        Math.max(0, Math.round(input.perCustomerLimit ?? 0)),
+        input.note ?? null,
+        now,
+        now,
+      );
+    const coupon = getCoupon(db, Number(res.lastInsertRowid))!;
+    audit(db, {
+      userId: actor?.id ?? null,
+      username: actor?.username ?? null,
+      action: 'coupon.create',
+      entity: 'coupon',
+      entityId: coupon.id,
+      details: { code, kind: coupon.kind, value: coupon.value },
+    });
+    return coupon;
+  })();
 }
 
 export function getCoupon(db: Db, id: number): Coupon | null {
@@ -141,39 +145,43 @@ export function listCoupons(
 }
 
 export function updateCoupon(db: Db, id: number, patch: Partial<CouponInput> & { isActive?: boolean }, actor?: Actor | null): Coupon {
-  const current = getCoupon(db, id);
-  if (!current) throw new Error('কুপন পাওয়া যায়নি।');
-  const kind = patch.kind ?? current.kind;
-  const value = patch.value != null ? Math.round(patch.value) : current.value;
-  if (kind === 'percent') assertPercent(value);
-  else if (value <= 0) throw new Error('নির্দিষ্ট ছাড়ের পরিমাণ শূন্যের বেশি হতে হবে।');
-  db.prepare(
-    `UPDATE coupons SET kind=?, value=?, label=?, min_purchase_paisa=?, max_discount_paisa=?, starts_at=?, expires_at=?,
-       usage_limit=?, per_customer_limit=?, is_active=?, note=?, updated_at=? WHERE id=?`,
-  ).run(
-    kind,
-    value,
-    patch.label !== undefined ? patch.label : current.label,
-    patch.minPurchasePaisa != null ? Math.max(0, Math.round(patch.minPurchasePaisa)) : current.min_purchase_paisa,
-    patch.maxDiscountPaisa != null ? Math.max(0, Math.round(patch.maxDiscountPaisa)) : current.max_discount_paisa,
-    patch.startsAt !== undefined ? patch.startsAt : current.starts_at,
-    patch.expiresAt !== undefined ? patch.expiresAt : current.expires_at,
-    patch.usageLimit != null ? Math.max(0, Math.round(patch.usageLimit)) : current.usage_limit,
-    patch.perCustomerLimit != null ? Math.max(0, Math.round(patch.perCustomerLimit)) : current.per_customer_limit,
-    patch.isActive === undefined ? current.is_active : patch.isActive ? 1 : 0,
-    patch.note !== undefined ? patch.note : current.note,
-    nowLocal(),
-    id,
-  );
-  audit(db, {
-    userId: actor?.id ?? null,
-    username: actor?.username ?? null,
-    action: 'coupon.update',
-    entity: 'coupon',
-    entityId: id,
-    details: { before: { kind: current.kind, value: current.value }, after: { kind, value } },
-  });
-  return getCoupon(db, id)!;
+  // The change and the audit line that records it are one step (v1.1.5, sweep finding A-26).
+  // Nested in a caller's transaction this is a savepoint, so a batch still rolls back as a whole.
+  return db.transaction(() => {
+    const current = getCoupon(db, id);
+    if (!current) throw new Error('কুপন পাওয়া যায়নি।');
+    const kind = patch.kind ?? current.kind;
+    const value = patch.value != null ? Math.round(patch.value) : current.value;
+    if (kind === 'percent') assertPercent(value);
+    else if (value <= 0) throw new Error('নির্দিষ্ট ছাড়ের পরিমাণ শূন্যের বেশি হতে হবে।');
+    db.prepare(
+      `UPDATE coupons SET kind=?, value=?, label=?, min_purchase_paisa=?, max_discount_paisa=?, starts_at=?, expires_at=?,
+         usage_limit=?, per_customer_limit=?, is_active=?, note=?, updated_at=? WHERE id=?`,
+    ).run(
+      kind,
+      value,
+      patch.label !== undefined ? patch.label : current.label,
+      patch.minPurchasePaisa != null ? Math.max(0, Math.round(patch.minPurchasePaisa)) : current.min_purchase_paisa,
+      patch.maxDiscountPaisa != null ? Math.max(0, Math.round(patch.maxDiscountPaisa)) : current.max_discount_paisa,
+      patch.startsAt !== undefined ? patch.startsAt : current.starts_at,
+      patch.expiresAt !== undefined ? patch.expiresAt : current.expires_at,
+      patch.usageLimit != null ? Math.max(0, Math.round(patch.usageLimit)) : current.usage_limit,
+      patch.perCustomerLimit != null ? Math.max(0, Math.round(patch.perCustomerLimit)) : current.per_customer_limit,
+      patch.isActive === undefined ? current.is_active : patch.isActive ? 1 : 0,
+      patch.note !== undefined ? patch.note : current.note,
+      nowLocal(),
+      id,
+    );
+    audit(db, {
+      userId: actor?.id ?? null,
+      username: actor?.username ?? null,
+      action: 'coupon.update',
+      entity: 'coupon',
+      entityId: id,
+      details: { before: { kind: current.kind, value: current.value }, after: { kind, value } },
+    });
+    return getCoupon(db, id)!;
+  })();
 }
 
 export function couponRedemptions(db: Db, couponId: number) {
@@ -251,17 +259,55 @@ export function checkCoupon(
 /** Records a redemption. Called inside the sale transaction only. */
 export function recordCouponRedemption(
   db: Db,
-  args: { couponId: number; saleId: number; customerId: number | null; code: string; discountPaisa: number; userId: number | null },
+  args: {
+    couponId: number;
+    saleId: number;
+    customerId: number | null;
+    code: string;
+    discountPaisa: number;
+    userId: number | null;
+    /** Overrides the clock (tests only); the sale path leaves it at "now". */
+    at?: string;
+  },
 ): void {
+  const at = args.at ?? nowLocal();
+  // The conditional UPDATE is the global limit's guard *and* the moment this sale takes the write
+  // lock: it either consumes a use or fails. Everything below therefore runs while no other
+  // connection can be recording a redemption, which is what makes the checks below authoritative
+  // rather than advisory (v1.1.5, A-22).
   const res = db
     .prepare(
       'UPDATE coupons SET used_count = used_count + 1, updated_at = ? WHERE id = ? AND (usage_limit = 0 OR used_count < usage_limit)',
     )
-    .run(nowLocal(), args.couponId);
+    .run(at, args.couponId);
   if (res.changes !== 1) throw new Error('কুপনের ব্যবহারের সীমা এইমাত্র শেষ হয়েছে।');
+
+  // `checkCoupon` ran when the cashier typed the code, in a plain read; by now the coupon may have
+  // been disabled, may have expired, or the same customer may have used their last allowance on
+  // another terminal. Re-check under the lock, so a sale can never consume a use it is not entitled
+  // to — and the throw rolls back the sale, not just this record.
+  const coupon = db.prepare('SELECT * FROM coupons WHERE id = ?').get(args.couponId) as Coupon | undefined;
+  if (!coupon) throw new Error('কুপনটি আর পাওয়া যাচ্ছে না।');
+  if (!coupon.is_active) throw new Error('কুপনটি নিষ্ক্রিয় করা হয়েছে — এই বিক্রয়ে ব্যবহার করা যাবে না।');
+  if (coupon.starts_at && at < coupon.starts_at) throw new Error('কুপনের সময় এখনো শুরু হয়নি।');
+  if (coupon.expires_at && at > coupon.expires_at) throw new Error('কুপনের মেয়াদ শেষ হয়ে গেছে।');
+  if (coupon.per_customer_limit > 0) {
+    if (!args.customerId) {
+      throw new Error('এই কুপন কাস্টমার নির্বাচন করলেই ব্যবহার করা যাবে।');
+    }
+    const used = (
+      db
+        .prepare('SELECT COUNT(*) AS n FROM coupon_redemptions WHERE coupon_id = ? AND customer_id = ?')
+        .get(coupon.id, args.customerId) as { n: number }
+    ).n;
+    if (used >= coupon.per_customer_limit) {
+      throw new Error('এই কাস্টমার কুপনটি সর্বোচ্চ বার ব্যবহার করেছেন।');
+    }
+  }
+
   db.prepare(
     'INSERT INTO coupon_redemptions (coupon_id, sale_id, customer_id, code, discount_paisa, user_id, created_at) VALUES (?,?,?,?,?,?,?)',
-  ).run(args.couponId, args.saleId, args.customerId, args.code, args.discountPaisa, args.userId, nowLocal());
+  ).run(args.couponId, args.saleId, args.customerId, args.code, args.discountPaisa, args.userId, at);
 }
 
 /**
@@ -571,16 +617,22 @@ export function refundToGiftCard(
   if (!card) throw new Error('কার্ড পাওয়া যায়নি।');
   const amount = Math.max(0, Math.round(args.amountPaisa));
   if (amount <= 0) throw new Error('ফেরতের পরিমাণ শূন্যের বেশি হতে হবে।');
-  db.prepare(
-    `UPDATE gift_cards SET balance_paisa = balance_paisa + ?, status = CASE WHEN status = 'used' THEN 'active' ELSE status END,
-            updated_at = ? WHERE id = ?`,
-  ).run(amount, nowLocal(), card.id);
-  const after = getGiftCard(db, card.id)!;
-  db.prepare(
-    `INSERT INTO gift_card_transactions (gift_card_id, sale_id, type, amount_paisa, balance_after_paisa, note, user_id, created_at)
-     VALUES (?,?,'refund',?,?,?,?,?)`,
-  ).run(after.id, args.saleId ?? null, amount, after.balance_paisa, args.note ?? null, args.userId, nowLocal());
-  return after;
+  // Balance and history are one fact: a card whose statement does not add up to its balance is
+  // a stored-value dispute nobody can settle. Nested as a savepoint when a void/return already
+  // holds a transaction.
+  const run = db.transaction((): GiftCard => {
+    db.prepare(
+      `UPDATE gift_cards SET balance_paisa = balance_paisa + ?, status = CASE WHEN status = 'used' THEN 'active' ELSE status END,
+              updated_at = ? WHERE id = ?`,
+    ).run(amount, nowLocal(), card.id);
+    const after = getGiftCard(db, card.id)!;
+    db.prepare(
+      `INSERT INTO gift_card_transactions (gift_card_id, sale_id, type, amount_paisa, balance_after_paisa, note, user_id, created_at)
+       VALUES (?,?,'refund',?,?,?,?,?)`,
+    ).run(after.id, args.saleId ?? null, amount, after.balance_paisa, args.note ?? null, args.userId, nowLocal());
+    return after;
+  });
+  return run();
 }
 
 export function adjustGiftCard(
@@ -593,26 +645,31 @@ export function adjustGiftCard(
   if (!Number.isFinite(delta) || delta === 0) throw new Error('সমন্বয়ের পরিমাণ শূন্য হতে পারবে না।');
   if (card.balance_paisa + delta < 0) throw new Error('সমন্বয়ের পরে ব্যালেন্স ঋণাত্মক হয়ে যাবে।');
   if (!args.reason?.trim()) throw new Error('সমন্বয়ের কারণ লিখুন।');
-  db.prepare(
-    `UPDATE gift_cards SET balance_paisa = balance_paisa + ?, status = CASE
-        WHEN balance_paisa + ? <= 0 THEN 'used'
-        WHEN status = 'used' AND balance_paisa + ? > 0 THEN 'active'
-        ELSE status END, updated_at = ? WHERE id = ?`,
-  ).run(delta, delta, delta, nowLocal(), card.id);
-  const after = getGiftCard(db, card.id)!;
-  db.prepare(
-    `INSERT INTO gift_card_transactions (gift_card_id, sale_id, type, amount_paisa, balance_after_paisa, note, user_id, created_at)
-     VALUES (?,NULL,'adjust',?,?,?,?,?)`,
-  ).run(after.id, delta, after.balance_paisa, args.reason, args.userId, nowLocal());
-  audit(db, {
-    userId: args.userId,
-    username: null,
-    action: 'giftcard.adjust',
-    entity: 'gift_card',
-    entityId: card.id,
-    details: { delta, reason: args.reason },
+  // A manual adjustment is a money movement: the new balance, the line that explains it and the
+  // audit row that says who did it are written together or not at all.
+  const run = db.transaction((): GiftCard => {
+    db.prepare(
+      `UPDATE gift_cards SET balance_paisa = balance_paisa + ?, status = CASE
+          WHEN balance_paisa + ? <= 0 THEN 'used'
+          WHEN status = 'used' AND balance_paisa + ? > 0 THEN 'active'
+          ELSE status END, updated_at = ? WHERE id = ?`,
+    ).run(delta, delta, delta, nowLocal(), card.id);
+    const after = getGiftCard(db, card.id)!;
+    db.prepare(
+      `INSERT INTO gift_card_transactions (gift_card_id, sale_id, type, amount_paisa, balance_after_paisa, note, user_id, created_at)
+       VALUES (?,NULL,'adjust',?,?,?,?,?)`,
+    ).run(after.id, delta, after.balance_paisa, args.reason, args.userId, nowLocal());
+    audit(db, {
+      userId: args.userId,
+      username: null,
+      action: 'giftcard.adjust',
+      entity: 'gift_card',
+      entityId: card.id,
+      details: { delta, reason: args.reason },
+    });
+    return after;
   });
-  return after;
+  return run();
 }
 
 export function voidGiftCard(db: Db, args: { cardId: number; reason: string; actor: Actor }): GiftCard {

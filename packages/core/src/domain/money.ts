@@ -50,12 +50,19 @@ export function assertSafeInt(value: number, label = 'value'): number {
   return Math.trunc(value);
 }
 
-/** Convert a "rate per unit" price into the internal integer representation. */
+/**
+ * Convert a "rate per unit" price into the internal integer representation.
+ *
+ * Accepts Bangla numerals and the currency symbol, like every other input helper: a cashier typing
+ * `১২৫০` got "সংখ্যাটি সঠিক নয়" before, which reads as a broken field rather than a rejected value.
+ */
 export function toInt(value: number | string | null | undefined, label = 'value'): number {
   if (value === null || value === undefined || value === '') return 0;
-  const n = typeof value === 'number' ? value : Number(String(value).replace(/[,\s৳]/g, ''));
-  if (!Number.isFinite(n)) throw new Error(`${label} সংখ্যাটি সঠিক নয়`);
-  return Math.round(n);
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) throw new Error(`${label} সংখ্যাটি সঠিক নয়`);
+    return Math.round(value);
+  }
+  return Math.round(parseNumber(value, label));
 }
 
 /** Taka (decimal, e.g. 12.50) → poisa (1250). */
@@ -180,11 +187,15 @@ export function formatPaisa(paisa: number, opts: { negativeParen?: boolean } = {
   return opts.negativeParen ? `(${body})` : `-${body}`;
 }
 
-/** Full currency text with the configured symbol, e.g. "৳ 1,250.00". */
+/**
+ * Full currency text with the configured symbol, e.g. "৳ 1,250.00" or "৳ ১,২৫০.০০".
+ *
+ * `bengaliDigits` used to be accepted and ignored, so a caller that asked for Bangla numerals got
+ * Latin ones and no error. It is honoured now.
+ */
 export function formatMoney(paisa: number, symbol = '৳', bengaliDigits = false): string {
-  const txt = formatPaisa(paisa);
-  const final = `${symbol} ${txt}`;
-  return final;
+  const txt = bengaliDigits ? toBengaliDigits(formatPaisa(paisa)) : formatPaisa(paisa);
+  return `${symbol} ${txt}`;
 }
 
 export function formatQty(qtyMilli: number, shortUnit?: string | null): string {

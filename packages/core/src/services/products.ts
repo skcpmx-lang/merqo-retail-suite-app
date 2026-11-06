@@ -458,14 +458,18 @@ export function updateProduct(db: Db, id: number, input: ProductInput, actor?: A
 }
 
 export function setProductActive(db: Db, id: number, active: boolean, actor?: Actor): void {
-  db.prepare('UPDATE products SET is_active = ?, updated_at = ? WHERE id = ?').run(active ? 1 : 0, nowLocal(), id);
-  audit(db, {
-    userId: actor?.id ?? null,
-    username: actor?.username,
-    action: active ? 'product.archive' : 'product.restore',
-    entity: 'product',
-    entityId: id,
-  });
+  // The change and the audit line that records it are one step (v1.1.5, sweep finding A-26).
+  // Nested in a caller's transaction this is a savepoint, so a batch still rolls back as a whole.
+  return db.transaction(() => {
+    db.prepare('UPDATE products SET is_active = ?, updated_at = ? WHERE id = ?').run(active ? 1 : 0, nowLocal(), id);
+    audit(db, {
+      userId: actor?.id ?? null,
+      username: actor?.username,
+      action: active ? 'product.archive' : 'product.restore',
+      entity: 'product',
+      entityId: id,
+    });
+  })();
 }
 
 /** Hard delete is only allowed for products that never touched a document. */

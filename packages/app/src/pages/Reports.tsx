@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { call } from '../api.js';
 import { useShopRefresh } from '../lib/use-shop-refresh.js';
 import { CHART_COLORS, LineChart } from '../charts.js';
@@ -88,8 +88,7 @@ export function ReportsPage({ can }: { can: (perm?: string) => boolean }) {
         ui.error('রিপোর্ট তালিকা লোড ব্যর্থ', (err as Error).message);
       }
     })();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [ui]);
 
   const meta = catalog.find((c) => c.id === active);
 
@@ -108,7 +107,7 @@ export function ReportsPage({ can }: { can: (perm?: string) => boolean }) {
   // A new sale/payment/stock change makes the open report stale; re-run it.
   useShopRefresh('reports', () => void run());
 
-  const run = async () => {
+  const run = useCallback(async () => {
     if (!active) return;
     setRunning(true);
     try {
@@ -120,12 +119,11 @@ export function ReportsPage({ can }: { can: (perm?: string) => boolean }) {
     } finally {
       setRunning(false);
     }
-  };
+  }, [active, filter, ui]);
 
   useEffect(() => {
     void run();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [active, filter]);
+  }, [run]);
 
   const applyPreset = (id: string) => {
     setPreset(id);

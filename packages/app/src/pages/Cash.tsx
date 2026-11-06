@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { call } from '../api.js';
 import { useShopRefresh } from '../lib/use-shop-refresh.js';
 import { money, dateTime, dateShort } from '../format.js';
@@ -44,7 +44,7 @@ export function CashPage({ can }: { can: (perm?: string) => boolean }) {
   // Shop events from the Main PC invalidate this screen.
   useShopRefresh('cash', () => void load());
 
-  const load = async () => {
+  const load = useCallback(async () => {
     setLoading(true);
     try {
       const [current, list] = await Promise.all([
@@ -64,12 +64,11 @@ export function CashPage({ can }: { can: (perm?: string) => boolean }) {
     } finally {
       setLoading(false);
     }
-  };
+  }, [page, ui]);
 
   useEffect(() => {
     void load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [page]);
+  }, [load]);
 
   const submit = async () => {
     if (!openModal) return;

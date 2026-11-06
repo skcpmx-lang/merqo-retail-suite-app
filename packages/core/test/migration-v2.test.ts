@@ -119,7 +119,9 @@ describe('v1.0.0 → v2.0.0 migration', () => {
 
     const db: Db = openDatabase({ file: dbPath, appVersion: '1.0.1' });
     expect(currentSchemaVersion(db)).toBe(SCHEMA_VERSION);
-    expect(SCHEMA_VERSION).toBe(6);
+    // Bumped to 7 by v1.1.5: migration 7 adds expression indexes for the date filters and touches
+    // no table, column or row (see migration-v7.test.ts).
+    expect(SCHEMA_VERSION).toBe(7);
     // v1.1.4 adds the multi-PC tables additively, so a v1 trading database gains
     // device identity without a single row moving.
     for (const table of [

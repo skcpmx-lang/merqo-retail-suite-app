@@ -6,9 +6,11 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { checkReleaseNotes } from '../lib/release-notes.mjs';
+import { artifactNames, releaseNotesPath, releaseVersion } from '../lib/release-version.mjs';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
-const notesPath = path.join(repoRoot, 'docs', 'V1.1.4_RELEASE_NOTES.md');
+// Derived, not hard-coded: the gate must always read the current version's notes (R-01).
+const notesPath = path.join(repoRoot, releaseNotesPath());
 const currentNotes = fs.readFileSync(notesPath, 'utf8');
 
 /** The pre-build shape of the same document: the two measured values are still placeholders. */
@@ -49,23 +51,36 @@ describe('reviewed release notes', () => {
     expect(issues).toEqual([]);
   });
 
-  // The notes were finalised with the measured build output before v1.1.4 was published, so the
-  // committed file must now pass the same strict gate the release workflow uses.
-  it('is finalised: no placeholders survive and the strict gate passes', () => {
-    const { placeholders, issues } = checkReleaseNotes(currentNotes, { requireFilled: true });
-    expect(placeholders).toEqual([]);
-    expect(issues).toEqual([]);
-    // Every installer line carries a real byte size and a 64-character SHA-256.
-    for (const name of [
-      'Sauda-Retail-Suite-Setup-1.1.4.exe',
-      'Sauda-License-Generator-1.1.4.exe',
-    ]) {
+  // The committed notes are either finalised with the measured build output, or waiting on exactly
+  // the two values only the build can produce. Anything else — a leftover <hash>, <subject>, or a
+  // line that was never rewritten — fails here, so the drafting state can never hide a placeholder
+  // that the strict release gate would refuse.
+  it('is either finalised, or waiting on exactly the two build-measured values', () => {
+    const names = Object.values(artifactNames());
+    const measured = /— \d{4,} B — SHA-256 `[0-9a-f]{64}`/;
+    const lines = names.map((name) => {
       const line = currentNotes
         .split('\n')
         .find((text) => text.includes(name) && text.includes('SHA-256'));
       expect(line, `missing measured line for ${name}`).toBeTruthy();
-      expect(line).toMatch(/— \d{4,} B — SHA-256 `[0-9a-f]{64}`/);
+      return line;
+    });
+    const finalised = lines.every((line) => measured.test(line));
+
+    const { placeholders, issues } = checkReleaseNotes(currentNotes, { requireFilled: true });
+    // The only tolerated issue while drafting is the unfilled build values themselves.
+    expect(issues.filter((issue) => !/unfilled placeholders/.test(issue))).toEqual([]);
+    if (finalised) {
+      expect(placeholders).toEqual([]);
+    } else {
+      expect([...placeholders].sort()).toEqual(['<bytes>', '<sha256>']);
+      expect(issues.join(' ')).toMatch(/unfilled placeholders/);
     }
+  });
+
+  it('names the version it documents', () => {
+    expect(currentNotes).toContain(`# Sauda Retail Suite v${releaseVersion()}`);
+    for (const name of Object.values(artifactNames())) expect(currentNotes).toContain(name);
   });
 
   it('still fails closed on a template that was never filled in', () => {

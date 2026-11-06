@@ -1,0 +1,249 @@
+/* ==========================================================================
+   Sauda Retail Suite — v1.1.5 design pass
+   --------------------------------------------------------------------------
+   Layers on top of theme.css (baseline) and design-v110.css (tokens), the same
+   way design-v110.css layers on theme.css. Nothing here changes a component's
+   markup contract: every rule either adds a state the markup already produces
+   (focus, hover, sticky header, a keyboard hint) or refines a token.
+
+   Rules of this file:
+     • accessibility states are never optional — focus is always visible;
+     • motion is decoration, so `prefers-reduced-motion` removes all of it;
+     • no new colour: every value comes from an existing token.
+   ========================================================================== */
+
+:root {
+  /* A slightly stronger focus ring than v1.1.0: the old one was 2px at 20% opacity, which is hard
+     to find on the light grey table background a cashier actually works on. */
+  --focus: 2px solid var(--brand-600);
+  --focus-ring: 0 0 0 4px rgba(18, 144, 126, 0.18);
+
+  /* Row rhythm: one place to change how dense the data screens are. */
+  --row-py: 9px;
+  --row-px: 12px;
+
+  --transition-fast: 120ms var(--ease);
+  --transition: 180ms var(--ease);
+}
+
+/* ------------------------------------------------------------------ */
+/* 1. Focus visibility                                                 */
+/* ------------------------------------------------------------------ */
+
+/* One ring, everywhere, including the elements the ARIA pass just made focusable. */
+:where(
+    button,
+    a,
+    input,
+    select,
+    textarea,
+    summary,
+    [tabindex]:not([tabindex='-1']),
+    tr[role='button']
+  ):focus-visible {
+  outline: var(--focus);
+  outline-offset: 2px;
+}
+
+/* Inside a table the ring would be clipped by the scroll container, so it is drawn inwards. */
+table.data tbody tr.clickable:focus-visible {
+  outline: var(--focus);
+  outline-offset: -2px;
+}
+
+table.data tbody tr.clickable:focus-visible td {
+  background: var(--brand-50);
+}
+
+/* The kit's own focus ring for buttons wins over the generic one, to keep the shape of the button. */
+.btn:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring), 0 0 0 1px var(--brand-600) inset;
+}
+
+/* ------------------------------------------------------------------ */
+/* 2. Data density and readable money                                  */
+/* ------------------------------------------------------------------ */
+
+table.data tbody td {
+  padding: var(--row-py) var(--row-px);
+}
+
+table.data tbody tr {
+  transition: background var(--transition-fast);
+}
+
+/* Numbers line up in a column even when the font changes: the POS total, the report column and the
+   invoice amount must all read at the same width. */
+table.data td.num,
+table.data th.num,
+.num {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum' 1;
+}
+
+/* A sticky header inside a scrolling table (`.table-wrap` with maxHeight). Without it a long stock
+   or sales list scrolls its column titles out of view. */
+.table-wrap {
+  scrollbar-gutter: stable;
+}
+
+.table-wrap table.data thead th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--surface-2);
+  box-shadow: inset 0 -1px 0 var(--line-strong);
+}
+
+/* ------------------------------------------------------------------ */
+/* 3. Keyboard hints                                                   */
+/* ------------------------------------------------------------------ */
+
+.kbd {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: 5px;
+  border: 1px solid var(--line-strong);
+  border-bottom-width: 2px;
+  background: var(--surface);
+  color: var(--ink-2);
+  font-family: var(--font-num);
+  font-size: 10.5px;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  vertical-align: middle;
+}
+
+/* On the dark sidebar the same hint needs the inverse treatment. */
+.sidebar .kbd {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(255, 255, 255, 0.22);
+  color: #e6f2ee;
+}
+
+.kbd-hint {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--muted);
+  font-size: 11.5px;
+}
+
+/* ------------------------------------------------------------------ */
+/* 4. Surfaces and depth                                               */
+/* ------------------------------------------------------------------ */
+
+/* Cards get one consistent edge instead of a shadow-only separation: on a projector or a cheap
+   monitor the shadows in the baseline sheet disappear and the layout reads as one grey block. */
+.card {
+  border: 1px solid var(--line);
+  box-shadow: var(--shadow-xs);
+  transition: box-shadow var(--transition), border-color var(--transition);
+}
+
+.card:has(.table-wrap) {
+  overflow: hidden;
+}
+
+/* Modal: an explicit entrance so a dialog does not appear to pop out of nowhere, and it is short
+   enough to never feel like waiting. */
+.overlay {
+  backdrop-filter: saturate(120%) blur(1px);
+}
+
+.modal {
+  animation: v115-dialog-in var(--transition) var(--ease);
+}
+
+@keyframes v115-dialog-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.99);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* Toast stack: newest on top, never jumping under the pointer. */
+.toast {
+  animation: v115-toast-in 160ms var(--ease);
+}
+
+@keyframes v115-toast-in {
+  from {
+    opacity: 0;
+    transform: translateX(8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* 5. Empty and loading states                                         */
+/* ------------------------------------------------------------------ */
+
+/* Skeletons must keep the shape of the table they replace, so the page does not reflow when the
+   data arrives. */
+.skeleton {
+  border-radius: var(--radius-sm);
+}
+
+/* ------------------------------------------------------------------ */
+/* 6. Print — a page from the app, not a screenshot of it              */
+/* ------------------------------------------------------------------ */
+
+@media print {
+  .sidebar,
+  .topbar,
+  .toast-stack,
+  .pagination {
+    display: none !important;
+  }
+
+  .shell {
+    display: block;
+    height: auto;
+  }
+
+  body {
+    background: #fff;
+    overflow: visible;
+  }
+
+  .card {
+    border: 1px solid #d0d5dd;
+    box-shadow: none;
+    break-inside: avoid;
+  }
+
+  table.data thead th {
+    position: static;
+    box-shadow: none;
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* 7. Motion is optional                                               */
+/* ------------------------------------------------------------------ */
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}

@@ -2,7 +2,7 @@
  * Renders the *publishable* release notes.
  *
  *   node scripts/render-release-notes.mjs \
- *     --notes docs/V1.1.4_RELEASE_NOTES.md \
+ *     --notes docs/V<version>_RELEASE_NOTES.md \
  *     --sums artifacts/SHA256SUMS.txt \
  *     --dir artifacts \
  *     --out release-notes.md
@@ -20,6 +20,7 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
+import { artifactNames, releaseNotesPath, releaseVersion } from './lib/release-version.mjs';
 
 const argv = process.argv.slice(2);
 const arg = (name, fallback) => {
@@ -27,13 +28,15 @@ const arg = (name, fallback) => {
   return i >= 0 && argv[i + 1] ? argv[i + 1] : fallback;
 };
 
-const notesPath = arg('--notes', 'docs/V1.1.4_RELEASE_NOTES.md');
+const version = arg('--version', releaseVersion());
+const names = artifactNames(version);
+const notesPath = arg('--notes', releaseNotesPath(version));
 const sumsPath = arg('--sums', 'artifacts/SHA256SUMS.txt');
 const dir = arg('--dir', 'artifacts');
 const outPath = arg('--out', 'release-notes.md');
 
-const APP = 'Sauda-Retail-Suite-Setup-1.1.4.exe';
-const GENERATOR = 'Sauda-License-Generator-1.1.4.exe';
+const APP = names.app;
+const GENERATOR = names.generator;
 
 const fail = (message) => {
   console.error(`[render-release-notes] ${message}`);

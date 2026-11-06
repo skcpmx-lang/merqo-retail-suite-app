@@ -42,22 +42,26 @@ export function createLocation(
   input: { name: string; kind?: 'shop' | 'godown' | 'warehouse'; address?: string | null },
   actor?: Actor,
 ): LocationRow {
-  const name = (input.name ?? '').trim();
-  if (!name) throw new Error('লোকেশনের নাম দিতে হবে।');
-  const dup = db.prepare('SELECT id FROM locations WHERE name = ?').get(name);
-  if (dup) throw new Error('এই নামে আরেকটি লোকেশন আছে।');
-  const info = db
-    .prepare('INSERT INTO locations (name, kind, address, is_default, is_active, created_at) VALUES (?,?,?,0,1,?)')
-    .run(name, input.kind ?? 'godown', input.address ?? null, nowLocal());
-  audit(db, {
-    userId: actor?.id ?? null,
-    username: actor?.username,
-    action: 'location.create',
-    entity: 'location',
-    entityId: Number(info.lastInsertRowid),
-    details: { name, kind: input.kind ?? 'godown' },
-  });
-  return listLocations(db).find((l) => l.id === Number(info.lastInsertRowid))!;
+  // The change and the audit line that records it are one step (v1.1.5, sweep finding A-26).
+  // Nested in a caller's transaction this is a savepoint, so a batch still rolls back as a whole.
+  return db.transaction(() => {
+    const name = (input.name ?? '').trim();
+    if (!name) throw new Error('লোকেশনের নাম দিতে হবে।');
+    const dup = db.prepare('SELECT id FROM locations WHERE name = ?').get(name);
+    if (dup) throw new Error('এই নামে আরেকটি লোকেশন আছে।');
+    const info = db
+      .prepare('INSERT INTO locations (name, kind, address, is_default, is_active, created_at) VALUES (?,?,?,0,1,?)')
+      .run(name, input.kind ?? 'godown', input.address ?? null, nowLocal());
+    audit(db, {
+      userId: actor?.id ?? null,
+      username: actor?.username,
+      action: 'location.create',
+      entity: 'location',
+      entityId: Number(info.lastInsertRowid),
+      details: { name, kind: input.kind ?? 'godown' },
+    });
+    return listLocations(db).find((l) => l.id === Number(info.lastInsertRowid))!;
+  })();
 }
 
 export function updateLocation(
@@ -66,30 +70,34 @@ export function updateLocation(
   input: { name?: string; kind?: 'shop' | 'godown' | 'warehouse'; address?: string | null; isActive?: boolean },
   actor?: Actor,
 ): LocationRow {
-  const row = db.prepare('SELECT * FROM locations WHERE id = ?').get(id) as LocationRow | undefined;
-  if (!row) throw new Error('লোকেশন পাওয়া যায়নি।');
-  if (row.is_default && input.isActive === false) throw new Error('প্রধান লোকেশন নিষ্ক্রিয় করা যাবে না।');
-  const name = input.name?.trim() || row.name;
-  if (name !== row.name) {
-    const dup = db.prepare('SELECT id FROM locations WHERE name = ? AND id <> ?').get(name, id);
-    if (dup) throw new Error('এই নামে আরেকটি লোকেশন আছে।');
-  }
-  db.prepare('UPDATE locations SET name = ?, kind = ?, address = ?, is_active = ? WHERE id = ?').run(
-    name,
-    input.kind ?? row.kind,
-    input.address === undefined ? row.address : input.address,
-    input.isActive === false ? 0 : 1,
-    id,
-  );
-  audit(db, {
-    userId: actor?.id ?? null,
-    username: actor?.username,
-    action: 'location.update',
-    entity: 'location',
-    entityId: id,
-    details: { name, isActive: input.isActive !== false },
-  });
-  return listLocations(db).find((l) => l.id === id)!;
+  // The change and the audit line that records it are one step (v1.1.5, sweep finding A-26).
+  // Nested in a caller's transaction this is a savepoint, so a batch still rolls back as a whole.
+  return db.transaction(() => {
+    const row = db.prepare('SELECT * FROM locations WHERE id = ?').get(id) as LocationRow | undefined;
+    if (!row) throw new Error('লোকেশন পাওয়া যায়নি।');
+    if (row.is_default && input.isActive === false) throw new Error('প্রধান লোকেশন নিষ্ক্রিয় করা যাবে না।');
+    const name = input.name?.trim() || row.name;
+    if (name !== row.name) {
+      const dup = db.prepare('SELECT id FROM locations WHERE name = ? AND id <> ?').get(name, id);
+      if (dup) throw new Error('এই নামে আরেকটি লোকেশন আছে।');
+    }
+    db.prepare('UPDATE locations SET name = ?, kind = ?, address = ?, is_active = ? WHERE id = ?').run(
+      name,
+      input.kind ?? row.kind,
+      input.address === undefined ? row.address : input.address,
+      input.isActive === false ? 0 : 1,
+      id,
+    );
+    audit(db, {
+      userId: actor?.id ?? null,
+      username: actor?.username,
+      action: 'location.update',
+      entity: 'location',
+      entityId: id,
+      details: { name, isActive: input.isActive !== false },
+    });
+    return listLocations(db).find((l) => l.id === id)!;
+  })();
 }
 
 /** Per-location stock for one product (falls back to the total for the default shop). */
@@ -473,17 +481,21 @@ export function postStockCount(db: Db, countId: number, actor?: Actor): { adjust
 }
 
 export function voidStockCount(db: Db, countId: number, actor?: Actor): void {
-  const count = db.prepare('SELECT status FROM stock_counts WHERE id = ?').get(countId) as { status: string } | undefined;
-  if (!count) throw new Error('গণনা পাওয়া যায়নি।');
-  if (count.status === 'posted') throw new Error('পোস্ট হওয়া গণনা বাতিল করা যাবে না — সমন্বয় এন্ট্রি ব্যবহার করুন।');
-  db.prepare("UPDATE stock_counts SET status = 'cancelled' WHERE id = ?").run(countId);
-  audit(db, {
-    userId: actor?.id ?? null,
-    username: actor?.username,
-    action: 'stock.count.cancel',
-    entity: 'stock_count',
-    entityId: countId,
-  });
+  // The change and the audit line that records it are one step (v1.1.5, sweep finding A-26).
+  // Nested in a caller's transaction this is a savepoint, so a batch still rolls back as a whole.
+  return db.transaction(() => {
+    const count = db.prepare('SELECT status FROM stock_counts WHERE id = ?').get(countId) as { status: string } | undefined;
+    if (!count) throw new Error('গণনা পাওয়া যায়নি।');
+    if (count.status === 'posted') throw new Error('পোস্ট হওয়া গণনা বাতিল করা যাবে না — সমন্বয় এন্ট্রি ব্যবহার করুন।');
+    db.prepare("UPDATE stock_counts SET status = 'cancelled' WHERE id = ?").run(countId);
+    audit(db, {
+      userId: actor?.id ?? null,
+      username: actor?.username,
+      action: 'stock.count.cancel',
+      entity: 'stock_count',
+      entityId: countId,
+    });
+  })();
 }
 
 /* ------------------------------------------------------------------ *
@@ -617,37 +629,41 @@ export function registerSerials(
   db: Db,
   input: { productId: number; serials: string[]; locationId?: number | null; purchaseId?: number | null; note?: string | null; actor?: Actor },
 ): { added: number; skipped: string[] } {
-  const product = db.prepare('SELECT id, name FROM products WHERE id = ?').get(input.productId) as
-    | { id: number; name: string }
-    | undefined;
-  if (!product) throw new Error('প্রোডাক্ট পাওয়া যায়নি।');
-  const list = (input.serials ?? []).map((s) => String(s).trim()).filter(Boolean);
-  if (list.length === 0) throw new Error('অন্তত একটি সিরিয়াল নম্বর দিন।');
-  const locationId = input.locationId ?? defaultLocationId(db);
-  const ins = db.prepare(
-    `INSERT INTO serial_numbers (product_id, serial, status, location_id, purchase_id, note, created_at, updated_at)
-     VALUES (?,?, 'in_stock', ?, ?, ?, ?, ?)`,
-  );
-  const skipped: string[] = [];
-  let added = 0;
-  const now = nowLocal();
-  for (const serial of list) {
-    try {
-      ins.run(input.productId, serial, locationId, input.purchaseId ?? null, input.note ?? null, now, now);
-      added++;
-    } catch {
-      skipped.push(serial);
+  // The change and the audit line that records it are one step (v1.1.5, sweep finding A-26).
+  // Nested in a caller's transaction this is a savepoint, so a batch still rolls back as a whole.
+  return db.transaction(() => {
+    const product = db.prepare('SELECT id, name FROM products WHERE id = ?').get(input.productId) as
+      | { id: number; name: string }
+      | undefined;
+    if (!product) throw new Error('প্রোডাক্ট পাওয়া যায়নি।');
+    const list = (input.serials ?? []).map((s) => String(s).trim()).filter(Boolean);
+    if (list.length === 0) throw new Error('অন্তত একটি সিরিয়াল নম্বর দিন।');
+    const locationId = input.locationId ?? defaultLocationId(db);
+    const ins = db.prepare(
+      `INSERT INTO serial_numbers (product_id, serial, status, location_id, purchase_id, note, created_at, updated_at)
+       VALUES (?,?, 'in_stock', ?, ?, ?, ?, ?)`,
+    );
+    const skipped: string[] = [];
+    let added = 0;
+    const now = nowLocal();
+    for (const serial of list) {
+      try {
+        ins.run(input.productId, serial, locationId, input.purchaseId ?? null, input.note ?? null, now, now);
+        added++;
+      } catch {
+        skipped.push(serial);
+      }
     }
-  }
-  audit(db, {
-    userId: input.actor?.id ?? null,
-    username: input.actor?.username,
-    action: 'serial.register',
-    entity: 'product',
-    entityId: input.productId,
-    details: { product: product.name, added, skipped: skipped.length },
-  });
-  return { added, skipped };
+    audit(db, {
+      userId: input.actor?.id ?? null,
+      username: input.actor?.username,
+      action: 'serial.register',
+      entity: 'product',
+      entityId: input.productId,
+      details: { product: product.name, added, skipped: skipped.length },
+    });
+    return { added, skipped };
+  })();
 }
 
 export function listSerials(
@@ -689,16 +705,47 @@ export function listSerials(
 }
 
 /** Sell serials; throws when a requested serial is not available. */
-export function markSerialsSold(db: Db, serials: string[], saleId: number, actor?: Actor): number {
+export function markSerialsSold(
+  db: Db,
+  serials: string[],
+  saleId: number,
+  actor?: Actor,
+  options: { productId?: number | null } = {},
+): number {
   if (!serials?.length) return 0;
   const now = nowLocal();
+  // `serial_numbers` is UNIQUE(product_id, serial), so the same IMEI-style string can exist for two
+  // products. Without the product in the WHERE clause, selling one marked *every* product's row with
+  // that serial as sold — and a serial belonging to another product was accepted on any line (A-13).
+  const scoped = options.productId != null;
   const upd = db.prepare(
-    "UPDATE serial_numbers SET status = 'sold', sale_id = ?, updated_at = ? WHERE serial = ? AND status = 'in_stock'",
+    scoped
+      ? "UPDATE serial_numbers SET status = 'sold', sale_id = ?, updated_at = ? WHERE serial = ? AND product_id = ? AND status = 'in_stock'"
+      : "UPDATE serial_numbers SET status = 'sold', sale_id = ?, updated_at = ? WHERE serial = ? AND status = 'in_stock'",
   );
+  const productName = scoped
+    ? (
+        db.prepare('SELECT name FROM products WHERE id = ?').get(Number(options.productId)) as
+          | { name: string }
+          | undefined
+      )?.name
+    : undefined;
   let n = 0;
   for (const s of serials) {
-    const info = upd.run(saleId, now, String(s).trim());
-    if (info.changes === 0) throw new Error(`সিরিয়াল "${s}" বিক্রয়ের জন্য পাওয়া যায়নি (আগেই বিক্রি হয়েছে?)।`);
+    const serial = String(s).trim();
+    const info = scoped
+      ? upd.run(saleId, now, serial, Number(options.productId))
+      : upd.run(saleId, now, serial);
+    if (info.changes === 0) {
+      throw new Error(
+        productName
+          ? `সিরিয়াল "${serial}" "${productName}" এর জন্য পাওয়া যায়নি (আগেই বিক্রি হয়েছে বা অন্য প্রোডাক্টের সিরিয়াল?)।`
+          : `সিরিয়াল "${serial}" বিক্রয়ের জন্য পাওয়া যায়নি (আগেই বিক্রি হয়েছে?)।`,
+      );
+    }
+    if (info.changes > 1) {
+      throw new Error(`সিরিয়াল "${serial}" একাধিক প্রোডাক্টে নিবন্ধিত — ডেটা ঠিক করুন, তারপর বিক্রয় করুন।`);
+    }
     n++;
   }
   audit(db, {
@@ -756,29 +803,33 @@ export function releaseSerialsForSale(
   saleId: number,
   opts: { actor?: Actor; note?: string | null } = {},
 ): number {
-  const rows = db
-    .prepare("SELECT id, serial FROM serial_numbers WHERE sale_id = ? AND status = 'sold'")
-    .all(saleId) as { id: number; serial: string }[];
-  if (!rows.length) return 0;
-  const now = nowLocal();
-  const upd = db.prepare(
-    "UPDATE serial_numbers SET status = 'in_stock', updated_at = ?, note = COALESCE(?, note) WHERE id = ? AND status = 'sold'",
-  );
-  let n = 0;
-  for (const row of rows) {
-    if (upd.run(now, opts.note ?? null, row.id).changes === 1) n += 1;
-  }
-  if (n > 0) {
-    audit(db, {
-      userId: opts.actor?.id ?? null,
-      username: opts.actor?.username,
-      action: 'serial.sale_reversed',
-      entity: 'sale',
-      entityId: saleId,
-      details: { serials: n, note: opts.note ?? null },
-    });
-  }
-  return n;
+  // The change and the audit line that records it are one step (v1.1.5, sweep finding A-26).
+  // Nested in a caller's transaction this is a savepoint, so a batch still rolls back as a whole.
+  return db.transaction(() => {
+    const rows = db
+      .prepare("SELECT id, serial FROM serial_numbers WHERE sale_id = ? AND status = 'sold'")
+      .all(saleId) as { id: number; serial: string }[];
+    if (!rows.length) return 0;
+    const now = nowLocal();
+    const upd = db.prepare(
+      "UPDATE serial_numbers SET status = 'in_stock', updated_at = ?, note = COALESCE(?, note) WHERE id = ? AND status = 'sold'",
+    );
+    let n = 0;
+    for (const row of rows) {
+      if (upd.run(now, opts.note ?? null, row.id).changes === 1) n += 1;
+    }
+    if (n > 0) {
+      audit(db, {
+        userId: opts.actor?.id ?? null,
+        username: opts.actor?.username,
+        action: 'serial.sale_reversed',
+        entity: 'sale',
+        entityId: saleId,
+        details: { serials: n, note: opts.note ?? null },
+      });
+    }
+    return n;
+  })();
 }
 
 /**
@@ -801,42 +852,46 @@ export function returnSerialsFromSale(
     note?: string | null;
   },
 ): { returned: number; status: 'in_stock' | 'damaged' | 'returned' } {
-  const list = (args.serials ?? []).map((s) => String(s).trim()).filter(Boolean);
-  const target: 'in_stock' | 'damaged' | 'returned' =
-    args.condition && args.condition !== 'good' ? 'damaged' : args.restock === false ? 'returned' : 'in_stock';
-  if (!list.length) return { returned: 0, status: target };
-  const now = nowLocal();
-  let returned = 0;
-  for (const serial of list) {
-    const row = db
-      .prepare('SELECT id, status, sale_id, product_id FROM serial_numbers WHERE serial = ?')
-      .get(serial) as
-      | { id: number; status: string; sale_id: number | null; product_id: number }
-      | undefined;
-    if (!row) throw new Error(`সিরিয়াল "${serial}" পাওয়া যায়নি।`);
-    if (row.product_id !== args.productId) {
-      throw new Error(`সিরিয়াল "${serial}" এই লাইনের পণ্য নয় — ভুল লাইনে ফেরত দেওয়া হচ্ছে।`);
+  // The change and the audit line that records it are one step (v1.1.5, sweep finding A-26).
+  // Nested in a caller's transaction this is a savepoint, so a batch still rolls back as a whole.
+  return db.transaction(() => {
+    const list = (args.serials ?? []).map((s) => String(s).trim()).filter(Boolean);
+    const target: 'in_stock' | 'damaged' | 'returned' =
+      args.condition && args.condition !== 'good' ? 'damaged' : args.restock === false ? 'returned' : 'in_stock';
+    if (!list.length) return { returned: 0, status: target };
+    const now = nowLocal();
+    let returned = 0;
+    for (const serial of list) {
+      const row = db
+        .prepare('SELECT id, status, sale_id, product_id FROM serial_numbers WHERE serial = ?')
+        .get(serial) as
+        | { id: number; status: string; sale_id: number | null; product_id: number }
+        | undefined;
+      if (!row) throw new Error(`সিরিয়াল "${serial}" পাওয়া যায়নি।`);
+      if (row.product_id !== args.productId) {
+        throw new Error(`সিরিয়াল "${serial}" এই লাইনের পণ্য নয় — ভুল লাইনে ফেরত দেওয়া হচ্ছে।`);
+      }
+      if (row.sale_id !== args.saleId || row.status !== 'sold') {
+        throw new Error(`সিরিয়াল "${serial}" এই ইনভয়েসের বিক্রীত তালিকায় নেই — ফেরত নেওয়া যাবে না।`);
+      }
+      db.prepare('UPDATE serial_numbers SET status = ?, updated_at = ?, note = COALESCE(?, note) WHERE id = ?').run(
+        target,
+        now,
+        args.note ?? null,
+        row.id,
+      );
+      returned += 1;
     }
-    if (row.sale_id !== args.saleId || row.status !== 'sold') {
-      throw new Error(`সিরিয়াল "${serial}" এই ইনভয়েসের বিক্রীত তালিকায় নেই — ফেরত নেওয়া যাবে না।`);
-    }
-    db.prepare('UPDATE serial_numbers SET status = ?, updated_at = ?, note = COALESCE(?, note) WHERE id = ?').run(
-      target,
-      now,
-      args.note ?? null,
-      row.id,
-    );
-    returned += 1;
-  }
-  audit(db, {
-    userId: args.actor?.id ?? null,
-    username: args.actor?.username,
-    action: 'serial.returned',
-    entity: 'sale',
-    entityId: args.saleId,
-    details: { serials: returned, status: target },
-  });
-  return { returned, status: target };
+    audit(db, {
+      userId: args.actor?.id ?? null,
+      username: args.actor?.username,
+      action: 'serial.returned',
+      entity: 'sale',
+      entityId: args.saleId,
+      details: { serials: returned, status: target },
+    });
+    return { returned, status: target };
+  })();
 }
 
 /* ------------------------------------------------------------------ *

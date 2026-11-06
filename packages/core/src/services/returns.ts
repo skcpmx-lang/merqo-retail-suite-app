@@ -1,5 +1,5 @@
 import type { Db } from '../db/connection.js';
-import { nowLocal } from '../domain/datetime.js';
+import { dayEnd, dayStart, nowLocal } from '../domain/datetime.js';
 import { lineValuePaisa, roundDiv } from '../domain/money.js';
 import type { ReturnDoc, ReturnItem } from '../domain/types.js';
 import { audit } from './audit.js';
@@ -451,12 +451,12 @@ export function listReturns(
     params.push(f.kind);
   }
   if (f.from) {
-    where.push('date(r.return_date) >= date(?)');
-    params.push(f.from);
+    where.push('r.return_date >= ?');
+    params.push(dayStart(f.from));
   }
   if (f.to) {
-    where.push('date(r.return_date) <= date(?)');
-    params.push(f.to);
+    where.push('r.return_date <= ?');
+    params.push(dayEnd(f.to));
   }
   if (f.search) {
     const like = `%${f.search}%`;

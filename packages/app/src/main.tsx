@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client';
 import App from './App.js';
 import './theme.css';
 import './design-v110.css';
+import './design-v115.css';
 
 // The renderer only ever talks to the main process through the preload bridge.
 // If the bridge is missing (e.g. opened in a plain browser) we show a friendly

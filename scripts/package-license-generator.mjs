@@ -7,6 +7,7 @@ import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { prebuildsDirFor, pruneForeignPrebuilds } from './lib/native-artifacts.mjs';
 import { describeSigning, signingConfig } from './lib/signing.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -16,6 +17,13 @@ if (!fs.existsSync(path.join(pkgDir, 'dist', 'main', 'main.js'))) {
   console.error('[package-license-generator] dist is missing — run `npm run build:license-generator` first.');
   process.exit(1);
 }
+
+// Only the Windows x64 prebuild can ever be loaded by this installer; the rest are 14 MiB of
+// binaries for platforms the product does not ship on (A-11). Refuses rather than shipping none.
+const prune = pruneForeignPrebuilds(prebuildsDirFor(root));
+console.log(
+  `[package-license-generator] native: keeping ${prune.kept}, removed ${prune.removed.length} foreign prebuild(s)`,
+);
 
 const builderBin = path.join(root, 'node_modules', 'electron-builder', 'cli.js');
 if (!fs.existsSync(builderBin)) {

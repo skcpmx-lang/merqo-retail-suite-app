@@ -3,7 +3,7 @@ name: Release (Windows installers)
 # Builds the two Windows x64 installers, verifies them, and — only for a `v*` tag — publishes the
 # GitHub release with exactly those files.
 #
-# v1.1.4 release policy: unsigned installers are accepted by the owner. Authenticode is optional
+# Release policy: unsigned installers are accepted by the owner. Authenticode is optional
 # and is never a dependency of this workflow — no certificate secret is required and being
 # unsigned is not a failure. The workflow therefore references no repository secret at all;
 # the release steps use only the built-in workflow token.
@@ -49,6 +49,28 @@ jobs:
         with:
           node-version: '22'
           cache: 'npm'
+
+      # Single source of truth for every version-dependent name (R-01). A tag that does not match
+      # packages/app/package.json fails here, before a single artefact is built (R-03), so a
+      # release can never carry the previous version's installers or its notes.
+      - name: Resolve release version and verify the tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Each key=value line becomes both a shell variable (for this step) and a job-level
+          # environment variable (for every later step). No `source`, so it behaves the same in
+          # Git Bash on Windows as on Linux.
+          while IFS='=' read -r key value; do
+            printf '%s=%s\n' "$key" "$value" >> "$GITHUB_ENV"
+            printf -v "$key" '%s' "$value"
+          done < <(node scripts/lib/release-version.mjs --env)
+          echo "release version: ${RELEASE_VERSION} (notes: ${RELEASE_NOTES})"
+          echo "installers: ${APP_EXE}, ${GENERATOR_EXE}"
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            node scripts/lib/release-version.mjs --assert-tag "${GITHUB_REF_NAME}"
+          else
+            echo "not a tag run — the publication steps will not run"
+          fi
 
       # Informational only: states whether this run can sign, or is unsigned (accepted).
       - name: Report signing status
@@ -114,7 +136,7 @@ jobs:
 
       - name: Require the reviewed release notes
         shell: bash
-        run: node scripts/check-release-notes.mjs --file docs/V1.1.4_RELEASE_NOTES.md
+        run: node scripts/check-release-notes.mjs --file "$RELEASE_NOTES"
 
       # Fills the two measured values (byte size, SHA-256 per installer) into the reviewed notes and
       # refuses to continue with any placeholder left in the publishable text.
@@ -122,7 +144,8 @@ jobs:
         shell: bash
         run: |
           node scripts/render-release-notes.mjs \
-            --notes docs/V1.1.4_RELEASE_NOTES.md \
+            --version "$RELEASE_VERSION" \
+            --notes "$RELEASE_NOTES" \
             --sums artifacts/SHA256SUMS.txt \
             --dir artifacts \
             --out release-notes.md
@@ -142,6 +165,17 @@ jobs:
       # Publication — tag pushes only. Manual runs stop above this line.
       # ------------------------------------------------------------------
 
+      # Requirement #20: never publish a tag that is not on `main`. v1.1.5 was published from a
+      # development branch and `main` still showed the previous release — this step makes that
+      # impossible to repeat. It runs before the draft exists, so a failure leaves nothing behind.
+      - name: Refuse a tag that is not on main
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main:refs/remotes/origin/main || true
+          node scripts/audit-release-branch.mjs --tag "${GITHUB_REF_NAME}" --main origin/main
+
       - name: Create DRAFT release with the verified assets
         if: startsWith(github.ref, 'refs/tags/v')
         shell: bash
@@ -160,10 +194,10 @@ jobs:
             gh release delete "$TAG" --yes
           fi
           gh release create "$TAG" \
-            artifacts/Sauda-Retail-Suite-Setup-1.1.4.exe \
-            artifacts/Sauda-License-Generator-1.1.4.exe \
+            "artifacts/${APP_EXE}" \
+            "artifacts/${GENERATOR_EXE}" \
             artifacts/SHA256SUMS.txt \
-            --title "Sauda Retail Suite v1.1.4" \
+            --title "Sauda Retail Suite v${RELEASE_VERSION}" \
             --notes-file release-notes.md \
             --draft \
             --verify-tag
@@ -181,8 +215,8 @@ jobs:
           gh release view "$TAG" --json assets -q '.assets | length' | grep -qx '3'
           gh release view "$TAG" --json assets -q '.assets[].name' | sort > expected-assets.txt
           printf '%s\n' \
-            'Sauda-License-Generator-1.1.4.exe' \
-            'Sauda-Retail-Suite-Setup-1.1.4.exe' \
+            "${GENERATOR_EXE}" \
+            "${APP_EXE}" \
             'SHA256SUMS.txt' | sort > verify-assets.txt
           diff verify-assets.txt expected-assets.txt
 

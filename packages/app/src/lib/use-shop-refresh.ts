@@ -11,15 +11,18 @@ import { shopQueries, type ShopQueryKey } from './shop-events.js';
 export function useShopRefresh(keys: ShopQueryKey | ShopQueryKey[], refresh: () => void | Promise<void>): void {
   const latest = useRef(refresh);
   latest.current = refresh;
-  const list = Array.isArray(keys) ? keys : [keys];
-  const key = list.join('|');
+  // The subscription set is described by `key`, which is a string, so the effect depends on the
+  // *contents* rather than on an array that is rebuilt (different identity) on every render. The
+  // list is therefore rebuilt inside the effect from that same key.
+  const key = (Array.isArray(keys) ? keys : [keys]).join('|');
   useEffect(() => {
+    // `key` is exactly these keys joined with '|', so splitting it back returns the same keys.
+    const list = (key ? key.split('|') : []) as ShopQueryKey[];
     const offs = list.map((k) =>
       shopQueries.register(k, () => {
         void latest.current();
       }),
     );
     return () => offs.forEach((off) => off());
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key]);
 }

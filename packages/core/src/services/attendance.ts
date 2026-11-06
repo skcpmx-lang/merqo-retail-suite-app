@@ -1,5 +1,5 @@
 import type { Db } from '../db/connection.js';
-import { nowLocal } from '../domain/datetime.js';
+import { dayEnd, dayStart, nowLocal } from '../domain/datetime.js';
 import { audit } from './audit.js';
 
 type Actor = { id: number; username: string };
@@ -33,12 +33,12 @@ export function listAttendance(
   const where: string[] = [];
   const params: unknown[] = [];
   if (filter.from) {
-    where.push('date(a.clock_in) >= date(?)');
-    params.push(filter.from);
+    where.push('a.clock_in >= ?');
+    params.push(dayStart(filter.from));
   }
   if (filter.to) {
-    where.push('date(a.clock_in) <= date(?)');
-    params.push(filter.to);
+    where.push('a.clock_in <= ?');
+    params.push(dayEnd(filter.to));
   }
   if (filter.userId) {
     where.push('a.user_id = ?');
@@ -60,40 +60,48 @@ export function listAttendance(
 
 /** Clock in. One open record per user is enforced here, not in the UI. */
 export function clockIn(db: Db, args: { userId?: number | null; note?: string | null; actor: Actor }): AttendanceRow {
-  const userId = args.userId ?? args.actor.id;
-  const open = db.prepare('SELECT id FROM attendance WHERE user_id = ? AND clock_out IS NULL').get(userId);
-  if (open) throw new Error('এই কর্মচারী আগেই ক্লক-ইন করেছেন — আগে ক্লক-আউট করুন।');
-  const now = nowLocal();
-  const res = db
-    .prepare('INSERT INTO attendance (user_id, clock_in, clock_out, note, created_at) VALUES (?,?,NULL,?,?)')
-    .run(userId, now, args.note ?? null, now);
-  audit(db, {
-    userId: args.actor.id,
-    username: args.actor.username,
-    action: 'attendance.clock_in',
-    entity: 'attendance',
-    entityId: Number(res.lastInsertRowid),
-    details: { userId, at: now },
-  });
-  return db.prepare('SELECT * FROM attendance WHERE id = ?').get(Number(res.lastInsertRowid)) as AttendanceRow;
+  // The change and the audit line that records it are one step (v1.1.5, sweep finding A-26).
+  // Nested in a caller's transaction this is a savepoint, so a batch still rolls back as a whole.
+  return db.transaction(() => {
+    const userId = args.userId ?? args.actor.id;
+    const open = db.prepare('SELECT id FROM attendance WHERE user_id = ? AND clock_out IS NULL').get(userId);
+    if (open) throw new Error('এই কর্মচারী আগেই ক্লক-ইন করেছেন — আগে ক্লক-আউট করুন।');
+    const now = nowLocal();
+    const res = db
+      .prepare('INSERT INTO attendance (user_id, clock_in, clock_out, note, created_at) VALUES (?,?,NULL,?,?)')
+      .run(userId, now, args.note ?? null, now);
+    audit(db, {
+      userId: args.actor.id,
+      username: args.actor.username,
+      action: 'attendance.clock_in',
+      entity: 'attendance',
+      entityId: Number(res.lastInsertRowid),
+      details: { userId, at: now },
+    });
+    return db.prepare('SELECT * FROM attendance WHERE id = ?').get(Number(res.lastInsertRowid)) as AttendanceRow;
+  })();
 }
 
 export function clockOut(db: Db, args: { userId?: number | null; note?: string | null; actor: Actor }): AttendanceRow {
-  const userId = args.userId ?? args.actor.id;
-  const open = db.prepare('SELECT * FROM attendance WHERE user_id = ? AND clock_out IS NULL ORDER BY id DESC LIMIT 1').get(
-    userId,
-  ) as AttendanceRow | undefined;
-  if (!open) throw new Error('ক্লক-ইন করা নেই — আগে ক্লক-ইন করুন।');
-  db.prepare('UPDATE attendance SET clock_out = ?, note = COALESCE(?, note) WHERE id = ?').run(nowLocal(), args.note ?? null, open.id);
-  audit(db, {
-    userId: args.actor.id,
-    username: args.actor.username,
-    action: 'attendance.clock_out',
-    entity: 'attendance',
-    entityId: open.id,
-    details: { userId, at: nowLocal() },
-  });
-  return db.prepare('SELECT * FROM attendance WHERE id = ?').get(open.id) as AttendanceRow;
+  // The change and the audit line that records it are one step (v1.1.5, sweep finding A-26).
+  // Nested in a caller's transaction this is a savepoint, so a batch still rolls back as a whole.
+  return db.transaction(() => {
+    const userId = args.userId ?? args.actor.id;
+    const open = db.prepare('SELECT * FROM attendance WHERE user_id = ? AND clock_out IS NULL ORDER BY id DESC LIMIT 1').get(
+      userId,
+    ) as AttendanceRow | undefined;
+    if (!open) throw new Error('ক্লক-ইন করা নেই — আগে ক্লক-ইন করুন।');
+    db.prepare('UPDATE attendance SET clock_out = ?, note = COALESCE(?, note) WHERE id = ?').run(nowLocal(), args.note ?? null, open.id);
+    audit(db, {
+      userId: args.actor.id,
+      username: args.actor.username,
+      action: 'attendance.clock_out',
+      entity: 'attendance',
+      entityId: open.id,
+      details: { userId, at: nowLocal() },
+    });
+    return db.prepare('SELECT * FROM attendance WHERE id = ?').get(open.id) as AttendanceRow;
+  })();
 }
 
 /** Admin correction of a wrong punch, always audited. */
@@ -101,23 +109,27 @@ export function correctAttendance(
   db: Db,
   args: { id: number; clockIn?: string; clockOut?: string | null; note?: string | null; actor: Actor },
 ): AttendanceRow {
-  const row = db.prepare('SELECT * FROM attendance WHERE id = ?').get(args.id) as AttendanceRow | undefined;
-  if (!row) throw new Error('হাজিরার রেকর্ড পাওয়া যায়নি।');
-  db.prepare('UPDATE attendance SET clock_in = ?, clock_out = ?, note = ? WHERE id = ?').run(
-    args.clockIn ?? row.clock_in,
-    args.clockOut !== undefined ? args.clockOut : row.clock_out,
-    args.note !== undefined ? args.note : row.note,
-    args.id,
-  );
-  audit(db, {
-    userId: args.actor.id,
-    username: args.actor.username,
-    action: 'attendance.correct',
-    entity: 'attendance',
-    entityId: args.id,
-    details: { before: { in: row.clock_in, out: row.clock_out }, after: { in: args.clockIn, out: args.clockOut } },
-  });
-  return db.prepare('SELECT * FROM attendance WHERE id = ?').get(args.id) as AttendanceRow;
+  // The change and the audit line that records it are one step (v1.1.5, sweep finding A-26).
+  // Nested in a caller's transaction this is a savepoint, so a batch still rolls back as a whole.
+  return db.transaction(() => {
+    const row = db.prepare('SELECT * FROM attendance WHERE id = ?').get(args.id) as AttendanceRow | undefined;
+    if (!row) throw new Error('হাজিরার রেকর্ড পাওয়া যায়নি।');
+    db.prepare('UPDATE attendance SET clock_in = ?, clock_out = ?, note = ? WHERE id = ?').run(
+      args.clockIn ?? row.clock_in,
+      args.clockOut !== undefined ? args.clockOut : row.clock_out,
+      args.note !== undefined ? args.note : row.note,
+      args.id,
+    );
+    audit(db, {
+      userId: args.actor.id,
+      username: args.actor.username,
+      action: 'attendance.correct',
+      entity: 'attendance',
+      entityId: args.id,
+      details: { before: { in: row.clock_in, out: row.clock_out }, after: { in: args.clockIn, out: args.clockOut } },
+    });
+    return db.prepare('SELECT * FROM attendance WHERE id = ?').get(args.id) as AttendanceRow;
+  })();
 }
 
 export function attendanceSummary(db: Db, date = nowLocal().slice(0, 10)): {

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { call } from '../api.js';
 import { useShopRefresh } from '../lib/use-shop-refresh.js';
 import { money, dateShort, today, addDays } from '../format.js';
@@ -47,7 +47,7 @@ export function ExpensesPage({ can }: { can: (perm?: string) => boolean }) {
   // Shop events from the Main PC invalidate this screen.
   useShopRefresh('expenses', () => void load());
 
-  const load = async () => {
+  const load = useCallback(async () => {
     setLoading(true);
     try {
       const [res, totalAmount] = await Promise.all([
@@ -70,12 +70,11 @@ export function ExpensesPage({ can }: { can: (perm?: string) => boolean }) {
     } finally {
       setLoading(false);
     }
-  };
+  }, [from, to, categoryId, status, search, page, ui]);
 
   useEffect(() => {
     void load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [from, to, categoryId, status, search, page]);
+  }, [load]);
 
   useEffect(() => {
     (async () => {

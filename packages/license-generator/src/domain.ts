@@ -932,6 +932,41 @@ export function appendLedger(file: string, entry: Omit<LedgerEntry, 'id' | 'at'>
   return full;
 }
 
+/**
+ * Record ledger entries and save the licence store as one step (v1.1.5, audit finding A-27).
+ *
+ * The store (`licenses-admin.json`) and the ledger (`issue-ledger.jsonl`) are two records of the same
+ * fact, and the ledger is what stops a revoked licence being re-issued. Writing the store first and
+ * appending to the ledger afterwards — which is what this app did — meant a failure in between left
+ * the store saying "revoked" and the ledger with no such line.
+ *
+ * `writeStore` already replaces its file atomically, so the store is never half-written; the missing
+ * half was the ledger. This helper appends the entries, then saves the store, and truncates the
+ * ledger back to its previous length if the save fails. A crash *between* the two renames is still
+ * outside what two files can promise — that limit is documented rather than papered over.
+ */
+export function commitLedgerAndStore(
+  ledgerFile: string,
+  entries: ReadonlyArray<Omit<LedgerEntry, 'id' | 'at'>>,
+  save: () => void,
+): LedgerEntry[] {
+  const before = fs.existsSync(ledgerFile) ? fs.statSync(ledgerFile).size : 0;
+  const written: LedgerEntry[] = [];
+  try {
+    for (const entry of entries) written.push(appendLedger(ledgerFile, entry));
+    save();
+    return written;
+  } catch (error) {
+    try {
+      if (fs.existsSync(ledgerFile)) fs.truncateSync(ledgerFile, before);
+    } catch {
+      // The save failed and the ledger could not be trimmed: report the original failure, which is
+      // the one the owner can act on.
+    }
+    throw error;
+  }
+}
+
 export function listLedger(file: string): LedgerEntry[] {
   if (!fs.existsSync(file)) return [];
   return fs

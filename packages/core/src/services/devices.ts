@@ -234,6 +234,15 @@ function terminalById(db: Db, deviceId: string): Terminal | null {
  * an administrator explicitly re-approves it.
  */
 export function enrolDevice(db: Db, input: EnrolInput): Terminal {
+  // The capacity check, the pending registration, the licence row and the audit line are one
+  // state change. Written separately, a failure after the terminal row left a pending device
+  // holding a seat with no licence behind it, and two enrolments racing the same "one slot left"
+  // check could both be admitted. IMMEDIATE takes the write lock before the check, so the second
+  // caller sees the first one's result instead of the same pre-check state.
+  return db.transaction(() => enrolDeviceTx(db, input)).immediate();
+}
+
+function enrolDeviceTx(db: Db, input: EnrolInput): Terminal {
   const identity = getStoreIdentity(db);
   if (input.store_id !== identity.store_id) {
     throw new DeviceError('STORE_MISMATCH', 'এই ডিভাইসের লাইসেন্স অন্য দোকানের জন্য তৈরি।');
@@ -374,25 +383,30 @@ export function approveDevice(db: Db, deviceId: string, actor: Actor, note?: str
   if (device.status === 'revoked') {
     throw new DeviceError('DEVICE_REVOKED', 'বাতিল করা ডিভাইস আবার অনুমোদন করা যায় না — নতুন লাইসেন্স ইস্যু করুন।');
   }
-  const summary = capacitySummary(db);
-  if (summary.approved >= summary.licensed) {
-    throw new DeviceError(
-      'CAPACITY_REACHED',
-      `লাইসেন্সে ${summary.licensed}টি ডিভাইসের অনুমতি আছে — নতুন স্লট ছাড়া অনুমোদন সম্ভব নয়।`,
-    );
-  }
-  db.prepare(
-    `UPDATE terminals SET status = 'approved', decided_at = ?, decided_by = ?, decision_note = ?
-      WHERE device_id = ?`,
-  ).run(nowIso(), actor.id, note ?? null, deviceId);
-  audit(db, {
-    action: 'device.approved',
-    entity: 'terminal',
-    entityId: deviceId,
-    userId: actor.id,
-    username: actor.username,
-    details: { name: device.device_name, role: device.role },
+  // Capacity check, approval and the audit line move together, under the write lock: approving two
+  // pending devices into a single free slot must fail one of them, not admit both.
+  const run = db.transaction((): void => {
+    const summary = capacitySummary(db);
+    if (summary.approved >= summary.licensed) {
+      throw new DeviceError(
+        'CAPACITY_REACHED',
+        `লাইসেন্সে ${summary.licensed}টি ডিভাইসের অনুমতি আছে — নতুন স্লট ছাড়া অনুমোদন সম্ভব নয়।`,
+      );
+    }
+    db.prepare(
+      `UPDATE terminals SET status = 'approved', decided_at = ?, decided_by = ?, decision_note = ?
+        WHERE device_id = ? AND status <> 'approved'`,
+    ).run(nowIso(), actor.id, note ?? null, deviceId);
+    audit(db, {
+      action: 'device.approved',
+      entity: 'terminal',
+      entityId: deviceId,
+      userId: actor.id,
+      username: actor.username,
+      details: { name: device.device_name, role: device.role },
+    });
   });
+  run.immediate();
   return terminalById(db, deviceId)!;
 }
 
@@ -402,19 +416,24 @@ export function rejectDevice(db: Db, deviceId: string, actor: Actor, note?: stri
   if (device.status === 'approved') {
     throw new DeviceError('ALREADY_APPROVED', 'অনুমোদিত ডিভাইস প্রত্যাখ্যান করতে হলে আগে বাতিল করুন।');
   }
-  db.prepare(
-    `UPDATE terminals SET status = 'rejected', decided_at = ?, decided_by = ?, decision_note = ?
-      WHERE device_id = ?`,
-  ).run(nowIso(), actor.id, note ?? null, deviceId);
-  revokeCredentials(db, deviceId);
-  audit(db, {
-    action: 'device.rejected',
-    entity: 'terminal',
-    entityId: deviceId,
-    userId: actor.id,
-    username: actor.username,
-    details: { name: device.device_name, note: note ?? null },
+  // Status and credentials change together: a device marked rejected while its secret and
+  // sessions survive is a device that keeps working.
+  const run = db.transaction((): void => {
+    db.prepare(
+      `UPDATE terminals SET status = 'rejected', decided_at = ?, decided_by = ?, decision_note = ?
+        WHERE device_id = ?`,
+    ).run(nowIso(), actor.id, note ?? null, deviceId);
+    revokeCredentials(db, deviceId);
+    audit(db, {
+      action: 'device.rejected',
+      entity: 'terminal',
+      entityId: deviceId,
+      userId: actor.id,
+      username: actor.username,
+      details: { name: device.device_name, note: note ?? null },
+    });
   });
+  run.immediate();
   return terminalById(db, deviceId)!;
 }
 
@@ -426,25 +445,30 @@ export function revokeDevice(db: Db, deviceId: string, actor: Actor, reason: str
   const device = terminalById(db, deviceId);
   if (!device) throw new DeviceError('NOT_FOUND', 'ডিভাইস পাওয়া যায়নি।');
   if (!reason || !reason.trim()) throw new DeviceError('REASON_REQUIRED', 'বাতিলের কারণ লিখুন।');
-  db.prepare(
-    `UPDATE terminals SET status = 'revoked', revoked_at = ?, decided_by = ?, decision_note = ?
-      WHERE device_id = ?`,
-  ).run(nowIso(), actor.id, reason.trim(), deviceId);
-  revokeCredentials(db, deviceId);
-  if (device.license_id) {
+  // Revocation is a security act: the status, the credential, every session and the licence row
+  // must all change or none of them may. Half a revocation is a device that still authenticates.
+  const run = db.transaction((): void => {
     db.prepare(
-      `UPDATE device_licenses SET status = 'revoked', revoked_at = ?, revoke_reason = ?
-        WHERE license_id = ?`,
-    ).run(nowIso(), reason.trim(), device.license_id);
-  }
-  audit(db, {
-    action: 'device.revoked',
-    entity: 'terminal',
-    entityId: deviceId,
-    userId: actor.id,
-    username: actor.username,
-    details: { name: device.device_name, reason: reason.trim() },
+      `UPDATE terminals SET status = 'revoked', revoked_at = ?, decided_by = ?, decision_note = ?
+        WHERE device_id = ?`,
+    ).run(nowIso(), actor.id, reason.trim(), deviceId);
+    revokeCredentials(db, deviceId);
+    if (device.license_id) {
+      db.prepare(
+        `UPDATE device_licenses SET status = 'revoked', revoked_at = ?, revoke_reason = ?
+          WHERE license_id = ?`,
+      ).run(nowIso(), reason.trim(), device.license_id);
+    }
+    audit(db, {
+      action: 'device.revoked',
+      entity: 'terminal',
+      entityId: deviceId,
+      userId: actor.id,
+      username: actor.username,
+      details: { name: device.device_name, reason: reason.trim() },
+    });
   });
+  run.immediate();
   return terminalById(db, deviceId)!;
 }
 
@@ -453,15 +477,18 @@ export function renameDevice(db: Db, deviceId: string, name: string, actor: Acto
   if (!device) throw new DeviceError('NOT_FOUND', 'ডিভাইস পাওয়া যায়নি।');
   const clean = String(name ?? '').trim().slice(0, 60);
   if (!clean) throw new DeviceError('BAD_REQUEST', 'ডিভাইসের নাম দিন।');
-  db.prepare('UPDATE terminals SET device_name = ? WHERE device_id = ?').run(clean, deviceId);
-  audit(db, {
+  const run = db.transaction(() => {
+    db.prepare('UPDATE terminals SET device_name = ? WHERE device_id = ?').run(clean, deviceId);
+    audit(db, {
     action: 'device.renamed',
     entity: 'terminal',
-    entityId: deviceId,
-    userId: actor.id,
-    username: actor.username,
-    details: { from: device.device_name, to: clean },
+      entityId: deviceId,
+      userId: actor.id,
+      username: actor.username,
+      details: { from: device.device_name, to: clean },
+    });
   });
+  run();
   return terminalById(db, deviceId)!;
 }
 

@@ -145,6 +145,7 @@ import {
   paySupplier,
   previewImport,
   pruneBackups,
+  reconcileBackups,
   receiveCustomerPayment,
   recentActivity,
   activityFeed,
@@ -174,6 +175,7 @@ import {
   updateSupplier,
   updateUnit,
   updateUser,
+  assertRestorablePath,
   validateBackup,
   voidExpense,
   voidPurchase,
@@ -1184,7 +1186,21 @@ on('audit.list', (ctx, filter) => listAudit(ctx.db, filter), 'audit.view');
 /* Backup & maintenance                                               */
 /* ------------------------------------------------------------------ */
 
-on('backup.list', (ctx) => listBackups(ctx.db), 'backup.manage');
+on(
+  'backup.list',
+  (ctx) => {
+    // Register any backup file that exists on disk without a row before showing the list — a file
+    // whose row was lost (a crash between the rename and the insert) is still the owner's backup and
+    // must not be invisible (v1.1.5, A-28). Idempotent, so the list stays stable.
+    try {
+      reconcileBackups(ctx.db, { dataDir: appPaths().dataDir });
+    } catch {
+      // Listing the backups must not fail because the folder is unreadable.
+    }
+    return listBackups(ctx.db);
+  },
+  'backup.manage',
+);
 on(
   'backup.create',
   async (ctx) => {
@@ -1248,6 +1264,9 @@ on(
   async (ctx, filePath: string) => {
     if (!ctx.user) throw new Error('লগইন করুন।');
     if (ctx.user.role !== 'admin') throw new Error('শুধুমাত্র অ্যাডমিন রিস্টোর করতে পারেন।');
+    // Refuse the live database, its sidecars and half-written files before anything is validated:
+    // this route replaces the shop's data with whatever the renderer names (v1.1.5, A-29).
+    assertRestorablePath(filePath, { liveDbPath: appPaths().dbPath });
     const validation = validateBackup(filePath);
     if (!validation.ok) throw new Error(validation.message);
     const response = await dialog.showMessageBox({

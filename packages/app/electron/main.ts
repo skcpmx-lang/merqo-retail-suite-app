@@ -13,6 +13,7 @@ import {
   PRODUCT_VERSION,
   repairDatabase,
   shouldAutoBackup,
+  reconcileBackups,
   createBackup,
   getSettings,
   type Db,
@@ -326,6 +327,14 @@ function closeDisplayWindow(): void {
  */
 function runAutoBackup(): void {
   try {
+    // Register any backup file whose row was lost to a crash or a failed insert before deciding
+    // whether a new backup is due (v1.1.5, A-28). Without this, `shouldAutoBackup` reads the row
+    // table only and would happily take another backup every startup while the orphan sits unlisted.
+    try {
+      reconcileBackups(db, { dataDir: appPaths().dataDir });
+    } catch {
+      /* reconciliation must never block the backup itself */
+    }
     if (!shouldAutoBackup(db)) return;
     const settings = getSettings(db);
     const result = createBackup(db, {

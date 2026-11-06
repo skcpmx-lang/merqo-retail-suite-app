@@ -103,18 +103,62 @@ function buildSearch(input: SupplierInput): string {
 }
 
 export function createSupplier(db: Db, input: SupplierInput, actor?: Actor): Supplier {
-  const name = normalizeText(input.name);
-  if (!name) throw new Error('সাপ্লায়ারের নাম দিতে হবে।');
-  if (input.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(input.email)) throw new Error('ইমেইল ঠিকানা সঠিক নয়।');
-  const now = nowLocal();
-  const opening = Math.round(input.openingBalance ?? 0);
-  const res = db
-    .prepare(
-      `INSERT INTO suppliers (name, name_sort, search_text, company, phone, address, email, contact_person,
-         opening_balance_paisa, balance_paisa, note, is_active, created_at, updated_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,1,?,?)`,
-    )
-    .run(
+  // The change and the audit line that records it are one step (v1.1.5, sweep finding A-26).
+  // Nested in a caller's transaction this is a savepoint, so a batch still rolls back as a whole.
+  return db.transaction(() => {
+    const name = normalizeText(input.name);
+    if (!name) throw new Error('সাপ্লায়ারের নাম দিতে হবে।');
+    if (input.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(input.email)) throw new Error('ইমেইল ঠিকানা সঠিক নয়।');
+    const now = nowLocal();
+    const opening = Math.round(input.openingBalance ?? 0);
+    const res = db
+      .prepare(
+        `INSERT INTO suppliers (name, name_sort, search_text, company, phone, address, email, contact_person,
+           opening_balance_paisa, balance_paisa, note, is_active, created_at, updated_at)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,1,?,?)`,
+      )
+      .run(
+        name,
+        bengaliSortKey(name),
+        buildSearch(input),
+        input.company ? normalizeText(input.company) : null,
+        input.phone ? normalizeText(input.phone) : null,
+        input.address ? normalizeText(input.address) : null,
+        input.email ? normalizeText(input.email) : null,
+        input.contactPerson ? normalizeText(input.contactPerson) : null,
+        opening,
+        opening,
+        input.note ? normalizeText(input.note) : null,
+        now,
+        now,
+      );
+    const id = Number(res.lastInsertRowid);
+    audit(db, {
+      userId: actor?.id ?? null,
+      username: actor?.username,
+      action: 'supplier.create',
+      entity: 'supplier',
+      entityId: id,
+      details: { name, opening },
+    });
+    return db.prepare('SELECT * FROM suppliers WHERE id = ?').get(id) as Supplier;
+  })();
+}
+
+export function updateSupplier(db: Db, id: number, input: SupplierInput, actor?: Actor): Supplier {
+  // The change and the audit line that records it are one step (v1.1.5, sweep finding A-26).
+  // Nested in a caller's transaction this is a savepoint, so a batch still rolls back as a whole.
+  return db.transaction(() => {
+    const existing = db.prepare('SELECT * FROM suppliers WHERE id = ?').get(id) as Supplier | undefined;
+    if (!existing) throw new Error('সাপ্লায়ার পাওয়া যায়নি।');
+    const name = normalizeText(input.name) || existing.name;
+    const opening = input.openingBalance === undefined ? existing.opening_balance_paisa : Math.round(input.openingBalance);
+    const openingDelta = opening - existing.opening_balance_paisa;
+    db.prepare(
+      `UPDATE suppliers SET name = ?, name_sort = ?, search_text = ?, company = ?, phone = ?, address = ?, email = ?,
+         contact_person = ?, opening_balance_paisa = ?, balance_paisa = balance_paisa + ?, note = ?, updated_at = ?
+       WHERE id = ?`,
+    ).run(
       name,
       bengaliSortKey(name),
       buildSearch(input),
@@ -124,83 +168,55 @@ export function createSupplier(db: Db, input: SupplierInput, actor?: Actor): Sup
       input.email ? normalizeText(input.email) : null,
       input.contactPerson ? normalizeText(input.contactPerson) : null,
       opening,
-      opening,
-      input.note ? normalizeText(input.note) : null,
-      now,
-      now,
+      openingDelta,
+      input.note !== undefined ? normalizeText(input.note) : existing.note,
+      nowLocal(),
+      id,
     );
-  const id = Number(res.lastInsertRowid);
-  audit(db, {
-    userId: actor?.id ?? null,
-    username: actor?.username,
-    action: 'supplier.create',
-    entity: 'supplier',
-    entityId: id,
-    details: { name, opening },
-  });
-  return db.prepare('SELECT * FROM suppliers WHERE id = ?').get(id) as Supplier;
-}
-
-export function updateSupplier(db: Db, id: number, input: SupplierInput, actor?: Actor): Supplier {
-  const existing = db.prepare('SELECT * FROM suppliers WHERE id = ?').get(id) as Supplier | undefined;
-  if (!existing) throw new Error('সাপ্লায়ার পাওয়া যায়নি।');
-  const name = normalizeText(input.name) || existing.name;
-  const opening = input.openingBalance === undefined ? existing.opening_balance_paisa : Math.round(input.openingBalance);
-  const openingDelta = opening - existing.opening_balance_paisa;
-  db.prepare(
-    `UPDATE suppliers SET name = ?, name_sort = ?, search_text = ?, company = ?, phone = ?, address = ?, email = ?,
-       contact_person = ?, opening_balance_paisa = ?, balance_paisa = balance_paisa + ?, note = ?, updated_at = ?
-     WHERE id = ?`,
-  ).run(
-    name,
-    bengaliSortKey(name),
-    buildSearch(input),
-    input.company ? normalizeText(input.company) : null,
-    input.phone ? normalizeText(input.phone) : null,
-    input.address ? normalizeText(input.address) : null,
-    input.email ? normalizeText(input.email) : null,
-    input.contactPerson ? normalizeText(input.contactPerson) : null,
-    opening,
-    openingDelta,
-    input.note !== undefined ? normalizeText(input.note) : existing.note,
-    nowLocal(),
-    id,
-  );
-  audit(db, {
-    userId: actor?.id ?? null,
-    username: actor?.username,
-    action: 'supplier.update',
-    entity: 'supplier',
-    entityId: id,
-    details: { name, openingDelta },
-  });
-  return db.prepare('SELECT * FROM suppliers WHERE id = ?').get(id) as Supplier;
+    audit(db, {
+      userId: actor?.id ?? null,
+      username: actor?.username,
+      action: 'supplier.update',
+      entity: 'supplier',
+      entityId: id,
+      details: { name, openingDelta },
+    });
+    return db.prepare('SELECT * FROM suppliers WHERE id = ?').get(id) as Supplier;
+  })();
 }
 
 export function setSupplierActive(db: Db, id: number, active: boolean, actor?: Actor): void {
-  const row = db.prepare('SELECT * FROM suppliers WHERE id = ?').get(id) as Supplier | undefined;
-  if (!row) throw new Error('সাপ্লায়ার পাওয়া যায়নি।');
-  if (!active && row.balance_paisa > 0) throw new Error('পরিশোধযোগ্য বাকি থাকা অবস্থায় নিষ্ক্রিয় করা যাবে না।');
-  db.prepare('UPDATE suppliers SET is_active = ?, updated_at = ? WHERE id = ?').run(active ? 1 : 0, nowLocal(), id);
-  audit(db, {
-    userId: actor?.id ?? null,
-    username: actor?.username,
-    action: active ? 'supplier.restore' : 'supplier.archive',
-    entity: 'supplier',
-    entityId: id,
-  });
+  // The change and the audit line that records it are one step (v1.1.5, sweep finding A-26).
+  // Nested in a caller's transaction this is a savepoint, so a batch still rolls back as a whole.
+  return db.transaction(() => {
+    const row = db.prepare('SELECT * FROM suppliers WHERE id = ?').get(id) as Supplier | undefined;
+    if (!row) throw new Error('সাপ্লায়ার পাওয়া যায়নি।');
+    if (!active && row.balance_paisa > 0) throw new Error('পরিশোধযোগ্য বাকি থাকা অবস্থায় নিষ্ক্রিয় করা যাবে না।');
+    db.prepare('UPDATE suppliers SET is_active = ?, updated_at = ? WHERE id = ?').run(active ? 1 : 0, nowLocal(), id);
+    audit(db, {
+      userId: actor?.id ?? null,
+      username: actor?.username,
+      action: active ? 'supplier.restore' : 'supplier.archive',
+      entity: 'supplier',
+      entityId: id,
+    });
+  })();
 }
 
 export function deleteSupplier(db: Db, id: number, actor?: Actor): void {
-  const row = db.prepare('SELECT * FROM suppliers WHERE id = ?').get(id) as Supplier | undefined;
-  if (!row) throw new Error('সাপ্লায়ার পাওয়া যায়নি।');
-  if (row.balance_paisa !== 0) throw new Error('বাকি থাকা অবস্থায় সাপ্লায়ার ডিলিট করা যাবে না।');
-  const used =
-    (db.prepare('SELECT COUNT(*) c FROM purchases WHERE supplier_id = ?').get(id) as { c: number }).c +
-    (db.prepare('SELECT COUNT(*) c FROM payments WHERE supplier_id = ?').get(id) as { c: number }).c;
-  if (used > 0) throw new Error('এই সাপ্লায়ারের লেনদেন আছে — ডিলিট করা যাবে না, আর্কাইভ করুন।');
-  db.prepare('DELETE FROM suppliers WHERE id = ?').run(id);
-  audit(db, { userId: actor?.id ?? null, username: actor?.username, action: 'supplier.delete', entity: 'supplier', entityId: id });
+  // The change and the audit line that records it are one step (v1.1.5, sweep finding A-26).
+  // Nested in a caller's transaction this is a savepoint, so a batch still rolls back as a whole.
+  return db.transaction(() => {
+    const row = db.prepare('SELECT * FROM suppliers WHERE id = ?').get(id) as Supplier | undefined;
+    if (!row) throw new Error('সাপ্লায়ার পাওয়া যায়নি।');
+    if (row.balance_paisa !== 0) throw new Error('বাকি থাকা অবস্থায় সাপ্লায়ার ডিলিট করা যাবে না।');
+    const used =
+      (db.prepare('SELECT COUNT(*) c FROM purchases WHERE supplier_id = ?').get(id) as { c: number }).c +
+      (db.prepare('SELECT COUNT(*) c FROM payments WHERE supplier_id = ?').get(id) as { c: number }).c;
+    if (used > 0) throw new Error('এই সাপ্লায়ারের লেনদেন আছে — ডিলিট করা যাবে না, আর্কাইভ করুন।');
+    db.prepare('DELETE FROM suppliers WHERE id = ?').run(id);
+    audit(db, { userId: actor?.id ?? null, username: actor?.username, action: 'supplier.delete', entity: 'supplier', entityId: id });
+  })();
 }
 
 export function paySupplier(

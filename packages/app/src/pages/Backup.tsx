@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { call } from '../api.js';
 import { dateTime, money } from '../format.js';
 import {
@@ -29,7 +29,7 @@ export function BackupPage({ can }: { can: (perm?: string) => boolean }) {
   const [scan, setScan] = useState<any | null>(null);
   const [restoring, setRestoring] = useState(false);
 
-  const load = async () => {
+  const load = useCallback(async () => {
     setLoading(true);
     try {
       const [list, s] = await Promise.all([call<any[]>('backup.list'), call<AppSettings>('settings.get')]);
@@ -40,12 +40,11 @@ export function BackupPage({ can }: { can: (perm?: string) => boolean }) {
     } finally {
       setLoading(false);
     }
-  };
+  }, [ui]);
 
   useEffect(() => {
     void load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [load]);
 
   const create = async () => {
     setCreating(true);

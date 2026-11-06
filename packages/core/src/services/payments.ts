@@ -1,5 +1,5 @@
 import type { Db } from '../db/connection.js';
-import { nowLocal } from '../domain/datetime.js';
+import { dayEnd, dayStart, nowLocal } from '../domain/datetime.js';
 import type { Payment } from '../domain/types.js';
 import { audit } from './audit.js';
 import { addCashMovement } from './cash.js';
@@ -218,12 +218,12 @@ export function listPayments(db: Db, f: PaymentFilter = {}): { rows: Payment[]; 
     params.push(f.supplierId);
   }
   if (f.from) {
-    where.push('date(pm.payment_date) >= date(?)');
-    params.push(f.from);
+    where.push('pm.payment_date >= ?');
+    params.push(dayStart(f.from));
   }
   if (f.to) {
-    where.push('date(pm.payment_date) <= date(?)');
-    params.push(f.to);
+    where.push('pm.payment_date <= ?');
+    params.push(dayEnd(f.to));
   }
   if (f.methodId) {
     where.push('pm.method_id = ?');
