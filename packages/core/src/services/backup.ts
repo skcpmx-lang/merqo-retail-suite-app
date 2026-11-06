@@ -55,7 +55,7 @@ function uniqueBackupPath(dir: string, stamp: string): string {
   return candidate;
 }
 
-function sha256File(file: string): string {
+export function sha256File(file: string): string {
   const hash = crypto.createHash('sha256');
   hash.update(fs.readFileSync(file));
   return hash.digest('hex');
@@ -156,21 +156,28 @@ export function createBackup(
   fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2), 'utf8');
   fs.renameSync(tmpPath, finalPath);
 
-  const res = db
-    .prepare(
-      `INSERT INTO backups (file_path, size_bytes, kind, app_version, db_version, status, note, created_at)
-       VALUES (?,?,?,?,?,'ok',?,?)`,
-    )
-    .run(finalPath, manifest.size_bytes, opts.kind ?? 'manual', manifest.app_version, dbVersion, opts.note ?? null, nowLocal());
-  audit(db, {
-    userId: opts.actor?.id ?? null,
-    username: opts.actor?.username ?? 'system',
-    action: 'backup.create',
-    entity: 'backup',
-    entityId: Number(res.lastInsertRowid),
-    details: { file: finalPath, size: manifest.size_bytes },
+  // The file is finished and named by now; the row and its audit line are one step, so the books
+  // never record a backup the audit trail does not know about (v1.1.5, A-28). The file itself cannot
+  // join that transaction — that is what `reconcileBackups` is for.
+  const record = db.transaction(() => {
+    const res = db
+      .prepare(
+        `INSERT INTO backups (file_path, size_bytes, kind, app_version, db_version, status, note, created_at)
+         VALUES (?,?,?,?,?,'ok',?,?)`,
+      )
+      .run(finalPath, manifest.size_bytes, opts.kind ?? 'manual', manifest.app_version, dbVersion, opts.note ?? null, nowLocal());
+    audit(db, {
+      userId: opts.actor?.id ?? null,
+      username: opts.actor?.username ?? 'system',
+      action: 'backup.create',
+      entity: 'backup',
+      entityId: Number(res.lastInsertRowid),
+      details: { file: finalPath, size: manifest.size_bytes },
+    });
+    return Number(res.lastInsertRowid);
   });
-  return { filePath: finalPath, manifest, id: Number(res.lastInsertRowid) };
+  const id = record();
+  return { filePath: finalPath, manifest, id };
 }
 
 export interface ValidationResult {
@@ -183,6 +190,39 @@ export interface ValidationResult {
 }
 
 /** Validate a backup file without touching the live database. */
+const RESTORABLE_EXTENSIONS = ['.saudabak', '.db', '.sqlite', '.sqlite3'];
+
+/**
+ * Refuses a file that must never be used as a restore source (v1.1.5, A-29).
+ *
+ * The restore route is the one place where the renderer names a file and the app then *replaces the
+ * live database* with it. The role check and the confirmation dialog were there; the path itself was
+ * not checked at all, so the live database, a SQLite sidecar (`-wal`/`-shm`, which is not a database
+ * on its own) or a half-written `.tmp` could be handed to `validateBackup` and, if it happened to
+ * look valid, restored over the shop's data.
+ *
+ * The extension allowlist deliberately does not restrict the *directory*: restoring from a USB stick
+ * is a real workflow and a directory allowlist would break it. What it forbids is the file being the
+ * live database or one of its sidecars, and a file type this app never produces.
+ */
+export function assertRestorablePath(filePath: string, opts: { liveDbPath?: string } = {}): string {
+  const resolved = path.resolve(String(filePath ?? ''));
+  if (!filePath || !resolved) throw new Error('ব্যাকআপ ফাইল নির্বাচন করুন।');
+  const lower = resolved.toLowerCase();
+  if (lower.endsWith('-wal') || lower.endsWith('-shm') || lower.endsWith('.tmp')) {
+    throw new Error('অসম্পূর্ণ বা সহায়ক ফাইল রিস্টোর করা যাবে না।');
+  }
+  const ext = path.extname(resolved).toLowerCase();
+  if (!RESTORABLE_EXTENSIONS.includes(ext)) {
+    throw new Error('শুধু Sauda ব্যাকআপ ফাইল (.saudabak) বা SQLite ডাটাবেজ রিস্টোর করা যায়।');
+  }
+  if (opts.liveDbPath && path.resolve(opts.liveDbPath) === resolved) {
+    throw new Error('চলমান ডাটাবেজ নিজেই রিস্টোরের উৎস হতে পারে না।');
+  }
+  if (!fs.existsSync(resolved)) throw new Error('ব্যাকআপ ফাইলটি পাওয়া যায়নি।');
+  return resolved;
+}
+
 export function validateBackup(filePath: string): ValidationResult {
   const fail = (message: string): ValidationResult => ({
     ok: false,
@@ -387,6 +427,110 @@ export function restoreBackup(
 
 export function listBackups(db: Db, limit = 100): BackupRecord[] {
   return db.prepare('SELECT * FROM backups ORDER BY id DESC LIMIT ?').all(limit) as BackupRecord[];
+}
+
+export interface ReconcileResult {
+  scanned: number;
+  registered: number;
+  corrupt: number;
+  skipped: number;
+}
+
+/**
+ * Registers backup files that exist on disk but have no row (v1.1.5, A-28).
+ *
+ * A backup is a file plus a row plus an audit line, and only the last two can share a transaction.
+ * If the process dies after the file is renamed into place, or the row cannot be written, the file is
+ * still a perfectly good backup — but the app does not know it, so the owner cannot see it and
+ * `pruneBackups` will never rotate it. This pass closes that gap: it walks the directories the app
+ * actually uses for backups, reads each `<name>.json` manifest, and registers the file **only if its
+ * size and SHA-256 still match the manifest**. A file that fails the check is registered as
+ * `corrupt` rather than silently blessed.
+ *
+ * Idempotent: a file that already has a row is skipped, so running it on every startup costs one
+ * directory listing and never duplicates an audit line.
+ */
+export function reconcileBackups(db: Db, opts: { dataDir: string; limit?: number }): ReconcileResult {
+  assertNotClientDatabase(db);
+  const result: ReconcileResult = { scanned: 0, registered: 0, corrupt: 0, skipped: 0 };
+  const known = new Set(
+    (db.prepare('SELECT file_path FROM backups').all() as { file_path: string }[]).map((r) => path.resolve(r.file_path)),
+  );
+
+  const dirs = new Set<string>([path.resolve(defaultBackupDir(opts.dataDir))]);
+  for (const file of known) dirs.add(path.dirname(file));
+  const settings = getSettings(db);
+  if (settings.auto_backup_dir) dirs.add(path.resolve(settings.auto_backup_dir));
+
+  const manifests: string[] = [];
+  for (const dir of dirs) {
+    let names: string[] = [];
+    try {
+      names = fs.readdirSync(dir);
+    } catch {
+      continue; // a directory that no longer exists is not an error here
+    }
+    for (const name of names) {
+      if (name.endsWith('.json') && !name.endsWith('.manifest.json')) manifests.push(path.join(dir, name));
+    }
+  }
+
+  for (const manifestPath of manifests.slice(0, opts.limit ?? 500)) {
+    result.scanned += 1;
+    const filePath = manifestPath.replace(/\.json$/, '');
+    const resolved = path.resolve(filePath);
+    if (known.has(resolved) || !fs.existsSync(filePath)) {
+      result.skipped += 1;
+      continue;
+    }
+    let manifest: BackupManifest;
+    try {
+      manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8')) as BackupManifest;
+    } catch {
+      result.skipped += 1;
+      continue;
+    }
+    if (manifest?.app !== 'Sauda Retail Suite' || typeof manifest.sha256 !== 'string' || !manifest.sha256) {
+      result.skipped += 1; // some other JSON file that happens to live in the folder
+      continue;
+    }
+
+    const size = fs.statSync(filePath).size;
+    const matches = size === manifest.size_bytes && sha256File(filePath) === manifest.sha256;
+    const status = matches ? 'ok' : 'corrupt';
+    const note = matches
+      ? 'ফাইল থেকে পুনরুদ্ধার করা হয়েছে (রেকর্ড হারিয়ে গিয়েছিল)'
+      : 'ম্যানিফেস্টের সাথে মেলে না — ফাইলটি যাচাই করা যায়নি';
+    const write = db.transaction(() => {
+      const res = db
+        .prepare(
+          `INSERT INTO backups (file_path, size_bytes, kind, app_version, db_version, status, note, created_at)
+           VALUES (?,?,?,?,?,?,?,?)`,
+        )
+        .run(
+          filePath,
+          size,
+          'manual',
+          manifest.app_version ?? getMeta(db, 'app_version') ?? '1.0.0',
+          Number(manifest.db_version ?? 0),
+          status,
+          note,
+          manifest.created_at ?? nowLocal(),
+        );
+      audit(db, {
+        userId: null,
+        username: 'system',
+        action: 'backup.reconcile',
+        entity: 'backup',
+        entityId: Number(res.lastInsertRowid),
+        details: { file: filePath, status, size },
+      });
+    });
+    write();
+    if (matches) result.registered += 1;
+    else result.corrupt += 1;
+  }
+  return result;
 }
 
 export function pruneBackups(db: Db, keep: number): number {

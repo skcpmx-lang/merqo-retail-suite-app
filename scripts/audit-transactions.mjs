@@ -33,10 +33,6 @@ const ALLOW = new Map([
     'stock-ops.markSerialsSold',
     'called from createSale inside the sale transaction, where the serial rows and the invoice must commit together',
   ],
-  [
-    'backup.createBackup',
-    'copies files and then records the copy; the audit line follows a file-system write that no SQL transaction can cover',
-  ],
 ]);
 
 /** Brace matching from an opening `{` (or `(`) — good enough for these source files, and it fails loudly. */
