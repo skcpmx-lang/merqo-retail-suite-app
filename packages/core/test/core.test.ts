@@ -15,6 +15,8 @@ import {
   createUser,
   deleteCategory,
   formatPaisa,
+  formatMoney,
+  toInt,
   getActivationState,
   getDeviceFingerprint,
   getProduct,
@@ -75,6 +77,20 @@ describe('money engine', () => {
     expect(formatPaisa(123456789)).toBe('1,234,567.89');
     expect(formatPaisa(-500)).toBe('-5.00');
     expect(toBengaliDigits('123')).toBe('১২৩');
+  });
+  it('honours the Bangla-digit option instead of silently ignoring it', () => {
+    // v1.1.5 finding A-02: the parameter existed and did nothing.
+    expect(formatMoney(125000)).toBe('৳ 1,250.00');
+    expect(formatMoney(125000, '৳', true)).toBe('৳ ১,২৫০.০০');
+    expect(formatMoney(-500, 'Tk', true)).toBe('Tk -৫.০০');
+  });
+  it('accepts Bangla numerals wherever it accepts Latin ones', () => {
+    // v1.1.5 finding A-03: toInt rejected what every other helper accepts.
+    expect(toInt('১,২৫০')).toBe(1250);
+    expect(toInt('৳ 1250')).toBe(1250);
+    expect(toInt('')).toBe(0);
+    expect(toInt(12.6)).toBe(13);
+    expect(() => toInt('দুই')).toThrow(/সঠিক নয়/);
   });
 });
 

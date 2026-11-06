@@ -149,8 +149,20 @@ export interface AdjustInput {
   costMicro?: number | null;
 }
 
-/** Set stock to an exact counted value (stock take), recording the delta. */
+/**
+ * Set stock to an exact counted value (stock take), recording the delta.
+ *
+ * Everything this changes — the product balance, the location mirror, the movement row, the audit
+ * entry and the accounting posting — happens in one transaction. Before v1.1.5 the statements ran
+ * loose, so a posting that failed (a closed period, a missing account) left the stock moved and the
+ * ledger untouched: a divergence no report could detect. better-sqlite3 nests transactions as
+ * savepoints, so this stays correct when a caller already holds one.
+ */
 export function adjustStock(db: Db, input: AdjustInput): MovementResult {
+  return db.transaction((): MovementResult => adjustStockInTx(db, input))();
+}
+
+function adjustStockInTx(db: Db, input: AdjustInput): MovementResult {
   const product = db.prepare('SELECT * FROM products WHERE id = ?').get(input.productId) as any;
   if (!product) throw new Error('প্রোডাক্ট পাওয়া যায়নি।');
   if (!input.reason || !input.reason.trim()) throw new Error('সমন্বয়ের কারণ লিখতে হবে।');
@@ -195,8 +207,20 @@ export function adjustStock(db: Db, input: AdjustInput): MovementResult {
   return res;
 }
 
-/** Write off damaged / expired stock without touching the sales ledger. */
+/**
+ * Write off damaged / expired stock without touching the sales ledger.
+ *
+ * Atomic for the same reason as `adjustStock`: the stock write-off, its audit entry and its
+ * accounting posting must all land, or none of them.
+ */
 export function writeOffStock(
+  db: Db,
+  input: { productId: number; qtyBaseMilli: number; type: 'damage' | 'expiry'; reason: string; note?: string; actor?: Actor },
+): MovementResult {
+  return db.transaction((): MovementResult => writeOffStockInTx(db, input))();
+}
+
+function writeOffStockInTx(
   db: Db,
   input: { productId: number; qtyBaseMilli: number; type: 'damage' | 'expiry'; reason: string; note?: string; actor?: Actor },
 ): MovementResult {
