@@ -36,17 +36,22 @@ export function updatePaymentMethod(
   patch: { name?: string; isActive?: boolean },
   actor?: Actor,
 ): PaymentMethod {
-  const row = db.prepare('SELECT * FROM payment_methods WHERE id = ?').get(id) as PaymentMethod | undefined;
-  if (!row) throw new Error('পেমেন্ট মেথড পাওয়া যায়নি।');
-  if (patch.name !== undefined) {
-    const clean = normalizeText(patch.name);
-    if (!clean) throw new Error('পেমেন্ট মেথডের নাম দিতে হবে।');
-    db.prepare('UPDATE payment_methods SET name = ? WHERE id = ?').run(clean, id);
-  }
-  if (patch.isActive !== undefined) {
-    db.prepare('UPDATE payment_methods SET is_active = ? WHERE id = ?').run(patch.isActive ? 1 : 0, id);
-  }
-  audit(db, { userId: actor?.id ?? null, username: actor?.username, action: 'payment_method.update', entity: 'payment_method', entityId: id, details: patch });
+  // Name, account and the active flag move together.
+  // Nested in the caller's transaction when there is one (better-sqlite3 uses a savepoint).
+  const run = db.transaction(() => {
+    const row = db.prepare('SELECT * FROM payment_methods WHERE id = ?').get(id) as PaymentMethod | undefined;
+    if (!row) throw new Error('পেমেন্ট মেথড পাওয়া যায়নি।');
+    if (patch.name !== undefined) {
+      const clean = normalizeText(patch.name);
+      if (!clean) throw new Error('পেমেন্ট মেথডের নাম দিতে হবে।');
+      db.prepare('UPDATE payment_methods SET name = ? WHERE id = ?').run(clean, id);
+    }
+    if (patch.isActive !== undefined) {
+      db.prepare('UPDATE payment_methods SET is_active = ? WHERE id = ?').run(patch.isActive ? 1 : 0, id);
+    }
+    audit(db, { userId: actor?.id ?? null, username: actor?.username, action: 'payment_method.update', entity: 'payment_method', entityId: id, details: patch });
+  });
+  run();
   return db.prepare('SELECT * FROM payment_methods WHERE id = ?').get(id) as PaymentMethod;
 }
 
@@ -103,27 +108,32 @@ export function updateUnit(
   patch: { name?: string; shortName?: string; factorMilli?: number; isActive?: boolean },
   actor?: Actor,
 ): Unit {
-  const row = db.prepare('SELECT * FROM units WHERE id = ?').get(id) as Unit | undefined;
-  if (!row) throw new Error('ইউনিট পাওয়া যায়নি।');
-  if (patch.factorMilli !== undefined && !row.base_unit_id) {
-    if (patch.factorMilli !== 1000) throw new Error('বেস ইউনিটের ফ্যাক্টর সবসময় ১০০০ (১০০%) থাকে।');
-  }
-  if (patch.name !== undefined) {
-    const name = normalizeText(patch.name);
-    if (!name) throw new Error('ইউনিটের নাম দিতে হবে।');
-    db.prepare('UPDATE units SET name = ? WHERE id = ?').run(name, id);
-  }
-  if (patch.shortName !== undefined) {
-    db.prepare('UPDATE units SET short_name = ? WHERE id = ?').run(normalizeText(patch.shortName), id);
-  }
-  if (patch.factorMilli !== undefined && row.base_unit_id) {
-    if (patch.factorMilli <= 0) throw new Error('ফ্যাক্টর ০ এর চেয়ে বড় হতে হবে।');
-    db.prepare('UPDATE units SET factor_milli = ? WHERE id = ?').run(Math.round(patch.factorMilli), id);
-  }
-  if (patch.isActive !== undefined) {
-    db.prepare('UPDATE units SET is_active = ? WHERE id = ?').run(patch.isActive ? 1 : 0, id);
-  }
-  audit(db, { userId: actor?.id ?? null, username: actor?.username, action: 'unit.update', entity: 'unit', entityId: id, details: patch });
+  // A name, a factor and an active flag are one description of a unit, and the factor decides how every product is converted — half an update is a wrong quantity.
+  // Nested in the caller's transaction when there is one (better-sqlite3 uses a savepoint).
+  const run = db.transaction(() => {
+    const row = db.prepare('SELECT * FROM units WHERE id = ?').get(id) as Unit | undefined;
+    if (!row) throw new Error('ইউনিট পাওয়া যায়নি।');
+    if (patch.factorMilli !== undefined && !row.base_unit_id) {
+      if (patch.factorMilli !== 1000) throw new Error('বেস ইউনিটের ফ্যাক্টর সবসময় ১০০০ (১০০%) থাকে।');
+    }
+    if (patch.name !== undefined) {
+      const name = normalizeText(patch.name);
+      if (!name) throw new Error('ইউনিটের নাম দিতে হবে।');
+      db.prepare('UPDATE units SET name = ? WHERE id = ?').run(name, id);
+    }
+    if (patch.shortName !== undefined) {
+      db.prepare('UPDATE units SET short_name = ? WHERE id = ?').run(normalizeText(patch.shortName), id);
+    }
+    if (patch.factorMilli !== undefined && row.base_unit_id) {
+      if (patch.factorMilli <= 0) throw new Error('ফ্যাক্টর ০ এর চেয়ে বড় হতে হবে।');
+      db.prepare('UPDATE units SET factor_milli = ? WHERE id = ?').run(Math.round(patch.factorMilli), id);
+    }
+    if (patch.isActive !== undefined) {
+      db.prepare('UPDATE units SET is_active = ? WHERE id = ?').run(patch.isActive ? 1 : 0, id);
+    }
+    audit(db, { userId: actor?.id ?? null, username: actor?.username, action: 'unit.update', entity: 'unit', entityId: id, details: patch });
+  });
+  run();
   return db.prepare('SELECT * FROM units WHERE id = ?').get(id) as Unit;
 }
 
@@ -193,25 +203,30 @@ export function updateCategory(
   patch: { name?: string; parentId?: number | null; isActive?: boolean },
   actor?: Actor,
 ): Category {
-  const row = db.prepare('SELECT * FROM categories WHERE id = ?').get(id) as Category | undefined;
-  if (!row) throw new Error('ক্যাটাগরি পাওয়া যায়নি।');
-  if (patch.name !== undefined) {
-    const clean = normalizeText(patch.name);
-    if (!clean) throw new Error('ক্যাটাগরির নাম দিতে হবে।');
-    db.prepare('UPDATE categories SET name = ?, name_sort = ? WHERE id = ?').run(clean, bengaliSortKey(clean), id);
-  }
-  if (patch.parentId !== undefined) {
-    if (patch.parentId === id) throw new Error('একটি ক্যাটাগরি নিজের প্যারেন্ট হতে পারবে না।');
-    if (patch.parentId) {
-      const children = (db.prepare('SELECT COUNT(*) c FROM categories WHERE parent_id = ?').get(id) as { c: number }).c;
-      if (children > 0) throw new Error('সাব-ক্যাটাগরি থাকা অবস্থায় প্যারেন্ট পরিবর্তন করা যাবে না।');
+  // Name, parent and the active flag move together with the audit line that says who changed them.
+  // Nested in the caller's transaction when there is one (better-sqlite3 uses a savepoint).
+  const run = db.transaction(() => {
+    const row = db.prepare('SELECT * FROM categories WHERE id = ?').get(id) as Category | undefined;
+    if (!row) throw new Error('ক্যাটাগরি পাওয়া যায়নি।');
+    if (patch.name !== undefined) {
+      const clean = normalizeText(patch.name);
+      if (!clean) throw new Error('ক্যাটাগরির নাম দিতে হবে।');
+      db.prepare('UPDATE categories SET name = ?, name_sort = ? WHERE id = ?').run(clean, bengaliSortKey(clean), id);
     }
-    db.prepare('UPDATE categories SET parent_id = ? WHERE id = ?').run(patch.parentId, id);
-  }
-  if (patch.isActive !== undefined) {
-    db.prepare('UPDATE categories SET is_active = ? WHERE id = ?').run(patch.isActive ? 1 : 0, id);
-  }
-  audit(db, { userId: actor?.id ?? null, username: actor?.username, action: 'category.update', entity: 'category', entityId: id, details: patch });
+    if (patch.parentId !== undefined) {
+      if (patch.parentId === id) throw new Error('একটি ক্যাটাগরি নিজের প্যারেন্ট হতে পারবে না।');
+      if (patch.parentId) {
+        const children = (db.prepare('SELECT COUNT(*) c FROM categories WHERE parent_id = ?').get(id) as { c: number }).c;
+        if (children > 0) throw new Error('সাব-ক্যাটাগরি থাকা অবস্থায় প্যারেন্ট পরিবর্তন করা যাবে না।');
+      }
+      db.prepare('UPDATE categories SET parent_id = ? WHERE id = ?').run(patch.parentId, id);
+    }
+    if (patch.isActive !== undefined) {
+      db.prepare('UPDATE categories SET is_active = ? WHERE id = ?').run(patch.isActive ? 1 : 0, id);
+    }
+    audit(db, { userId: actor?.id ?? null, username: actor?.username, action: 'category.update', entity: 'category', entityId: id, details: patch });
+  });
+  run();
   return db.prepare('SELECT * FROM categories WHERE id = ?').get(id) as Category;
 }
 
