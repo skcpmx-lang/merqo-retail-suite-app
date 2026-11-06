@@ -35,27 +35,33 @@ export function openCashSession(
   if (existing) throw new Error('আপনার একটি ক্যাশ সেশন ইতিমধ্যে খোলা আছে। আগে সেটি ক্লোজ করুন।');
   if (input.openingCash < 0) throw new Error('ওপেনিং ক্যাশ ঋণাত্মক হতে পারবে না।');
   const now = nowLocal();
-  const res = db
-    .prepare(
-      `INSERT INTO cash_sessions (user_id, opened_at, opening_cash_paisa, status, note)
-       VALUES (?,?,?,'open',?)`,
-    )
-    .run(input.userId, now, Math.round(input.openingCash), input.note ?? null);
-  const id = Number(res.lastInsertRowid);
-  if (input.openingCash > 0) {
-    db.prepare(
-      `INSERT INTO cash_movements (session_id, direction, amount_paisa, source, source_id, note, user_id, created_at)
-       VALUES (?,?,?,?,?,?,?,?)`,
-    ).run(id, 'in', Math.round(input.openingCash), 'opening', null, 'ওপেনিং ক্যাশ', input.userId, now);
-  }
-  audit(db, {
-    userId: input.userId,
-    username: input.actor?.username,
-    action: 'cash.session_open',
-    entity: 'cash_session',
-    entityId: id,
-    details: { openingCash: input.openingCash },
+  // Session, its opening movement and its audit line are one act: a session with no opening
+  // movement (or an unlogged one) is a drawer that cannot be reconciled later.
+  const run = db.transaction((): number => {
+    const res = db
+      .prepare(
+        `INSERT INTO cash_sessions (user_id, opened_at, opening_cash_paisa, status, note)
+         VALUES (?,?,?,'open',?)`,
+      )
+      .run(input.userId, now, Math.round(input.openingCash), input.note ?? null);
+    const id = Number(res.lastInsertRowid);
+    if (input.openingCash > 0) {
+      db.prepare(
+        `INSERT INTO cash_movements (session_id, direction, amount_paisa, source, source_id, note, user_id, created_at)
+         VALUES (?,?,?,?,?,?,?,?)`,
+      ).run(id, 'in', Math.round(input.openingCash), 'opening', null, 'ওপেনিং ক্যাশ', input.userId, now);
+    }
+    audit(db, {
+      userId: input.userId,
+      username: input.actor?.username,
+      action: 'cash.session_open',
+      entity: 'cash_session',
+      entityId: id,
+      details: { openingCash: input.openingCash },
+    });
+    return id;
   });
+  const id = run();
   return db.prepare('SELECT * FROM cash_sessions WHERE id = ?').get(id) as CashSession;
 }
 
@@ -99,23 +105,30 @@ export function addCashMovement(
   },
 ): void {
   if (input.amount <= 0) return;
-  const session = ensureOpenSession(db, input.userId);
-  const res = db
-    .prepare(
-      `INSERT INTO cash_movements (session_id, direction, amount_paisa, source, source_id, note, user_id, created_at)
-       VALUES (?,?,?,?,?,?,?,?)`,
-    )
-    .run(
-    session.id,
-    input.direction,
-    Math.round(input.amount),
-    input.source,
-    input.sourceId ?? null,
-      input.note ?? null,
-      input.userId,
-      nowLocal(),
-    );
-  if (isPostingEnabled(db) && res.lastInsertRowid) postCashMovement(db, Number(res.lastInsertRowid));
+  // The drawer movement and its journal entry are the same fact. Written separately, a posting
+  // failure (a broken chart of accounts, a missing cash account) left the movement in the drawer
+  // totals with nothing in the ledger — cash counted, books silent. The session is opened inside
+  // the same transaction too, so a refused movement does not leave an empty session behind.
+  const run = db.transaction(() => {
+    const session = ensureOpenSession(db, input.userId);
+    const res = db
+      .prepare(
+        `INSERT INTO cash_movements (session_id, direction, amount_paisa, source, source_id, note, user_id, created_at)
+         VALUES (?,?,?,?,?,?,?,?)`,
+      )
+      .run(
+        session.id,
+        input.direction,
+        Math.round(input.amount),
+        input.source,
+        input.sourceId ?? null,
+        input.note ?? null,
+        input.userId,
+        nowLocal(),
+      );
+    if (isPostingEnabled(db) && res.lastInsertRowid) postCashMovement(db, Number(res.lastInsertRowid));
+  });
+  run();
 }
 
 export function closeCashSession(
@@ -127,18 +140,22 @@ export function closeCashSession(
   if (input.countedCash < 0) throw new Error('গণনা করা ক্যাশ ঋণাত্মক হতে পারবে না।');
   const totals = sessionTotals(db, session.id);
   const difference = Math.round(input.countedCash) - totals.expected;
-  db.prepare(
-    `UPDATE cash_sessions SET closed_at = ?, counted_cash_paisa = ?, expected_cash_paisa = ?, difference_paisa = ?,
-       status = 'closed', note = COALESCE(?, note) WHERE id = ?`,
-  ).run(nowLocal(), Math.round(input.countedCash), totals.expected, difference, input.note ?? null, session.id);
-  audit(db, {
-    userId: input.userId,
-    username: input.actor?.username,
-    action: 'cash.session_close',
-    entity: 'cash_session',
-    entityId: session.id,
-    details: { counted: input.countedCash, expected: totals.expected, difference },
+  // Closing the drawer and recording who closed it, with what count, are one act.
+  const run = db.transaction(() => {
+    db.prepare(
+      `UPDATE cash_sessions SET closed_at = ?, counted_cash_paisa = ?, expected_cash_paisa = ?, difference_paisa = ?,
+         status = 'closed', note = COALESCE(?, note) WHERE id = ?`,
+    ).run(nowLocal(), Math.round(input.countedCash), totals.expected, difference, input.note ?? null, session.id);
+    audit(db, {
+      userId: input.userId,
+      username: input.actor?.username,
+      action: 'cash.session_close',
+      entity: 'cash_session',
+      entityId: session.id,
+      details: { counted: input.countedCash, expected: totals.expected, difference },
+    });
   });
+  run();
   return db.prepare('SELECT * FROM cash_sessions WHERE id = ?').get(session.id) as CashSession;
 }
 

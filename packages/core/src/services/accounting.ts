@@ -252,26 +252,33 @@ export function postEntry(db: Db, input: PostInput): JournalEntryRow | null {
     }
   }
 
-  const res = db
-    .prepare(
-      `INSERT INTO journal_entries (entry_no, entry_date, source, source_id, memo, status, user_id, created_at)
-       VALUES (?,?,?,?,?,'posted',?,?)`,
-    )
-    .run(
-      nextEntryNo(db),
-      input.date,
-      input.source,
-      input.sourceId ?? null,
-      input.memo ?? null,
-      input.userId ?? null,
-      nowLocal(),
+  // The header and its lines are one entry: if any line is refused (a bad account, a missing FK),
+  // the header must not survive on its own — an entry with half its lines is unbalanced books, and
+  // `unbalancedEntries()` would only tell us long after the fact. Nested calls savepoint into the
+  // caller's document transaction, so a document's posting still rolls back as a whole.
+  const write = db.transaction((): JournalEntryRow => {
+    const res = db
+      .prepare(
+        `INSERT INTO journal_entries (entry_no, entry_date, source, source_id, memo, status, user_id, created_at)
+         VALUES (?,?,?,?,?,'posted',?,?)`,
+      )
+      .run(
+        nextEntryNo(db),
+        input.date,
+        input.source,
+        input.sourceId ?? null,
+        input.memo ?? null,
+        input.userId ?? null,
+        nowLocal(),
+      );
+    const entryId = Number(res.lastInsertRowid);
+    const insertLine = db.prepare(
+      'INSERT INTO journal_lines (entry_id, account_id, debit_paisa, credit_paisa, memo, line_no) VALUES (?,?,?,?,?,?)',
     );
-  const entryId = Number(res.lastInsertRowid);
-  const insertLine = db.prepare(
-    'INSERT INTO journal_lines (entry_id, account_id, debit_paisa, credit_paisa, memo, line_no) VALUES (?,?,?,?,?,?)',
-  );
-  lines.forEach((l, i) => insertLine.run(entryId, l.accountId, l.debit, l.credit, l.memo, i + 1));
-  return db.prepare('SELECT * FROM journal_entries WHERE id = ?').get(entryId) as JournalEntryRow;
+    lines.forEach((l, i) => insertLine.run(entryId, l.accountId, l.debit, l.credit, l.memo, i + 1));
+    return db.prepare('SELECT * FROM journal_entries WHERE id = ?').get(entryId) as JournalEntryRow;
+  });
+  return write();
 }
 
 /** Reversing entry for an existing document entry (used by voids). */
@@ -297,24 +304,29 @@ export function reverseDocument(
     credit_paisa: number;
     memo: string | null;
   }[];
-  const entry = postEntry(db, {
-    date: opts.date ?? nowLocal(),
-    source: reversalSource,
-    sourceId,
-    memo: opts.memo ?? `বাতিল: ${original.entry_no}`,
-    userId: opts.userId ?? null,
-    lines: lines.map((l) => ({
-      accountId: l.account_id,
-      debit: l.credit_paisa,
-      credit: l.debit_paisa,
-      memo: l.memo ?? undefined,
-    })),
+  // Reversal entry and the "this document is reversed" flags are one state change: a reversal that
+  // exists while the original still reads `posted` invites a second reversal.
+  const run = db.transaction((): JournalEntryRow | null => {
+    const entry = postEntry(db, {
+      date: opts.date ?? nowLocal(),
+      source: reversalSource,
+      sourceId,
+      memo: opts.memo ?? `বাতিল: ${original.entry_no}`,
+      userId: opts.userId ?? null,
+      lines: lines.map((l) => ({
+        accountId: l.account_id,
+        debit: l.credit_paisa,
+        credit: l.debit_paisa,
+        memo: l.memo ?? undefined,
+      })),
+    });
+    if (entry) {
+      db.prepare("UPDATE journal_entries SET status = 'reversed' WHERE id = ?").run(original.id);
+      db.prepare('UPDATE journal_entries SET reverses_id = ? WHERE id = ?').run(original.id, entry.id);
+    }
+    return entry;
   });
-  if (entry) {
-    db.prepare("UPDATE journal_entries SET status = 'reversed' WHERE id = ?").run(original.id);
-    db.prepare('UPDATE journal_entries SET reverses_id = ? WHERE id = ?').run(original.id, entry.id);
-  }
-  return entry;
+  return run();
 }
 
 /* ------------------------------------------------------------------ */
@@ -1269,23 +1281,26 @@ export function postManualEntry(
   const memo = (input.memo ?? '').trim();
   if (!memo) throw new Error('ভাউচারের বিবরণ লিখতে হবে।');
   if (!input.lines || input.lines.length < 2) throw new Error('ভাউচারে অন্তত দুটি লাইন দরকার।');
-  const entry = postEntry(db, {
-    date: input.date ?? nowLocal(),
-    source: 'manual',
-    sourceId: nextCounter(db, 'manual_voucher'),
-    memo,
-    lines: input.lines.map((l) => ({ ...l, memo: l.memo ?? undefined })),
-    userId: input.actor?.id ?? null,
-    idempotent: false,
+  const run = db.transaction((): JournalEntryRow => {
+    const entry = postEntry(db, {
+      date: input.date ?? nowLocal(),
+      source: 'manual',
+      sourceId: nextCounter(db, 'manual_voucher'),
+      memo,
+      lines: input.lines.map((l) => ({ ...l, memo: l.memo ?? undefined })),
+      userId: input.actor?.id ?? null,
+      idempotent: false,
+    });
+    if (!entry) throw new Error('ভাউচারে কোনো অঙ্ক নেই।');
+    audit(db, {
+      userId: input.actor?.id ?? null,
+      username: input.actor?.username,
+      action: 'accounting.manual_voucher',
+      entity: 'journal_entry',
+      entityId: entry.id,
+      details: { entryNo: entry.entry_no, memo, lines: input.lines.length },
+    });
+    return entry;
   });
-  if (!entry) throw new Error('ভাউচারে কোনো অঙ্ক নেই।');
-  audit(db, {
-    userId: input.actor?.id ?? null,
-    username: input.actor?.username,
-    action: 'accounting.manual_voucher',
-    entity: 'journal_entry',
-    entityId: entry.id,
-    details: { entryNo: entry.entry_no, memo, lines: input.lines.length },
-  });
-  return entry;
+  return run();
 }
