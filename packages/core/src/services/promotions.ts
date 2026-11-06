@@ -251,17 +251,55 @@ export function checkCoupon(
 /** Records a redemption. Called inside the sale transaction only. */
 export function recordCouponRedemption(
   db: Db,
-  args: { couponId: number; saleId: number; customerId: number | null; code: string; discountPaisa: number; userId: number | null },
+  args: {
+    couponId: number;
+    saleId: number;
+    customerId: number | null;
+    code: string;
+    discountPaisa: number;
+    userId: number | null;
+    /** Overrides the clock (tests only); the sale path leaves it at "now". */
+    at?: string;
+  },
 ): void {
+  const at = args.at ?? nowLocal();
+  // The conditional UPDATE is the global limit's guard *and* the moment this sale takes the write
+  // lock: it either consumes a use or fails. Everything below therefore runs while no other
+  // connection can be recording a redemption, which is what makes the checks below authoritative
+  // rather than advisory (v1.1.5, A-22).
   const res = db
     .prepare(
       'UPDATE coupons SET used_count = used_count + 1, updated_at = ? WHERE id = ? AND (usage_limit = 0 OR used_count < usage_limit)',
     )
-    .run(nowLocal(), args.couponId);
+    .run(at, args.couponId);
   if (res.changes !== 1) throw new Error('কুপনের ব্যবহারের সীমা এইমাত্র শেষ হয়েছে।');
+
+  // `checkCoupon` ran when the cashier typed the code, in a plain read; by now the coupon may have
+  // been disabled, may have expired, or the same customer may have used their last allowance on
+  // another terminal. Re-check under the lock, so a sale can never consume a use it is not entitled
+  // to — and the throw rolls back the sale, not just this record.
+  const coupon = db.prepare('SELECT * FROM coupons WHERE id = ?').get(args.couponId) as Coupon | undefined;
+  if (!coupon) throw new Error('কুপনটি আর পাওয়া যাচ্ছে না।');
+  if (!coupon.is_active) throw new Error('কুপনটি নিষ্ক্রিয় করা হয়েছে — এই বিক্রয়ে ব্যবহার করা যাবে না।');
+  if (coupon.starts_at && at < coupon.starts_at) throw new Error('কুপনের সময় এখনো শুরু হয়নি।');
+  if (coupon.expires_at && at > coupon.expires_at) throw new Error('কুপনের মেয়াদ শেষ হয়ে গেছে।');
+  if (coupon.per_customer_limit > 0) {
+    if (!args.customerId) {
+      throw new Error('এই কুপন কাস্টমার নির্বাচন করলেই ব্যবহার করা যাবে।');
+    }
+    const used = (
+      db
+        .prepare('SELECT COUNT(*) AS n FROM coupon_redemptions WHERE coupon_id = ? AND customer_id = ?')
+        .get(coupon.id, args.customerId) as { n: number }
+    ).n;
+    if (used >= coupon.per_customer_limit) {
+      throw new Error('এই কাস্টমার কুপনটি সর্বোচ্চ বার ব্যবহার করেছেন।');
+    }
+  }
+
   db.prepare(
     'INSERT INTO coupon_redemptions (coupon_id, sale_id, customer_id, code, discount_paisa, user_id, created_at) VALUES (?,?,?,?,?,?,?)',
-  ).run(args.couponId, args.saleId, args.customerId, args.code, args.discountPaisa, args.userId, nowLocal());
+  ).run(args.couponId, args.saleId, args.customerId, args.code, args.discountPaisa, args.userId, at);
 }
 
 /**
