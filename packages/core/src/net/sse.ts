@@ -22,9 +22,11 @@ import { readEvents, retentionFloor, type OutboxEvent } from '../services/events
  *  - **Bounded resources.** A connection that cannot keep up is closed (`slow-consumer`)
  *    once its kernel/user buffer passes a limit, the hub caps concurrent streams, and a
  *    device may hold only one stream (a second connection replaces the first).
- *  - **Clean shutdown.** `closeAll()` ends every stream with `event: closed` before the
- *    listener stops, so no client keeps reading a dead socket and no buffered events are
- *    delivered after revocation or stop.
+ *  - **Clean shutdown.** `beginShutdown()` marks the hub as stopping *before* it ends the
+ *    streams, so a request that was already authenticated when the server began stopping is
+ *    refused with `SERVER_STOPPING` instead of registering a stream after `closeAll()` had
+ *    emptied the map. That late-registration race is what made a v1.1.4 Windows run flaky: the
+ *    socket was destroyed, but the hub still held a stream and its two intervals.
  */
 
 export type SseCloseReason =
@@ -78,7 +80,7 @@ export interface SseStream {
 
 export type OpenStreamResult =
   | { ok: true; stream: SseStream }
-  | { ok: false; code: 'STREAM_LIMIT' | 'STREAM_RATE_LIMITED' };
+  | { ok: false; code: 'STREAM_LIMIT' | 'STREAM_RATE_LIMITED' | 'SERVER_STOPPING' };
 
 export class EventStreamHub {
   private readonly streams = new Map<string, SseStream>();
@@ -90,6 +92,7 @@ export class EventStreamHub {
   private readonly read: (afterSeq: number, limit: number) => OutboxEvent[];
   private readonly maxOpensPerMinute: number;
   private readonly opens = new Map<string, number[]>();
+  private stopping = false;
 
   constructor(private readonly opts: EventStreamHubOptions) {
     this.pollMs = Math.max(20, opts.pollMs ?? 1000);
@@ -123,7 +126,15 @@ export class EventStreamHub {
     return true;
   }
 
+  /** True once the server has begun stopping; no further stream is accepted. */
+  isStopping(): boolean {
+    return this.stopping;
+  }
+
   open(input: OpenStreamInput): OpenStreamResult {
+    // Checked first, before any header is written and before any interval is created: a stream
+    // registered after `closeAll()` would outlive `stop()` and keep the process alive.
+    if (this.stopping) return { ok: false, code: 'SERVER_STOPPING' };
     if (!this.withinReconnectBudget(input.deviceId)) {
       this.opts.log?.('warn', 'sse reconnect budget exceeded', { device_id: input.deviceId });
       return { ok: false, code: 'STREAM_RATE_LIMITED' };
@@ -148,6 +159,16 @@ export class EventStreamHub {
   closeAll(reason: SseCloseReason = 'server-stop'): void {
     for (const stream of [...this.streams.values()]) stream.close(reason);
     this.streams.clear();
+  }
+
+  /**
+   * Terminal shutdown. Marks the hub as stopping *first*, then closes every stream, so a request
+   * that is mid-handshake can only fail with `SERVER_STOPPING`. Idempotent: a second call closes
+   * nothing and does not throw, which matters because `stop()` can be raced by `before-quit`.
+   */
+  beginShutdown(reason: SseCloseReason = 'server-stop'): void {
+    this.stopping = true;
+    this.closeAll(reason);
   }
 
   private start(input: OpenStreamInput, onClosed: () => void): SseStream {

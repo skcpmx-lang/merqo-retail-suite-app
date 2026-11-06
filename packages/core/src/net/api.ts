@@ -261,6 +261,15 @@ export async function startLanApi(opts: LanApiOptions): Promise<LanApi> {
         canSee: (event) => canReceiveEvent(event.type, permissions),
       });
       if (!opened.ok) {
+        if (opened.code === 'SERVER_STOPPING') {
+          // The server is going down. Say so plainly and let the client retry after it is back.
+          send(res, 503, {
+            ok: false,
+            code: opened.code,
+            message: 'সার্ভার বন্ধ হচ্ছে — কিছুক্ষণ পরে আবার চেষ্টা করুন।',
+          });
+          return;
+        }
         send(res, 429, {
           ok: false,
           code: opened.code,
@@ -410,7 +419,9 @@ export async function startLanApi(opts: LanApiOptions): Promise<LanApi> {
     streamCount: () => hub.count(),
     stop: () =>
       new Promise<void>((resolve) => {
-        hub.closeAll('server-stop');
+        // beginShutdown, not closeAll: a request already inside the auth path must not be able to
+        // register a stream after the map was emptied (R-06).
+        hub.beginShutdown('server-stop');
         server.closeAllConnections?.();
         server.close(() => resolve());
       }),
