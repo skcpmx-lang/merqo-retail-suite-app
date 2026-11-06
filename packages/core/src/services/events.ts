@@ -127,16 +127,20 @@ export function pruneEventsByAge(
   const high = Math.min(Number(candidate.high), floorLimit);
   if (high < Number(candidate.low)) return { deleted: 0, floor: retentionFloor(db) };
 
-  const info = db.prepare('DELETE FROM event_outbox WHERE seq <= ? AND created_at < ?').run(high, cutoff);
-  if (info.changes > 0) {
+  // Deleting history and recording how far it was pruned is one step: the floor is the promise made
+  // to a device that has been offline. Raise the floor without deleting and a client is silently
+  // skipped; delete without raising it and the server offers events it no longer has (v1.1.5, A-24).
+  const run = db.transaction(() => {
+    const info = db.prepare('DELETE FROM event_outbox WHERE seq <= ? AND created_at < ?').run(high, cutoff);
+    if (info.changes === 0) return { deleted: 0, floor: retentionFloor(db) };
     const previous = retentionFloor(db);
     const floor = Math.max(previous, high);
     db.prepare("INSERT INTO meta (key, value) VALUES ('event_retention_floor', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(
       String(floor),
     );
     return { deleted: info.changes, floor };
-  }
-  return { deleted: 0, floor: retentionFloor(db) };
+  });
+  return run();
 }
 
 export function latestSeq(db: Db): number {

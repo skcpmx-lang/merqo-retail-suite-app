@@ -468,11 +468,16 @@ export function login(db: Db, username: string, password: string): LoginResult {
     });
     throw new Error('ইউজারনেম বা পাসওয়ার্ড সঠিক নয়।');
   }
-  clearLoginFailures(db, row.username);
+  // A session is recorded or the login does not happen. The failure path above deliberately stays
+  // outside any transaction, so a wrong password still counts towards the lockout (v1.1.5, A-25).
   const at = nowLocal();
-  db.prepare('UPDATE users SET last_login_at = ? WHERE id = ?').run(at, row.id);
-  db.prepare('INSERT INTO sessions_log (user_id, created_at) VALUES (?,?)').run(row.id, nowUtc());
-  audit(db, { userId: row.id, username: row.username, action: 'auth.login', entity: 'user', entityId: row.id });
+  const record = db.transaction(() => {
+    clearLoginFailures(db, row.username);
+    db.prepare('UPDATE users SET last_login_at = ? WHERE id = ?').run(at, row.id);
+    db.prepare('INSERT INTO sessions_log (user_id, created_at) VALUES (?,?)').run(row.id, nowUtc());
+    audit(db, { userId: row.id, username: row.username, action: 'auth.login', entity: 'user', entityId: row.id });
+  });
+  record();
   return { user: getUser(db, row.id)!, loginAt: at };
 }
 
