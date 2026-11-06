@@ -571,16 +571,22 @@ export function refundToGiftCard(
   if (!card) throw new Error('কার্ড পাওয়া যায়নি।');
   const amount = Math.max(0, Math.round(args.amountPaisa));
   if (amount <= 0) throw new Error('ফেরতের পরিমাণ শূন্যের বেশি হতে হবে।');
-  db.prepare(
-    `UPDATE gift_cards SET balance_paisa = balance_paisa + ?, status = CASE WHEN status = 'used' THEN 'active' ELSE status END,
-            updated_at = ? WHERE id = ?`,
-  ).run(amount, nowLocal(), card.id);
-  const after = getGiftCard(db, card.id)!;
-  db.prepare(
-    `INSERT INTO gift_card_transactions (gift_card_id, sale_id, type, amount_paisa, balance_after_paisa, note, user_id, created_at)
-     VALUES (?,?,'refund',?,?,?,?,?)`,
-  ).run(after.id, args.saleId ?? null, amount, after.balance_paisa, args.note ?? null, args.userId, nowLocal());
-  return after;
+  // Balance and history are one fact: a card whose statement does not add up to its balance is
+  // a stored-value dispute nobody can settle. Nested as a savepoint when a void/return already
+  // holds a transaction.
+  const run = db.transaction((): GiftCard => {
+    db.prepare(
+      `UPDATE gift_cards SET balance_paisa = balance_paisa + ?, status = CASE WHEN status = 'used' THEN 'active' ELSE status END,
+              updated_at = ? WHERE id = ?`,
+    ).run(amount, nowLocal(), card.id);
+    const after = getGiftCard(db, card.id)!;
+    db.prepare(
+      `INSERT INTO gift_card_transactions (gift_card_id, sale_id, type, amount_paisa, balance_after_paisa, note, user_id, created_at)
+       VALUES (?,?,'refund',?,?,?,?,?)`,
+    ).run(after.id, args.saleId ?? null, amount, after.balance_paisa, args.note ?? null, args.userId, nowLocal());
+    return after;
+  });
+  return run();
 }
 
 export function adjustGiftCard(
@@ -593,26 +599,31 @@ export function adjustGiftCard(
   if (!Number.isFinite(delta) || delta === 0) throw new Error('সমন্বয়ের পরিমাণ শূন্য হতে পারবে না।');
   if (card.balance_paisa + delta < 0) throw new Error('সমন্বয়ের পরে ব্যালেন্স ঋণাত্মক হয়ে যাবে।');
   if (!args.reason?.trim()) throw new Error('সমন্বয়ের কারণ লিখুন।');
-  db.prepare(
-    `UPDATE gift_cards SET balance_paisa = balance_paisa + ?, status = CASE
-        WHEN balance_paisa + ? <= 0 THEN 'used'
-        WHEN status = 'used' AND balance_paisa + ? > 0 THEN 'active'
-        ELSE status END, updated_at = ? WHERE id = ?`,
-  ).run(delta, delta, delta, nowLocal(), card.id);
-  const after = getGiftCard(db, card.id)!;
-  db.prepare(
-    `INSERT INTO gift_card_transactions (gift_card_id, sale_id, type, amount_paisa, balance_after_paisa, note, user_id, created_at)
-     VALUES (?,NULL,'adjust',?,?,?,?,?)`,
-  ).run(after.id, delta, after.balance_paisa, args.reason, args.userId, nowLocal());
-  audit(db, {
-    userId: args.userId,
-    username: null,
-    action: 'giftcard.adjust',
-    entity: 'gift_card',
-    entityId: card.id,
-    details: { delta, reason: args.reason },
+  // A manual adjustment is a money movement: the new balance, the line that explains it and the
+  // audit row that says who did it are written together or not at all.
+  const run = db.transaction((): GiftCard => {
+    db.prepare(
+      `UPDATE gift_cards SET balance_paisa = balance_paisa + ?, status = CASE
+          WHEN balance_paisa + ? <= 0 THEN 'used'
+          WHEN status = 'used' AND balance_paisa + ? > 0 THEN 'active'
+          ELSE status END, updated_at = ? WHERE id = ?`,
+    ).run(delta, delta, delta, nowLocal(), card.id);
+    const after = getGiftCard(db, card.id)!;
+    db.prepare(
+      `INSERT INTO gift_card_transactions (gift_card_id, sale_id, type, amount_paisa, balance_after_paisa, note, user_id, created_at)
+       VALUES (?,NULL,'adjust',?,?,?,?,?)`,
+    ).run(after.id, delta, after.balance_paisa, args.reason, args.userId, nowLocal());
+    audit(db, {
+      userId: args.userId,
+      username: null,
+      action: 'giftcard.adjust',
+      entity: 'gift_card',
+      entityId: card.id,
+      details: { delta, reason: args.reason },
+    });
+    return after;
   });
-  return after;
+  return run();
 }
 
 export function voidGiftCard(db: Db, args: { cardId: number; reason: string; actor: Actor }): GiftCard {
