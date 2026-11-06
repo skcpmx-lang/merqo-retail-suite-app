@@ -35,6 +35,26 @@ export function defaultBackupDir(dataDir: string): string {
   return dir;
 }
 
+/**
+ * A backup file name that is not already taken (v1.1.5, A-15).
+ *
+ * The name used to be `sauda-<stamp>.saudabak` with a one-second stamp, so two backups inside the
+ * same second wrote to the same path: the second silently replaced the first, *and its manifest*.
+ * The worst case is not theoretical — a restore immediately creates a `pre_restore` safety backup,
+ * so restoring a backup taken one second earlier overwrote the very file being restored and the
+ * shop "restored" its current state instead of the backup. Names now carry a counter when needed.
+ */
+function uniqueBackupPath(dir: string, stamp: string): string {
+  let candidate = path.join(dir, `sauda-${stamp}${BACKUP_EXTENSION}`);
+  for (let n = 1; n <= 999 && (fs.existsSync(candidate) || fs.existsSync(`${candidate}.json`)); n += 1) {
+    candidate = path.join(dir, `sauda-${stamp}-${n}${BACKUP_EXTENSION}`);
+  }
+  if (fs.existsSync(candidate) || fs.existsSync(`${candidate}.json`)) {
+    throw new Error('ব্যাকআপ ফাইলের একটি অনন্য নাম তৈরি করা যায়নি — পুরোনো ব্যাকআপ সরিয়ে আবার চেষ্টা করুন।');
+  }
+  return candidate;
+}
+
 function sha256File(file: string): string {
   const hash = crypto.createHash('sha256');
   hash.update(fs.readFileSync(file));
@@ -97,7 +117,7 @@ export function createBackup(
   const dir = opts.targetPath ? path.dirname(opts.targetPath) : defaultBackupDir(opts.dataDir);
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
   const stamp = nowLocal().replace(/[: ]/g, '-');
-  const finalPath = opts.targetPath ?? path.join(dir, `sauda-${stamp}${BACKUP_EXTENSION}`);
+  const finalPath = opts.targetPath ?? uniqueBackupPath(dir, stamp);
   const tmpPath = `${finalPath}.tmp`;
 
   checkpoint(db);
@@ -276,6 +296,10 @@ export function restoreBackup(
     note: 'রিস্টোরের আগের নিরাপত্তা ব্যাকআপ',
     actor: opts.actor,
   });
+  // Belt and braces for A-15: the safety copy must never be the file being restored from.
+  if (path.resolve(safety.filePath) === path.resolve(opts.backupPath)) {
+    throw new Error('নিরাপত্তা ব্যাকআপ রিস্টোরের ফাইলকেই প্রতিস্থাপন করেছে — রিস্টোর বাতিল করা হয়েছে, ফাইলটি অক্ষত আছে।');
+  }
 
   checkpoint(db);
   closeDatabase(db);
@@ -303,7 +327,39 @@ export function restoreBackup(
   for (const suffix of ['-wal', '-shm']) {
     if (fs.existsSync(`${live}${suffix}`)) fs.rmSync(`${live}${suffix}`, { force: true });
   }
-  fs.renameSync(temp, live);
+
+  // Swapping in the restored file must be reversible (v1.1.5, A-14). On Windows a rename over a
+  // file that anything still holds open fails — antivirus, the search indexer, a backup agent — and
+  // v1.1.4 then left the shop with *no* database at the live path: the data existed only in
+  // `<live>.restoring` and the safety backup, recoverable by hand at best. Now the live file is
+  // moved aside first and moved back if the swap fails, and the previous file is kept until the
+  // restored database has been reopened and integrity-checked.
+  const previous = `${live}.previous`;
+  let movedAside = false;
+  try {
+    if (fs.existsSync(previous)) fs.rmSync(previous, { force: true });
+    if (fs.existsSync(live)) {
+      fs.renameSync(live, previous);
+      movedAside = true;
+    }
+    fs.renameSync(temp, live);
+  } catch (err) {
+    if (movedAside && !fs.existsSync(live)) {
+      try {
+        fs.renameSync(previous, live);
+        movedAside = false;
+      } catch {
+        /* the caller still has the safety backup path in the error below */
+      }
+    }
+    if (fs.existsSync(temp)) fs.rmSync(temp, { force: true });
+    const detail = err instanceof Error ? err.message : String(err);
+    throw new Error(
+      `রিস্টোর সম্পন্ন করা যায়নি (${detail})। দোকানের ডেটাবেজ আগের অবস্থায় রাখা হয়েছে` +
+        (movedAside ? `; ফাইলটি ${previous} এ আছে` : '') +
+        `; নিরাপত্তা ব্যাকআপ: ${safety.filePath}`,
+    );
+  }
 
   try {
     const logged = openDatabase({ file: live, appVersion: opts.appVersion });
@@ -319,8 +375,11 @@ export function restoreBackup(
       details: { file: opts.backupPath, safety: safety.filePath },
     });
     closeDatabase(logged);
+    // The restored file opened and checked out, so the replaced file can go. It is deleted only
+    // after that point, not before, so a failure here can never cost the shop its previous data.
+    if (fs.existsSync(previous)) fs.rmSync(previous, { force: true });
   } catch {
-    /* restore already succeeded; logging is best-effort */
+    /* restore already succeeded; logging is best-effort. `.previous` stays on disk on purpose. */
   }
 
   return { safetyBackup: safety.filePath, restored: validation };
