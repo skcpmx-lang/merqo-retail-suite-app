@@ -22,6 +22,7 @@ import {
   useDebounced,
   useUI,
 } from '../ui.js';
+import { baseToPrimaryMilli, primaryToBaseMilli } from '../lib/qty-units.js';
 import type { ProductWithMeta, StockMovement } from '../types.js';
 
 type Tab = 'stock' | 'movements' | 'alerts';
@@ -148,7 +149,8 @@ export function InventoryPage({ can }: { can: (perm?: string) => boolean }) {
   const openAdjust = (product: ProductWithMeta, type: 'count' | 'damage' | 'expiry') => {
     setAdjusting(product);
     setAdjustType(type);
-    setCounted(type === 'count' ? product.stock_base_milli : 0);
+    // F-INV-01: show the count in the unit the shop counts in (base -> primary).
+    setCounted(type === 'count' ? baseToPrimaryMilli(product.stock_base_milli, product.unit_factor_milli) : 0);
     setReason('');
     setNote('');
     setCostPerUnit(product.avg_cost_micro > 0 ? product.avg_cost_micro : product.purchase_price * 1000);
@@ -165,7 +167,7 @@ export function InventoryPage({ can }: { can: (perm?: string) => boolean }) {
       if (adjustType === 'count') {
         await call('inventory.adjust', {
           productId: adjusting.id,
-          newQtyBaseMilli: counted,
+          newQtyBaseMilli: primaryToBaseMilli(counted, adjusting.unit_factor_milli),
           reason,
           note: note || null,
           type: 'adjustment',
@@ -174,7 +176,7 @@ export function InventoryPage({ can }: { can: (perm?: string) => boolean }) {
       } else {
         await call('inventory.writeOff', {
           productId: adjusting.id,
-          qtyBaseMilli: counted,
+          qtyBaseMilli: primaryToBaseMilli(counted, adjusting.unit_factor_milli),
           type: adjustType,
           reason,
           note: note || null,
@@ -190,7 +192,9 @@ export function InventoryPage({ can }: { can: (perm?: string) => boolean }) {
     }
   };
 
-  const delta = adjusting ? counted - adjusting.stock_base_milli : 0;
+  const delta = adjusting
+    ? counted - baseToPrimaryMilli(adjusting.stock_base_milli, adjusting.unit_factor_milli)
+    : 0;
 
   return (
     <>
@@ -275,7 +279,8 @@ export function InventoryPage({ can }: { can: (perm?: string) => boolean }) {
                       const low = !out && r.stock_base_milli <= r.min_stock_base_milli;
                       return (
                         <span className={`num bold ${out ? 'danger-text' : low ? 'warn-text' : ''}`}>
-                          {qty(r.stock_base_milli)} {r.primary_unit_short_name ?? ''}
+                          {qty(baseToPrimaryMilli(r.stock_base_milli, r.unit_factor_milli))}{' '}
+                          {r.primary_unit_short_name ?? ''}
                         </span>
                       );
                     },
@@ -467,7 +472,7 @@ export function InventoryPage({ can }: { can: (perm?: string) => boolean }) {
       {adjusting ? (
         <Modal
           title={adjustType === 'count' ? 'স্টক সমন্বয়' : adjustType === 'damage' ? 'নষ্ট স্টক লিখন' : 'মেয়াদোত্তীর্ণ লিখন'}
-          sub={`${adjusting.name} • বর্তমান স্টক ${qty(adjusting.stock_base_milli)} ${adjusting.primary_unit_short_name ?? ''}`}
+          sub={`${adjusting.name} • বর্তমান স্টক ${qty(baseToPrimaryMilli(adjusting.stock_base_milli, adjusting.unit_factor_milli))} ${adjusting.primary_unit_short_name ?? ''}`}
           onClose={() => setAdjusting(null)}
           footer={
             <>
