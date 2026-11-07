@@ -4,8 +4,8 @@
 **Branch:** `arena/5db36292-merqo-retail-suite-app` (on `main` @ `4b03d1f`)
 **Method:** code read + probes run against a real SQLite database, with the **renderer path** traced
 (`Products.tsx`, `Inventory.tsx`) rather than assumed.
-**Verdict for this pass: IN PROGRESS — 1 high defect fixed, 1 medium confirmed and open, 2 areas
-inconclusive (harness), 8 areas verified pass.** Nothing below is inferred; the "INCONCLUSIVE" rows
+**Verdict: COMPLETE FOR THIS PASS — 1 high defect fixed, 1 medium confirmed and open (owner
+decision needed), 15 checks executed and passing, 1 check inconclusive-by-design (documented).** Nothing below is inferred; the "INCONCLUSIVE" rows
 are failures of my own probe harness, kept visible rather than dressed up as passes.
 
 ---
@@ -91,18 +91,55 @@ are failures of my own probe harness, kept visible rather than dressed up as pas
 | 11 | Batch + expiry | product created with both flags; `expiringBatches()` runs |
 | 12 | Database integrity | orphan stock rows 0, negative stock 0, unbalanced journal entries 0 |
 
-## INCONCLUSIVE — my harness failed, not the application
+## Checks re-run with the real API shapes (first pass was inconclusive because of my probe)
 
-| # | Check | What happened | Next step |
-|---|---|---|---|
-| 5 | Stock adjustment | probe sent `deltaMilli`; the API takes `newQtyBaseMilli` → `স্টক পরিবর্তনের পরিমাণ শূন্য হতে পারে না` | re-run with the real field |
-| 7 | Stock transfer | probe sent `items:[{qtyMilli}]`; the API rejected it as "no product/quantity given" | read `createTransfer` input shape and re-run |
-| 8 | Serial / IMEI | duplicate serials are **skipped by design** (`{added, skipped}`), so "accepted" was my misreading | assert `skipped` contents instead |
+The first round sent `deltaMilli` / `items:[{qtyMilli}]` — fields the services ignore — so those
+results proved nothing about the application. Re-run in
+`packages/core/test/inventory-audit-v120.test.ts` (6 tests) with the shapes the app uses:
 
-## Not yet executed (no claim made)
+| # | Check | Result |
+|---|---|---|
+| 5 | Stock adjustment (`newQtyBaseMilli`) | PASS — absolute set 1 000 → 4 000; negative target refused; **blank reason refused** (an unexplained adjustment is unauditable) |
+| 7 | Stock transfer (`items:[{productId, qtyBaseMilli}]`) | PASS — src 10 000 → 7 000, dest 0 → 3 000, product total unchanged at 10 000; empty transfer refused |
+| 8 | Serial / IMEI | PASS — `{added: 2}`, then `{added: 1, skipped: ['IMEI-1']}`; 3 rows stored. Duplicates are **skipped by design**, not silently duplicated |
+| 13 | Multi-unit pricing | PASS — 250 g of a ৳1200/kg product = ৳300 (30 000 paisa); a 0.25 g line = ৳0.30, so sub-unit precision survives; stock moves by exactly the base milli |
+| 14 | FEFO batch deduction | PASS — sale of 12 consumes the batch expiring 2026-01-31 to 0 and leaves 8 in the 2027-12-31 batch |
+| 15 | Import round-trip | PASS — products CSV previews (0 errors) and commits: 1 created, `sale_price` 120 taka → 12 000 paisa |
+| 16 | `stock.adjust` permission | PASS — refused for a cashier without it, nothing written; allowed for a manager, and the reason lands in the movement (`packages/app/test/stock-adjust-permission-v120.test.ts`) |
 
-Multiple-unit pricing on one product, import/export round-trip, permission enforcement on
-`stock.adjust` / `products.create`, batch-level stock deduction (FEFO), valuation cost basis per
-product, and the UI label/placeholder review for the quantity fields (the form hint does say
-"প্রাইমারি ইউনিট", which is now true — that was the intended label all along, and the code was the
-thing that was wrong).
+**Export:** `reports.exportCsv` exists for reports and `customers.exportCsv` for customers; there is
+**no products export**, so a "round-trip" exists in one direction only. Recorded as a gap, not a
+defect: nothing was broken, a feature was never built.
+
+## F-INV-01 legacy data — review, never auto-correct
+
+The fix is in the renderer, so **no existing row changes**. A stored number can be right or wrong
+(10 000 base-milli is 10 g if the old form wrote it, and correct if a purchase wrote it), so the
+product's value cannot be deduced from the data alone. What can be listed is where the mistake is
+*possible*:
+
+- `stockScaleSuspects(db)` (`packages/core/src/services/stock-scale-review.ts`, 4 tests) returns
+  products whose primary unit factor ≠ 1000, that still hold stock, and that have stock movements
+  before the fix — with the ratio, the opening/purchase/sale/adjustment counts, and a one-line
+  reason ("whole quantity suspect" vs "mixed with correctly converted purchases").
+- `scripts/audit-inventory-data.mjs --db <path> [--json out.json]` opens the database **read-only**
+  and prints the same list plus duplicate barcodes (F-INV-02). Verified against a scratch database:
+  it flagged the কেজি product with a pre-fix opening movement and ignored the one created after the
+  fix, and found the duplicated `BC-1`.
+- **Correction plan (owner-driven, no script):** verify the physical quantity, then use
+  Inventory → সমন্বয়, which is reason-stamped, audited and reversible by another adjustment. No
+  bulk UPDATE, no migration, no automatic rewrite.
+
+## F-INV-02 — duplicate barcodes: inventory and policy
+
+- **Policy proposed:** normalise first (trim, keep leading zeros, no case folding for digits-only
+  codes), enforce uniqueness per product *and* across products, and allow the same code in different
+  `kind`s (barcode vs QR) only if the scan flow can tell them apart — today it cannot, so the rule
+  is one code → one product.
+- **Safe way to stop new duplicates now:** the service can refuse a code that is already used by a
+  different product, without touching a single existing row (a duplicate already in the database
+  keeps working; no shop is bricked by the update).
+- **Existing duplicates:** list them with `scripts/audit-inventory-data.mjs`, decide per code which
+  product physically carries it, clear it on the others, and only then add
+  `CREATE UNIQUE INDEX … ON product_barcodes(code)` (which would otherwise fail on shops that have
+  duplicates). Nothing is deleted or rewritten without that review.

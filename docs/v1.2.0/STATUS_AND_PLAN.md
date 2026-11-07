@@ -46,7 +46,7 @@ alternative is a document that sounds finished and is not.
 | # | Module | Status | Report | Findings |
 |---|---|---|---|---|
 | 1 | POS / Sales | **AUDITED** | `PHASE2_POS_SALES_AUDIT.md` | F-POS-01 high **FIXED**; F-POS-02/03/04 low **ACCEPTED**; F-POS-05/06 pass; 3 coverage gaps recorded |
-| 2 | Products & Inventory | **IN PROGRESS** | `PHASE2_PRODUCTS_INVENTORY_AUDIT.md` | F-INV-01 high **FIXED** (opening stock stored 1000×/12×/50× wrong for কেজি/ডজন/বস্তা; 8 regression tests, 5 fail on revert); F-INV-02 medium **OPEN** (duplicate barcode across products — needs an owner decision on repairing existing duplicates); 8 checks pass, 3 inconclusive harness runs to redo |
+| 2 | Products & Inventory | **AUDITED** | `PHASE2_PRODUCTS_INVENTORY_AUDIT.md` | F-INV-01 high **FIXED** (opening stock stored 1000×/12×/50× wrong for কেজি/ডজন/বস্তা; 9 + 4 + 2 regression tests, fail-on-revert executed); F-INV-02 medium **OPEN** — duplicate barcodes need an owner decision before a UNIQUE index; legacy-stock review shipped read-only (`stockScaleSuspects` + `scripts/audit-inventory-data.mjs`); 15 checks pass, products-export gap recorded |
 | 3 | Purchasing & Suppliers | not started | — | — |
 | 4 | Customers & CRM | not started | — | — |
 | 5 | Accounting & Finance | not started | — | — |

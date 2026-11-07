@@ -20,6 +20,7 @@ export * from './services/settings.js';
 export * from './services/catalog.js';
 export * from './services/inventory.js';
 export * from './services/stock-ops.js';
+export * from './services/stock-scale-review.js';
 export * from './services/pos.js';
 export * from './services/promotions.js';
 export * from './services/purchase-orders.js';

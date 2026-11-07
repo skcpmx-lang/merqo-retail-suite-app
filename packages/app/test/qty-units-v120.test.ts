@@ -51,6 +51,20 @@ describe('primary <-> base quantity conversion (F-INV-01)', () => {
     expect(primaryToBaseMilli(Number.NaN, 1_000_000)).toBe(0);
   });
 
+  it('keeps integer precision at the edges the shops actually reach', () => {
+    // 999.995 kg: no float drift, still an exact integer of base milli
+    expect(primaryToBaseMilli(999_995, 1_000_000)).toBe(999_995_000);
+    // with factor 1 (মিলিলিটার) the conversion is a division by 1000, so precision stops at the
+    // milli: 500 milli-units is exactly half a base unit and rounds up once, 499 does not.
+    expect(primaryToBaseMilli(500, 1)).toBe(1);
+    expect(primaryToBaseMilli(499, 1)).toBe(0);
+    expect(primaryToBaseMilli(5, 1)).toBe(0);
+    // the largest quantity the input can carry stays a safe integer
+    const big = primaryToBaseMilli(Number.MAX_SAFE_INTEGER, 1_000);
+    expect(Number.isSafeInteger(big)).toBe(true);
+    expect(big).toBe(Number.MAX_SAFE_INTEGER);
+  });
+
   it('reads the primary unit factor from the loaded unit list', () => {
     const units = [
       { id: 1, factor_milli: 1_000 },
