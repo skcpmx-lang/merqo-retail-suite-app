@@ -33,6 +33,11 @@ const rev = (ref) => {
   return res.status === 0 ? res.stdout.trim() : '';
 };
 
+// `--is-shallow-repository` is the only reliable way to ask (`.git/shallow` may be absent while the
+// clone is still truncated by a partial/promisor fetch). An unreadable answer counts as shallow:
+// unverifiable history is not verified history.
+const isShallow = () => git(['rev-parse', '--is-shallow-repository']).stdout.trim() === 'true';
+
 const tagCommit = rev(tag);
 const mainCommit = rev(mainRef);
 
@@ -47,7 +52,15 @@ if (!tagCommit || !mainCommit) {
 const ancestry = git(['merge-base', '--is-ancestor', tagCommit, mainCommit]);
 const isAncestor = ancestry.status === 0;
 
-const verdict = checkReleaseBranch({ tag, tagCommit, mainCommit, isAncestor, mainRef, allowOffMain });
+const verdict = checkReleaseBranch({
+  tag,
+  tagCommit,
+  mainCommit,
+  isAncestor,
+  mainRef,
+  allowOffMain,
+  shallow: isShallow(),
+});
 if (!verdict.ok) {
   console.error(`✖ release-branch gate: ${verdict.message}`);
   process.exit(1);

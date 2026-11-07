@@ -41,6 +41,22 @@ describe('checkReleaseBranch', () => {
     });
   });
 
+  it('refuses to guess when the clone is shallow — the false "not an ancestor" alarm', () => {
+    // Observed for real: in a depth-1 clone `merge-base --is-ancestor` reports a tag that IS on main
+    // as off-main. Answering SHALLOW_CLONE keeps the honest reason, and the message must tell the
+    // operator how to get a real answer rather than implying the branch was never merged.
+    const verdict = checkReleaseBranch({ ...base, isAncestor: false, shallow: true });
+    expect(verdict.ok).toBe(false);
+    expect(verdict.code).toBe('SHALLOW_CLONE');
+    expect(verdict.message).toMatch(/shallow clone/);
+    expect(verdict.message).toMatch(/fetch --unshallow/);
+    expect(verdict.message).toMatch(/fetch-depth: 0/);
+    expect(verdict.message).not.toMatch(/not an ancestor/);
+
+    // A shallow clone must not be "proved" correct by a shallow-but-successful answer either.
+    expect(checkReleaseBranch({ ...base, isAncestor: true, shallow: true }).code).toBe('SHALLOW_CLONE');
+  });
+
   it('names the ref it compared against, so the message is actionable', () => {
     const verdict = checkReleaseBranch({ ...base, isAncestor: false, mainRef: 'origin/trunk' });
     expect(verdict.message).toContain('origin/trunk');
