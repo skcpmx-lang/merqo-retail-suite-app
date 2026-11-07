@@ -26,7 +26,7 @@ alternative is a document that sounds finished and is not.
 | Phase | Scope | Status |
 | --- | --- | --- |
 | 1 | Two-application architecture audit (full) | **PARTIAL** — the structural reading is in `ARCHITECTURE_ASSESSMENT.md`; the licensing ecosystem map (`LICENSING_ECOSYSTEM_AUDIT.md`) is **not written** |
-| 2 | Module-by-module functional audit (every screen, every service, every Generator page) | **NOT STARTED** |
+| 2 | Module-by-module functional audit (every screen, every service, every Generator page) | **IN PROGRESS** — module 1 POS/Sales audited (`PHASE2_POS_SALES_AUDIT.md`): 1 high defect found and fixed (F-POS-01, line-level discount permission bypass, proven end-to-end through `invokeRoute`), 2 low accepted, 16 checks executed and passing, all 16 now permanent regression tests. 9 Main-App modules + the Generator remain |
 | 3 | Database and business-logic perfection (every table, every invariant, property tests) | **PARTIAL** — invariants are enforced and tested for money/stock/coupons/gift cards/devices/ledger from the v1.1.5 work; a systematic per-table sweep is **NOT STARTED** |
 | 4 | Security audit + threat model | **PASS** — `SECURITY_AUDIT.md`, `THREAT_MODEL.md`, `SECURITY_REMEDIATION_PLAN.md`; 2 defects found and fixed (SEC-01, SEC-02), 1 planned (SEC-03), 2 accepted (SEC-04, SEC-05) |
 | 5 | UI/UX/theme/accessibility audit, screen by screen | **NOT STARTED** |
@@ -40,6 +40,34 @@ alternative is a document that sounds finished and is not.
 | 13 | Final cross-audit and requirement traceability matrix | **NOT STARTED** |
 | 14 | Merge to `main` | **PASS** — PR #15 → `5d46ae6`; `v1.1.5` is now an ancestor of `main`, both gates green on the merged commit (run `42289557752`) |
 | 14 | Tag, build and publish v1.2.0 | **BLOCKED** on Phases 1–13 |
+
+## 2b. Phase 2 progress log
+
+| # | Module | Status | Report | Findings |
+|---|---|---|---|---|
+| 1 | POS / Sales | **AUDITED** | `PHASE2_POS_SALES_AUDIT.md` | F-POS-01 high **FIXED**; F-POS-02/03/04 low **ACCEPTED**; F-POS-05/06 pass; 3 coverage gaps recorded |
+| 2 | Products & Inventory | **AUDITED** | `PHASE2_PRODUCTS_INVENTORY_AUDIT.md` | F-INV-01 high **FIXED** (opening stock stored 1000×/12×/50× wrong for কেজি/ডজন/বস্তা; 9 + 4 + 2 regression tests, fail-on-revert executed); F-INV-02 medium **OPEN** — duplicate barcodes need an owner decision before a UNIQUE index; legacy-stock review shipped read-only (`stockScaleSuspects` + `scripts/audit-inventory-data.mjs`); 15 checks pass, products-export gap recorded |
+| 3 | Purchasing & Suppliers | not started | — | — |
+| 4 | Customers & CRM | not started | — | — |
+| 5 | Accounting & Finance | not started | — | — |
+| 6 | Expenses | not started | — | — |
+| 7 | Reports & Analytics | not started | — | — |
+| 8 | Employee & User Management | not started | — | — |
+| 9 | Backup & Restore | not started | — | — |
+| 10 | Settings, Network & Device Management | not started | — | — |
+| 11 | License Generator (same full audit) | not started | — | — |
+
+**How each module is audited (standing method):** read the UI path, the IPC/RPC handler, the service
+and the SQL; then **execute** the workflows against a real database — happy path, refusal paths,
+permission enforcement, duplicates, concurrency, reversal and integrity — and record what ran, not
+what should happen. A screen that exists is not a feature that works. Every fixed defect carries a
+regression test with an executed revert check.
+
+**Release-gate hardening (this branch).** The gate now refuses with `SHALLOW_CLONE` instead of
+reporting a false "not an ancestor", the release job checks out with `fetch-depth: 0`, and the gate
+step deepens a shallow checkout before asking. Verified in all three states on this branch: shallow
+clone → `SHALLOW_CLONE`, exit 1; after `git fetch --unshallow --tags` → `ON_MAIN`, exit 0; a genuine
+off-main commit → `OFF_MAIN`, exit 1.
 
 ## 3. Honest statement of scale
 

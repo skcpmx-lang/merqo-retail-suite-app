@@ -113,6 +113,8 @@ import {
   getSupplier,
   getUser,
   hasPermission,
+  saleRequestsDiscount,
+  saleRequestsPriceEdit,
   initializeApp,
   integrityCheck,
   licenseFileText,
@@ -736,10 +738,11 @@ on('pos.compute', (ctx, input) => requireCompute(ctx, input), 'pos.sell');
 on(
   'pos.createSale',
   (ctx, input) => {
-    if (input.orderDiscountValue > 0 && !hasPermission(ctx.user, 'pos.discount')) {
+    // A line-level discountPaisa is a discount too (F-POS-01): gate it on the same permission.
+    if (saleRequestsDiscount(input) && !hasPermission(ctx.user, 'pos.discount')) {
       throw new Error('ডিসকাউন্ট প্রয়োগের অনুমতি আপনার নেই।');
     }
-    if (input.lines?.some((l: any) => l.unitPricePaisa) && !hasPermission(ctx.user, 'pos.price_edit')) {
+    if (saleRequestsPriceEdit(input) && !hasPermission(ctx.user, 'pos.price_edit')) {
       throw new Error('বিক্রয়ের সময় দাম পরিবর্তনের অনুমতি আপনার নেই।');
     }
     const result = createSale(ctx.db, {

@@ -25,6 +25,22 @@ import {
   useDebounced,
   useUI,
 } from '../ui.js';
+import { baseToPrimaryMilli, primaryFactorOf, primaryToBaseMilli } from '../lib/qty-units.js';
+
+/**
+ * F-INV-01: the unit the product form's quantity fields are expressed in. Opening stock, minimum
+ * stock, reorder quantity and variant stock are typed as primary units ("10 কেজি"), while the core
+ * stores base-unit milli (10 000 000), so every one of them is converted here.
+ */
+const formPrimaryFactor = (
+  editor: { primaryUnitId?: number | '' | null; unitId?: number | '' | null },
+  units: ReadonlyArray<{ id: number; factor_milli?: number | null }>,
+): number =>
+  primaryFactorOf(
+    units,
+    typeof editor.primaryUnitId === 'number' ? editor.primaryUnitId : null,
+    typeof editor.unitId === 'number' ? editor.unitId : null,
+  );
 import type { Category, ProductWithMeta, Unit } from '../types.js';
 
 const PAGE_SIZE = 25;
@@ -191,7 +207,8 @@ export function ProductsPage({ can }: { can: (perm?: string) => boolean }) {
         retailPrice: full.retail_price ?? 0,
         discountType: full.discount_type,
         discountValue: full.discount_value,
-        minStockMilli: full.min_stock_base_milli,
+        // F-INV-01: the form works in primary units, the row stores base units.
+        minStockMilli: baseToPrimaryMilli(full.min_stock_base_milli, full.unit_factor_milli),
         openingStockMilli: 0,
         vatPercentX100: full.vat_percent_x100,
         description: full.description ?? '',
@@ -234,7 +251,7 @@ export function ProductsPage({ can }: { can: (perm?: string) => boolean }) {
         retailPrice: editor.retailPrice || null,
         discountType: editor.discountType,
         discountValue: editor.discountValue,
-        minStockMilli: editor.minStockMilli,
+        minStockMilli: primaryToBaseMilli(editor.minStockMilli, formPrimaryFactor(editor, units)),
         vatPercentX100: editor.vatPercentX100,
         description: editor.description || null,
         imagePath: editor.imagePath,
@@ -250,7 +267,8 @@ export function ProductsPage({ can }: { can: (perm?: string) => boolean }) {
         await call('products.update', editor.id, payload);
         ui.success('প্রোডাক্ট আপডেট হয়েছে', editor.name);
       } else {
-        payload.openingStockMilli = editor.openingStockMilli;
+        // F-INV-01: the form asks for the primary unit (label: "প্রাইমারি ইউনিট").
+        payload.openingStockMilli = primaryToBaseMilli(editor.openingStockMilli, formPrimaryFactor(editor, units));
         payload.barcodes = editor.barcodes
           .split(',')
           .map((b) => b.trim())
@@ -495,7 +513,8 @@ export function ProductsPage({ can }: { can: (perm?: string) => boolean }) {
                     const low = !out && r.stock_base_milli <= r.min_stock_base_milli;
                     return (
                       <span className={`num ${out ? 'danger-text' : low ? 'warn-text' : ''}`}>
-                        {qty(r.stock_base_milli)} {r.primary_unit_short_name ?? ''}
+                        {qty(baseToPrimaryMilli(r.stock_base_milli, r.unit_factor_milli))}{' '}
+                        {r.primary_unit_short_name ?? ''}
                       </span>
                     );
                   },
@@ -825,7 +844,7 @@ function ProductEditor({
                 <div key={v.id} className="row" style={{ justifyContent: 'space-between' }}>
                   <span>{v.name}</span>
                   <span className="num small">
-                    {money(v.sale_price)} • স্টক {qty(v.stock_base_milli)}
+                    {money(v.sale_price)} • স্টক {qty(baseToPrimaryMilli(v.stock_base_milli, v.unit_factor_milli ?? formPrimaryFactor(editor, units)))}
                   </span>
                 </div>
               ))
@@ -863,7 +882,7 @@ function ProductEditor({
                         name: variantName.trim(),
                         attributes,
                         salePrice: variantPrice || editor.salePrice,
-                        openingStockMilli: variantStock,
+                        openingStockMilli: primaryToBaseMilli(variantStock, formPrimaryFactor(editor, units)),
                         openingCostMicro: editor.purchasePrice,
                       });
                       setVariantName('');

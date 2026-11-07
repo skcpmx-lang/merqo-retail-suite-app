@@ -43,7 +43,13 @@ jobs:
     name: Build Windows installers (unsigned accepted)
     runs-on: windows-latest
     steps:
+      # Full history: the publication gate below asks whether the tagged commit is an ancestor of
+      # `main`, and a depth-1 checkout cannot answer that — it reports "not an ancestor" for tags
+      # that are on main (observed in a shallow sandbox clone). The gate also refuses outright when
+      # it detects a shallow clone, so the two protections are independent.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-node@v4
         with:
@@ -174,6 +180,11 @@ jobs:
         run: |
           set -euo pipefail
           git fetch --no-tags origin main:refs/remotes/origin/main || true
+          # Belt and braces: if this checkout is still shallow (a cached or older runner config),
+          # deepen it rather than letting the ancestry answer be a guess.
+          if [ "$(git rev-parse --is-shallow-repository)" = "true" ]; then
+            git fetch --unshallow --no-tags || true
+          fi
           node scripts/audit-release-branch.mjs --tag "${GITHUB_REF_NAME}" --main origin/main
 
       - name: Create DRAFT release with the verified assets

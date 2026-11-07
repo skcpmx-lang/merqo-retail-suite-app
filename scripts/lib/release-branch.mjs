@@ -20,8 +20,32 @@
  * @param {boolean} input.isAncestor    true when tagCommit is an ancestor of (or equal to) mainCommit
  * @param {string} [input.mainRef]      name of the main ref, for messages (default "main")
  * @param {boolean} [input.allowOffMain] explicit operator override, for rebuilding a past release
+ * @param {boolean} [input.shallow]     true when git says this repository is a shallow clone
  */
-export function checkReleaseBranch({ tag, tagCommit, mainCommit, isAncestor, mainRef = 'main', allowOffMain = false }) {
+export function checkReleaseBranch({
+  tag,
+  tagCommit,
+  mainCommit,
+  isAncestor,
+  mainRef = 'main',
+  allowOffMain = false,
+  shallow = false,
+}) {
+  // A shallow clone truncates history at an arbitrary boundary, so `git merge-base --is-ancestor`
+  // answers about the commits it happens to have, not about the real history. In a depth-1 checkout
+  // it reports "not an ancestor" for tags that ARE on main — a false alarm that invites an operator
+  // to "fix" a repository that is fine, or (worse) to reach for --allow-off-main. Answering
+  // "cannot tell, and here is how to fetch what is needed" is the only honest verdict, and it comes
+  // before the missing-input check because a shallow clone is often the *reason* a ref is missing.
+  if (shallow) {
+    return {
+      ok: false,
+      code: 'SHALLOW_CLONE',
+      message:
+        'this repository is a shallow clone, so an ancestry answer would be a guess. ' +
+        'Run `git fetch --unshallow --tags` (CI: actions/checkout with `fetch-depth: 0`) and check again.',
+    };
+  }
   if (!tag || !tagCommit || !mainCommit) {
     return { ok: false, code: 'MISSING_INPUT', message: 'tag, tagCommit and mainCommit are all required.' };
   }
