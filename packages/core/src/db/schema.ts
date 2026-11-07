@@ -60,6 +60,23 @@ CREATE TABLE IF NOT EXISTS audit_logs (
 CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_logs(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_audit_entity ON audit_logs(entity, entity_id);
 
+-- The audit trail is append-only, enforced by the database rather than by everyone remembering not to
+-- write the statement (v1.2.0 security audit, SEC-02). No product code updates or deletes these rows;
+-- a trigger means a future feature, a repair script or a compromised session cannot either. Rows can
+-- still be removed by dropping the trigger with a direct SQLite session and the file — that is the
+-- honest limit of an unencrypted local database, and it is documented in the threat model.
+CREATE TRIGGER IF NOT EXISTS audit_logs_append_only_update
+BEFORE UPDATE ON audit_logs
+BEGIN
+  SELECT RAISE(ABORT, 'audit_logs is append-only');
+END;
+
+CREATE TRIGGER IF NOT EXISTS audit_logs_append_only_delete
+BEFORE DELETE ON audit_logs
+BEGIN
+  SELECT RAISE(ABORT, 'audit_logs is append-only');
+END;
+
 CREATE TABLE IF NOT EXISTS payment_methods (
   id         INTEGER PRIMARY KEY,
   name       TEXT NOT NULL UNIQUE,

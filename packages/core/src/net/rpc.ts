@@ -41,6 +41,13 @@ export interface RpcResponse {
 export interface RpcHostOptions {
   port: number;
   /**
+   * Set to true only when a plaintext (non-TLS) listener on a non-loopback interface is genuinely
+   * intended — the deprecated legacy tunnel exposed with `SAUDA_ALLOW_LEGACY_RPC=lan`. Without it,
+   * `startRpcHost` refuses that combination rather than serving a login password in the clear
+   * (v1.2.0 security audit, SEC-01).
+   */
+  allowPlaintextLan?: boolean;
+  /**
    * Interface to bind. Defaults to `0.0.0.0` for compatibility, but v1.1.4's Main
    * Server passes `127.0.0.1`: the legacy shop-token tunnel is no longer reachable
    * from the network, only from this machine. See `docs/V1.1.4_PHASE3_MILESTONE_D.md`.
@@ -134,6 +141,12 @@ const LOGIN_WINDOW_MS = 15 * 60 * 1000;
 const LOGIN_MAX_FAILURES_PER_ADDRESS = 10;
 
 /** RFC1918 + loopback + link-local only. */
+/** True for the addresses that can only be reached from this machine. */
+export function isLoopbackHost(host: string): boolean {
+  const value = String(host ?? '').trim().toLowerCase().replace(/^\[|\]$/g, '');
+  return value === '127.0.0.1' || value === '::1' || value === 'localhost';
+}
+
 export function isPrivateAddress(address: string): boolean {
   if (!address) return false;
   const addr = address.replace(/^::ffff:/, '');
@@ -210,6 +223,15 @@ function sendSealed(res: http.ServerResponse, token: string, status: number, pay
 
 export async function startRpcHost(opts: RpcHostOptions): Promise<RpcHost> {
   const ttl = opts.sessionTtlMs ?? 12 * 60 * 60 * 1000;
+  // Fail closed on a plaintext listener that anyone on the network can reach. The AES-GCM envelope
+  // protects the body, but the login password travels inside it on the very first request, and a
+  // mis-configured bind should not be the difference between private and public (SEC-01).
+  const bindHost = opts.host ?? '0.0.0.0';
+  if (!opts.tls && !isLoopbackHost(bindHost) && !opts.allowPlaintextLan) {
+    throw new Error(
+      'TLS ছাড়া নেটওয়ার্ক-সার্ভার চালু করা যাবে না — শুধু এই পিসি (127.0.0.1) থেকে চলবে, নয়তো সার্টিফিকেট দিন।',
+    );
+  }
   const sessions = new Map<string, { user: RpcUser; seen: number }>();
   const allow = opts.allowRemote ?? isPrivateAddress;
   const loginFailures = new Map<string, { failures: number; first: number }>();
@@ -352,7 +374,7 @@ export async function startRpcHost(opts: RpcHostOptions): Promise<RpcHost> {
 
   await new Promise<void>((resolve, reject) => {
     server.once('error', reject);
-    server.listen(opts.port, opts.host ?? '0.0.0.0', () => resolve());
+    server.listen(opts.port, bindHost, () => resolve());
   });
   const address = server.address() as AddressInfo;
   const port = address.port;

@@ -80,6 +80,8 @@ describe('LAN transport', () => {
     ctx = makeTestDb();
     host = await startRpcHost({
       port: 0,
+      // SEC-01: a plaintext listener is now an explicit choice; this fixture tests that transport.
+      allowPlaintextLan: true,
       token: TOKEN,
       version: '1.1.0',
       businessName: () => 'টেস্ট মার্ট',
@@ -166,6 +168,8 @@ describe('LAN transport', () => {
     // (correctly) lock out every later test on 127.0.0.1.
     const isolated = await startRpcHost({
       port: 0,
+      // SEC-01: a plaintext listener is now an explicit choice; this fixture tests that transport.
+      allowPlaintextLan: true,
       token: TOKEN,
       version: '1.1.3',
       businessName: () => 'টেস্ট মার্ট',
@@ -260,6 +264,8 @@ describe('LAN transport', () => {
   it('refuses a public peer even with the right token (threat model)', async () => {
     const localOnly = await startRpcHost({
       port: 0,
+      // SEC-01: a plaintext listener is now an explicit choice; this fixture tests that transport.
+      allowPlaintextLan: true,
       token: TOKEN,
       version: '1.1.0',
       businessName: () => 'x',
