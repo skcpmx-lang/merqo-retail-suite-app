@@ -15,6 +15,8 @@ Last updated: 2026-11-07, tree `014d7a7` + this phase's commits.
 | 0 | Architecture assessment | **PASS (first pass)** — `ARCHITECTURE_ASSESSMENT.md`, 7 weaknesses named with actions |
 | 0 | Risk register | **PASS (open)** — `RISK_REGISTER.md`, R-01 … R-12 |
 | 14 | Release-process fix for requirement #20 | **PASS** — `scripts/audit-release-branch.mjs` + 5 tests, wired into `release.yml` before the draft release |
+| 14 | `main` matches the published release | **PASS** — PR #15 merged; `main` = `5d46ae6`, v1.1.5 is an ancestor, both gates green |
+| 4 | Security fixes shipped with tests | **PASS** — SEC-01 (plaintext LAN fail-open) and SEC-02 (audit trail now append-only in the DB); 8 tests, 4 of them fail on revert |
 
 ## 2. What is **not** complete
 
@@ -26,7 +28,7 @@ alternative is a document that sounds finished and is not.
 | 1 | Two-application architecture audit (full) | **PARTIAL** — the structural reading is in `ARCHITECTURE_ASSESSMENT.md`; the licensing ecosystem map (`LICENSING_ECOSYSTEM_AUDIT.md`) is **not written** |
 | 2 | Module-by-module functional audit (every screen, every service, every Generator page) | **NOT STARTED** |
 | 3 | Database and business-logic perfection (every table, every invariant, property tests) | **PARTIAL** — invariants are enforced and tested for money/stock/coupons/gift cards/devices/ledger from the v1.1.5 work; a systematic per-table sweep is **NOT STARTED** |
-| 4 | Security audit + threat model (`SECURITY_AUDIT.md`, `THREAT_MODEL.md`) | **NOT STARTED** (the v1.1.5 second pass exists as `docs/V1.1.5_SECURITY_REVIEW.md`) |
+| 4 | Security audit + threat model | **PASS** — `SECURITY_AUDIT.md`, `THREAT_MODEL.md`, `SECURITY_REMEDIATION_PLAN.md`; 2 defects found and fixed (SEC-01, SEC-02), 1 planned (SEC-03), 2 accepted (SEC-04, SEC-05) |
 | 5 | UI/UX/theme/accessibility audit, screen by screen | **NOT STARTED** |
 | 6 | Language/localization audit + terminology glossary | **NOT STARTED** |
 | 7 | Performance and stability programme | **PARTIAL** — measured baselines exist (`V1.1.5_PERFORMANCE.md`, `createSale` median 1.99 ms); no systematic before/after programme |
@@ -36,7 +38,8 @@ alternative is a document that sounds finished and is not.
 | 11 | Windows automation + owner acceptance plan (`OWNER_ACCEPTANCE_TEST_PLAN.md`, `WINDOWS_VERIFICATION.md`) | **NOT STARTED** (v1.1.5 has `V1.1.5_VM_TEST_PLAN.md`) |
 | 12 | Documentation and commercial readiness | **NOT STARTED** |
 | 13 | Final cross-audit and requirement traceability matrix | **NOT STARTED** |
-| 14 | Merge to `main`, tag, build, publish v1.2.0 | **BLOCKED** on the phases above |
+| 14 | Merge to `main` | **PASS** — PR #15 → `5d46ae6`; `v1.1.5` is now an ancestor of `main`, both gates green on the merged commit (run `42289557752`) |
+| 14 | Tag, build and publish v1.2.0 | **BLOCKED** on Phases 1–13 |
 
 ## 3. Honest statement of scale
 
@@ -54,10 +57,10 @@ risk register names the work that remains.
 
 Ordered by risk reduction per unit of effort:
 
-1. **Merge to `main`** (requirement #20; a pure fast-forward today) so the repository's front door
-   matches what customers run. This must happen before any v1.2.0 tag.
-2. **Phase 4 security audit + threat model** — the highest-value unstarted analysis, and it feeds the
-   risk register directly.
+1. ~~Merge to `main`~~ — **done** (PR #15, `5d46ae6`). Requirement #20 is satisfied for the past
+   release and guarded for the next one.
+2. ~~Phase 4 security audit + threat model~~ — **done**; next in that thread is SEC-03, which needs its
+   own reviewed change (hash versioning + migration).
 3. **Phase 2 module inventory for the Main App** — a per-screen/per-service table with test coverage,
    which then drives Phases 5, 6 and 10.
 4. **Component-test harness** (Phase 10 / R-10) — the largest gap in the automated protection today.

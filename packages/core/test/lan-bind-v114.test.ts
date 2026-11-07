@@ -9,10 +9,11 @@ import { startRpcHost, type RpcHost } from '../src/net/rpc.js';
 const TOKEN = 'd'.repeat(64);
 const hosts: RpcHost[] = [];
 
-async function host(bindHost?: string): Promise<RpcHost> {
+async function host(bindHost?: string, allowPlaintextLan = true): Promise<RpcHost> {
   const started = await startRpcHost({
     port: 0,
     host: bindHost,
+    allowPlaintextLan,
     token: TOKEN,
     version: '1.1.4',
     businessName: () => 'টেস্ট',
@@ -38,8 +39,15 @@ describe('legacy listener binding', () => {
     await server.stop();
   });
 
-  it('keeps the historical default so existing tests and tools are unaffected', async () => {
-    const server = await host();
+  // SEC-01 (v1.2.0): the historical default bound 0.0.0.0 without TLS. That default was the defect —
+  // it turned a missing argument into an open, plaintext listener. The default now refuses, and the
+  // deprecated LAN mode has to ask for it explicitly.
+  it('refuses the old default: no host and no TLS is not a network listener any more', async () => {
+    await expect(host(undefined, false)).rejects.toThrow(/TLS ছাড়া নেটওয়ার্ক-সার্ভার/);
+  });
+
+  it('still allows the deprecated LAN bind when it is asked for explicitly', async () => {
+    const server = await host(undefined, true);
     expect(['0.0.0.0', '::']).toContain(server.bound_host);
     await server.stop();
   });

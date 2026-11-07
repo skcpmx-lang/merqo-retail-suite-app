@@ -204,6 +204,9 @@ export class ServerRuntime {
         // Legacy shop-token tunnel: this PC only unless the operator explicitly
         // opted into the deprecated LAN mode (see lan-policy.ts).
         host: legacyRpcBindHost(),
+        // The legacy tunnel is only reachable from this PC unless the operator opted into the
+        // deprecated LAN mode; that opt-in is what makes a plaintext bind intentional (SEC-01).
+        allowPlaintextLan: legacyRpcExposedToNetwork(),
         token,
         version: this.deps.version,
         businessName: this.deps.businessName,

@@ -27,6 +27,9 @@ async function host(tls?: { certPem: string; keyPem: string; fingerprint?: strin
     port: 0,
     token: TOKEN,
     tls,
+    // SEC-01: a plaintext listener is now opt-in. This fixture deliberately exercises the plaintext
+    // transport, so it asks for it instead of relying on the old default.
+    allowPlaintextLan: true,
     version: '1.1.4',
     businessName: () => 'টেস্ট স্টোর',
     authenticate: async (username) => ({

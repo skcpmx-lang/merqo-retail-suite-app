@@ -17,6 +17,9 @@ Scored as **likelihood × impact** on the shop's data and on the release itself.
 | R-10 | No automated UI/component coverage; a screen regression reaches the owner | high | medium | **S2** | Wiring audits exist; component/UI test harness is a v1.2.0 work item (W-2) |
 | R-11 | Physical/VM acceptance never runs, and the release is presented as if it did | medium | high | **S1** | Owner deferred it explicitly; every doc says **NOT TESTED — OWNER TESTING DEFERRED**; no row is ever marked passed |
 | R-12 | Historical installers cannot be re-verified in this environment | certain | low | **S3** | Recorded in the baseline and release-history audit; no claim of binary verification is made |
+| R-13 | A plaintext listener reached the LAN because a caller omitted `host` | was medium | high | **S2** | **FIXED — SEC-01**: `startRpcHost` refuses `no TLS + non-loopback` unless asked explicitly; 5 tests, 2 fail on revert |
+| R-14 | Audit rows could be rewritten, leaving no evidence of who changed what | was medium | high | **S2** | **FIXED — SEC-02**: database triggers refuse UPDATE/DELETE on `audit_logs`; 3 tests, 2 fail on revert |
+| R-15 | Password hashing cost is below 2026 guidance | medium | medium | **S3** | **OPEN — SEC-03**: needs hash versioning + migration; plan written, deliberately not bundled |
 
 ## What this register is not
 

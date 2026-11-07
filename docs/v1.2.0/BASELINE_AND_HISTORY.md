@@ -10,15 +10,15 @@ estimated.*
 | --- | --- |
 | Published baseline | `v1.1.5` (published 2026-11-06T19:47:37Z) |
 | `v1.1.5` tag object → commit | `2d6474895d290760e93186b7e87e1cf1815b63a3` → `5ae2e947324eb14c2ce316c6dc9276916bc3cb86` |
-| `origin/main` | `fc15bf3` — "Merge pull request #14 from skcpmx-lang/arena/c04eed8c-merqo-retail-suite-app" |
+| `origin/main` | `5d46ae6` — "Merge pull request #15" (was `fc15bf3`/v1.1.4-era before the merge; see §2) |
 | Work branch | `arena/622f7f30-merqo-retail-suite-app` at `014d7a7` |
-| Branch vs main | 27 commits ahead of `main`; `main` **is** an ancestor (fast-forwardable, no rewrite needed) |
+| Branch vs main | merged — `main` now contains the whole v1.1.5 tree and Phase 0 (PR #15, fast-forward merge) |
 | Version in the tree | `1.1.5` in `packages/app`, `packages/core`, `packages/license-generator`, `packages/license-generator/package.json` and `PRODUCT_VERSION` |
 | Node / npm used by CI | Node 22 (`actions/setup-node@v4`), `npm ci` |
 
-## 2. ⚠️ Release-integrity finding (blocks requirement #20 for v1.2.0)
+## 2. Release-integrity finding — found in Phase 0, **fixed** in PR #15
 
-**`v1.1.5` is not an ancestor of `main`.** Verified with
+**Was:** `v1.1.5` was not an ancestor of `main`. Verified at the time with
 `git merge-base --is-ancestor v1.1.5 origin/main` → exit 1.
 
 What that means, stated plainly:
@@ -30,9 +30,20 @@ What that means, stated plainly:
   satisfied by repeating the v1.1.5 procedure — it has to be fixed as an explicit first step, and it
   has to be *guarded* so it cannot silently happen again.
 
-Remedy planned in this cycle (no history rewrite, no force-push):
+**Fixed on 2026-11-07** (no history rewrite, no force-push):
 
-1. Fast-forward `main` to the verified branch tip (it is a pure fast-forward today).
+1. **Done** — PR #15 merged into `main` as `5d46ae68616e704647977643dee3172400f792eb`
+   (https://github.com/skcpmx-lang/merqo-retail-suite-app/pull/15). `main` now contains the entire
+   v1.1.5 tree that produced the published installers plus Phase 0. The gate now passes:
+
+   ```
+   $ node scripts/audit-release-branch.mjs --tag v1.1.5
+   ✔ release-branch gate: v1.1.5 (5ae2e94) is on origin/main (5d46ae6) — the released tree is the
+     verified main tree.
+   ```
+
+   CI on the merged commit `5d46ae6`: `Gate — Linux (ubuntu-latest)` **success**,
+   `Gate — Windows (windows-latest)` **success** (run `42289557752`).
 2. Add an automated pre-publication gate that refuses to publish a tag whose commit is not an
    ancestor of `main` — **done in this phase**: `scripts/audit-release-branch.mjs`, wired into
    `release.yml` immediately before the draft release is created, with 5 unit tests. Run against the
