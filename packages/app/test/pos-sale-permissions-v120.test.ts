@@ -11,7 +11,9 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
  */
 vi.mock('electron', () => ({
   app: {
-    getPath: () => '/tmp',
+    // A writable per-OS temp dir: '/tmp' does not exist on the Windows runner, and the IPC
+    // module touches app.getPath() at import time.
+    getPath: () => process.env.TEMP || process.env.TMPDIR || '/tmp',
     isPackaged: false,
     getVersion: () => '0.0.0-test',
     setPath: () => undefined,

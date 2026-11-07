@@ -68,7 +68,7 @@ describe('primary <-> base quantity conversion (F-INV-01)', () => {
  * gram sale after it was refused with "পর্যাপ্ত স্টক নেই" — the shop could not sell rice at all.
  */
 vi.mock('electron', () => ({
-  app: { getPath: () => '/tmp', isPackaged: false, getVersion: () => '0.0.0-test', on: () => undefined, whenReady: () => Promise.resolve(), quit: () => undefined },
+  app: { getPath: () => process.env.TEMP || process.env.TMPDIR || '/tmp', isPackaged: false, getVersion: () => '0.0.0-test', on: () => undefined, whenReady: () => Promise.resolve(), quit: () => undefined },
   BrowserWindow: class {
     static getAllWindows() {
       return [];
