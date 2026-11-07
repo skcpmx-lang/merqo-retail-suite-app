@@ -46,24 +46,29 @@ jobs:
           ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
         run: npm ci --no-audit --no-fund
 
+      # Each phase prints "✔/✖ <phase> — exit <code> (duration)". The summary file carries only
+      # phase names, exit codes, durations and platform facts — never output, environment or paths.
       - name: Verify (typecheck + tests + builds + secrets scan)
         shell: bash
         run: |
           set -o pipefail
-          npm run verify 2>&1 | tee ci-verify.log
+          npm run verify -- --summary-file ci-verify-summary.json 2>&1 | tee ci-verify.log
 
       - name: Report failures as annotations and summary
         if: failure()
         shell: bash
         run: node scripts/ci-failure-report.mjs --log ci-verify.log --label linux
 
-      - name: Upload gate log
+      - name: Upload gate log and phase summary
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: ci-gate-log-linux
-          path: ci-verify.log
+          name: ci-gate-diagnostics-linux-${{ github.run_id }}
+          path: |
+            ci-verify.log
+            ci-verify-summary.json
           if-no-files-found: ignore
+          retention-days: 7
 
   windows:
     name: Gate — Windows (windows-latest)
@@ -98,21 +103,26 @@ jobs:
           ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
         run: npm ci --no-audit --no-fund
 
+      # Each phase prints "✔/✖ <phase> — exit <code> (duration)". The summary file carries only
+      # phase names, exit codes, durations and platform facts — never output, environment or paths.
       - name: Verify (typecheck + tests + builds + secrets scan)
         shell: bash
         run: |
           set -o pipefail
-          npm run verify 2>&1 | tee ci-verify.log
+          npm run verify -- --summary-file ci-verify-summary.json 2>&1 | tee ci-verify.log
 
       - name: Report failures as annotations and summary
         if: failure()
         shell: bash
         run: node scripts/ci-failure-report.mjs --log ci-verify.log --label windows
 
-      - name: Upload gate log
+      - name: Upload gate log and phase summary
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: ci-gate-log-windows
-          path: ci-verify.log
+          name: ci-gate-diagnostics-windows-${{ github.run_id }}
+          path: |
+            ci-verify.log
+            ci-verify-summary.json
           if-no-files-found: ignore
+          retention-days: 7

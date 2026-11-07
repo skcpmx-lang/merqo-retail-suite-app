@@ -10,10 +10,26 @@ import { fileURLToPath } from 'node:url';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const failures = [];
 
+/**
+ * Every phase reports its own exit code and duration (v1.2.0): a Windows-only failure used to be
+ * visible only as "tests: core" in one aggregated line, with no way to tell which command inside
+ * the gate actually returned non-zero. The summary is also written to a JSON file when asked, so CI
+ * can upload it as an artifact without shipping a single line of test output or environment.
+ */
+const summary = [];
+
 function step(name, command, args, cwd = root) {
   process.stdout.write(`\n▶ ${name}\n`);
+  const started = Date.now();
   const result = spawnSync(command, args, { cwd, stdio: 'inherit', shell: process.platform === 'win32' });
-  if (result.status !== 0) failures.push(name);
+  const seconds = (Date.now() - started) / 1000;
+  const exitCode = typeof result.status === 'number' ? result.status : null;
+  const ok = exitCode === 0;
+  summary.push({ name, exitCode, ok, seconds });
+  if (!ok) failures.push(name);
+  process.stdout.write(
+    `${ok ? '✔' : '✖'} ${name} — exit ${exitCode ?? 'signal'} (${seconds.toFixed(1)}s)\n`,
+  );
 }
 
 const tsc = path.join(root, 'node_modules', 'typescript', 'bin', 'tsc');
@@ -131,6 +147,25 @@ if (!auditJson || !auditJson.metadata) {
     console.log(
       `production dependencies: 0 high/critical (moderate ${severities.moderate || 0}, total ${auditJson.metadata.totalDependencies || 0} packages) ✔`,
     );
+  }
+}
+
+const summaryFlag = process.argv.indexOf('--summary-file');
+if (summaryFlag >= 0 && process.argv[summaryFlag + 1]) {
+  const target = process.argv[summaryFlag + 1];
+  const payload = {
+    platform: process.platform,
+    arch: process.arch,
+    node: process.version,
+    steps: summary,
+    failed: failures,
+    ok: failures.length === 0,
+  };
+  try {
+    fs.writeFileSync(target, JSON.stringify(payload, null, 2));
+    console.log(`phase summary written to ${target}`);
+  } catch (error) {
+    console.error(`could not write the phase summary: ${error.message}`);
   }
 }
 

@@ -96,5 +96,13 @@ it('16 POS probes', () => {
   check(16, 'journal balanced, no negative sale totals', unbalanced() === 0 && negatives() === 0, `unbalanced ${unbalanced()}, negative ${negatives()}`);
 
   expect(results.filter((r) => r.startsWith('PASS'))).toHaveLength(16);
-  ctx.cleanup(); t2.cleanup(); other.close();
+  // Close the second connection BEFORE removing its directory: on Windows an open file handle
+  // makes the unlink fail with EBUSY (v1.1.4 regression, caught again by the leak guard) and the
+  // cleanup throw would then skip every remaining close, leaking the database for good.
+  try {
+    other.close();
+  } finally {
+    t2.cleanup();
+    ctx.cleanup();
+  }
 });

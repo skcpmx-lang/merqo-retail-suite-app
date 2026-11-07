@@ -23,6 +23,7 @@ const arg = (name, fallback) => {
 };
 
 const logPath = arg('--log', 'ci-verify.log');
+const phaseSummaryPath = arg('--summary', 'ci-verify-summary.json');
 const label = arg('--label', 'ci');
 
 const MAX_ANNOTATIONS = 10;
@@ -36,6 +37,29 @@ const clean = (text) =>
 const annotate = (level, title, message) => {
   const body = clean(message).slice(0, 900);
   console.log(`::${level} title=${title}::${body}`);
+};
+
+/**
+ * Per-phase result table (v1.2.0): names, exit codes and durations only. It answers "which command
+ * inside the gate returned non-zero, and how long did the others take" without a runner log.
+ */
+const renderPhaseTable = () => {
+  let parsed = null;
+  try {
+    parsed = JSON.parse(fs.readFileSync(phaseSummaryPath, 'utf8'));
+  } catch {
+    return null;
+  }
+  const steps = Array.isArray(parsed.steps) ? parsed.steps : [];
+  if (!steps.length) return null;
+  const lines = [
+    `platform: ${parsed.platform ?? '?'} ${parsed.arch ?? ''} • node ${parsed.node ?? '?'}`,
+    '',
+    '| phase | exit | duration |',
+    '| --- | --- | --- |',
+    ...steps.map((s) => `| ${s.name} | ${s.ok ? '0 ✔' : `${s.exitCode ?? 'signal'} ✖`} | ${Number(s.seconds ?? 0).toFixed(1)}s |`),
+  ];
+  return { text: lines.join('\n'), failed: steps.filter((s) => !s.ok).map((s) => s.name) };
 };
 
 let log = '';
@@ -84,11 +108,16 @@ for (let i = 0; i < lines.length; i += 1) {
 }
 if (current) blocks.push(current);
 
+const phaseTable = renderPhaseTable();
+if (phaseTable) {
+  for (const name of phaseTable.failed) annotate('error', 'gate phase failed', `${name} returned a non-zero exit code`);
+}
+
 const summaries = lines.filter(isSummaryLine);
 const failedSteps = lines.filter((line) => /^✖\s+\S/.test(line) || /^✖ verify failed:/.test(line));
 
 const summaryPath = process.env.GITHUB_STEP_SUMMARY;
-const section = [];
+const section = [...(phaseTable ? ['### Gate phases', '', phaseTable.text, ''] : [])];
 section.push(`## ${label}: gate log analysis`);
 if (!lines.filter(Boolean).length) {
   section.push('_the gate log was empty or missing_');
